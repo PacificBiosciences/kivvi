@@ -135,6 +135,8 @@ In the `methylation` field of the JSON, Kivvi reports the methylation levels of 
 - The `median_methylation_per_unit` field reports the median methylation level of each repeat unit on each allele (each repeat unit has a value). 
 - The `methylation_per_site` reports the methylation level of each CpG site (which is the median of values across supporting reads overlapping the CpG site) on each allele. Kivvi uses a set of 101 pre-selected CpG sites in the D4Z4 repeat unit for methylation analysis, so there are `repeat copy number * 101` values reported for each allele.
 
+The `d4z4_arrays_in_cis` field of the JSON provides calls of in-cis duplications of D4Z4 arrays, where D4Z4 arrays on the same chromosome are reported as a group.
+
 
 ```json
 {
