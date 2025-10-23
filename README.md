@@ -102,7 +102,7 @@ Similar to running KIV2.
 kivvi -b $WGS_BAM -o $OUTPUT_DIRECTORY -p $OUTPUT_PREFIX -r $GENOME_FASTA d4z4
 ```
 
-Kivvi can also take a bamlet of the region as input. Please extract `chr4:190022510-190093263 chr4:190173122-190175603 chr10:133622567-133685491 chr10:133740609-133761680` from the WGS BAM. 
+Kivvi can also take a bamlet of the region as input. Please extract `chr4:190022510-190093263 chr4:190173122-190185603 chr10:133622567-133685491 chr10:133740609-133768000` from the WGS BAM. 
 
 ### Output
 Similar to running KIV2.
