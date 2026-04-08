@@ -1,0 +1,14 @@
+DUX4p5:
+  realign_region: chr4:12510-55229
+  extract_regions: chr4:190022510-190065229 chr10:133622567-133664430
+  clip_5p_positions: [13009]
+  add_sites: ["54271_T_A", "54812_C_G", "54902_T_C", "54922_T_C", "54933_A_G", "54937_C_T", "54995_A_G", "55046_T_G", "55069_T_A", "55077_G_A"]
+  noisy_region: [[24843, 24911], [40262, 40319], [46807, 47097], [25455, 25537]]
+DUX4:
+  genes: DUX4
+  realign_region: chr4:165603-180000
+  extract_regions: chr4:190175603-190192666 chr10:133685491-133775186
+  use_r2k: True
+  use_supplementary: True
+  clip_3p_positions: [170284]
+  noisy_region: [[170280, 170290]]

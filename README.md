@@ -1,196 +1,95 @@
 # Kivvi: HiFi genotyper for large-unit variable number tandem repeat
 
-Kivvi is a HiFi-based tool that calls the copy number and sequence variants of large-unit variable number tandem repeats (VNTRs). With the large size of the full repeat and the highly polymorphic nature across individuals, these regions are challenging to resolve using currently available methods. Kivvi identifies unique copies of each repeat and assembles them into alleles. Kivvi has been applied to two medically important VNTRs.
+Kivvi is a HiFi-based tool that calls the copy number and sequence variants of large-unit variable number tandem repeats (VNTRs). With the large size of the full repeat and the highly polymorphic nature across individuals, these regions are challenging to resolve using currently available methods. Kivvi identifies unique copies of each repeat and assembles them into alleles. Kivvi has been applied to two medically important VNTRs and can be adapted to more large-unit VNTRs.
 - The LPA Kringle IV-type 2 (KIV2) repeat (repeat unit 5.5kb). A short KIV2 allele is associated with a higher risk of cardiovascular diseases.
-- The D4Z4 repeat (repeat unit 3.3kb). D4Z4 is involved in Facioscapulohumeral Muscular Dystrophy (FSHD). A contracted D4Z4 allele causes FSHD1 (Type 1) via ectopic expression of the DUX4 gene. FSHD2 (Type 2) is caused by hypomethylation of noncontracted D4Z4 alleles.
+- The D4Z4 repeat (repeat unit 3.3kb). D4Z4 is involved in [Facioscapulohumeral Muscular Dystrophy (FSHD)](https://www.ncbi.nlm.nih.gov/books/NBK1443/), which is caused by chromatin relaxation (hypomethylation) and/or contraction of D4Z4.
 
 # Table of Contents
-1. [LPA Kringle IV-type 2 (KIV2) repeat](#lpa-kringle-iv-type-2-kiv2-repeat)
-    - [Input](#input)
-    - [Running the program](#running-the-program)
-    - [Output](#output)
-    - [Examples and visualization](#examples-and-visualization)
-2. [D4Z4 repeat](#d4z4-repeat)
-    - [Running the program](#running-the-program-1)
-    - [Output](#output-1)
-    - [Examples and visualization](#examples-and-visualization-1)
 
+- [Contact](#contact)
+- [Installation](#installation)
+- [Input](#input)
+- [Running the program](#running-the-program)
+- [Output](#output)
+- [Demo and tutorials](#demo-and-tutorials)
 
-## LPA Kringle IV-type 2 (KIV2) repeat
+## Contact
 
-### Input 
-WGS bam (aligned to GRCh38)
+If you have suggestions or need assistance, please don't hesitate to reach out by email or open a GitHub issue.
 
-Note that the input data must be standard depth WGS (~30X or higher), with an average read length of 10kb or higher. Targeted data is not supported due to the shorter read length.
+Xiao Chen: xchen@pacificbiosciences.com
 
-Kivvi can also take a bamlet of the region as input. Please extract `chr6:160605000-160655000` from the WGS BAM. 
+## Installation
 
-### Running the program
-Kivvi requires a genome-aligned BAM, a FASTA file for the genome that the BAM is aligned to, an output directory and a prefix to output files.
+```bash
+# Specify the version
+VERSION="v1.0.0"
+# Download the release file
+wget https://github.com/PacificBiosciences/kivvi/releases/download/${VERSION}/kivvi-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+# Decompress the file
+tar -xzvf kivvi-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
+cd kivvi-${VERSION}-x86_64-unknown-linux-gnu
+# Check the md5 sum (optional)
+md5sum -c kivvi.md5
+# Execute help instructions
+./kivvi -h
+```
+
+## Input
+
+The input to Kivvi is a WGS bam (aligned to GRCh38). The WGS must be standard depth (20-30X or higher). Kivvi works better with higher coverage and longer reads. Targeted data is not supported due to the shorter read length.
+
+Kivvi can take a bamlet of the WGS bam as input. The region needed is (GRCh38):
+- KIV2: `chr6:160605000-160655000`.
+- D4Z4: `chr4:190022510-190093263 chr4:190173122-190192666 chr10:133622567-133685491 chr10:133740609-133775186`. 
+
+## Running the program
+
+Kivvi requires a genome-aligned BAM, a FASTA file for the genome that the BAM is aligned to, an output directory and a prefix to output files. The command ends in a preset (`kiv2` or `d4z4`) for specifying which target region to run. 
+
 ```bash
 kivvi -b $WGS_BAM -o $OUTPUT_DIRECTORY -p $OUTPUT_PREFIX -r $GENOME_FASTA kiv2
 ```
-
-Kivvi is single-threaded and generally takes less than 5 minutes per sample.
-
-### Output
-- `$prefix.kivvi.kiv2.json`: reports allele and variant information for each sample
-- `$prefix.kivvi.kiv2.bam`: all KIV2 reads realigned to one repeat unit on GRCh38 (`chr6:160613619-160619170`). Can be loaded into IGV to view different repeat copies. (Group by HP tag)
-- `$prefix.kivvi.kiv2.vcf`: small variants called on each assembled allele, reported using the genome coordinate of one copy of the repeat on GRCh38 (`chr6:160613619-160619170`).
-- `$prefix.kivvi.kiv2.svg`: reads plotted onto assembled alleles for visualization. (Only produced when at least one allele is assembled)
-
-### Examples and visualization
-
-Take sample HG03453 as an example. Raw WGS data can be downloaded from `s3://human-pangenomics/working/HPRC/HG03453/raw_data/PacBio_HiFi/`. A WGS BAM could be generated by aligning the HiFi reads against GRCh38. A bamlet of the region for this sample is available [here](example/HG03453_kiv2_extract.bam).
-
-After running Kivvi, the `.json` output file (an example is shown below) contains copy number calls in the `allele_cn` field. It reports the copy number of both alleles as `#/#` if both alleles are assembled. If only one allele is assembled, `allele_cn`  reports one number. It’s empty when zero allele is assembled. 
-
-Variants are reported in the JSON. Under `complete_allele_variants`, variants are reported per allele per repeat unit (`{unit index};{unit ID};{variant list}`). The `other_fingerprint_variants` field lists variants on any repeat units that are not assembled into complete alleles (`{unit ID};{variant list}`).
-
-```json
-{
-  "allele_cn": "14/23",
-  "complete_alleles": [
-    "LeftFlank-8-12-9-6-1-6-11-1-1-4-7-2-3-5-RightFlank",
-    "LeftFlank-15-14-32-31-13-28-20-29-24-30-19-18-16-17-16-26-25-21-25-24-19-27-23-RightFlank"
-  ],
-  "complete_allele_variants": {
-    "LeftFlank-15-14-32-31-13-28-20-29-24-30-19-18-16-17-16-26-25-21-25-24-19-27-23-RightFlank": [
-      "1;15;160613785:G>T,160613786:T>G,160614754:C>G,160614796:C>T,160614993:C>T,160615152:T>C,160615169:A>C,160615170:T>C,160615266:T>C,160615349:AGTTTGT>A,160615408:A>G,160615441:C>T,160615448:T>A,160615915:T>A,160616138:T>G,160616196:CCA>C,160616385:T>C,160616468:T>C,160616501:A>G,160616747:G>A,160617822:G>C,160618045:C>G,160618108:T>C,160618870:A>AT,160619051:T>C,160619144:G>A",
-      "2;14;160613785:G>T,160613786:T>G,160614754:C>G,160614796:C>T,160614993:C>T,160615152:T>C,160615169:A>C,160615170:T>C,160615266:T>C,160615349:AGTTTGT>A,160615408:A>G,160615448:T>A,160615915:T>A,160616196:CCA>C,160616421:T>G,160617358:A>G,160617822:G>C,160618045:C>G,160618858:T>G,160619051:T>C,160619144:G>A",
-      ...omitted...,
-    ],
-    "LeftFlank-8-12-9-6-1-6-11-1-1-4-7-2-3-5-RightFlank": [
-      "1;8;160614796:C>T,160615059:C>T,160615073:A>G,160615152:T>C,160615169:A>C,160615170:T>C,160615352:TTGTG>T,160615408:A>G,160615448:T>A,160615506:G>C,160615915:T>A,160616196:CCA>C,160617191:T>A,160617236:A>G,160617263:T>C,160617292:G>A,160617293:G>A,160617298:TC>T,160617302:G>A,160617318:C>A,160617322:G>A,160617323:A>C,160617328:C>T,160617343:G>A,160617379:C>A,160617384:C>A,160617390:T>C,160617396:T>C,160617398:C>T,160617399:A>G,160617414:T>G,160617424:G>A,160617430:C>A,160617436:A>T,160617440:C>G,160617445:G>C,160617447:A>T,160617458:C>A,160617462:T>A,160617484:T>A,160617502:C>A,160617503:A>AT,160617511:G>A,160617517:C>G,160617524:T>A,160617529:T>C,160617531:C>CCTT,160617536:T>C,160617539:G>C,160617546:A>C,160617555:G>A,160617570:G>T,160617586:C>G,160617592:G>A,160617597:C>G,160617603:C>T,160617618:G>A,160617621:C>A,160617644:G>A,160617653:T>G,160617654:T>A,160617655:T>G,160617660:C>A,160617691:C>T,160617716:T>C,160617725:G>A,160617745:G>A,160617752:G>A,160617766:A>G,160617787:G>A,160617807:G>C,160617826:A>G,160617836:C>T,160617861:T>C,160617869:T>G,160617872:G>A,160617882:C>A,160617883:T>C,160617916:T>C,160617938:T>C,160617969:G>A,160617988:C>T,160618000:G>A,160618021:G>A,160618025:C>T,160618033:C>T,160618041:C>A,160618045:C>G,160618061:G>A,160618085:C>T,160618087:C>T,160618088:A>G,160618089:G>A,160618112:T>A,160618117:A>C,160618142:G>A,160618156:G>C,160618157:C>G,160618158:T>A,160618159:T>C,160618160:G>A,160618167:G>A,160618169:G>C,160618185:T>C,160618207:G>A,160618208:G>A,160618218:G>A,160618225:G>A,160618231:C>G,160618234:C>G,160618235:A>G,160618242:A>G,160618245:T>G,160618251:T>C,160618253:G>C,160618257:C>A,160618265:G>A,160618279:C>T,160618296:A>C,160618300:C>A,160618340:G>A,160618354:T>C,160618357:T>A,160618364:T>C,160618372:A>C,160618973:T>C,160618976:G>A,160619144:G>A",
-      "2;12;160614796:C>T,160614993:C>T,160615073:A>G,160615152:T>C,160615169:A>C,160615170:T>C,160615335:A>C,160615352:TTGTGTG>T,160615408:A>G,160615448:T>A,160615506:G>C,160615915:T>A,160616196:CCA>C,160616342:A>G,160618964:C>A,160619144:G>A",
-      ...omitted...,
-    ],
-  }
-  "other_fingerprint_variants": [],
-}
-```
-
-The output `.bam` file can be loaded into IGV. Reads are grouped into unique KIV2 copies (which we term "fingerprints").
-
-![HG03453 IGV](docs/figures/HG03453_kiv2_bam.png)
-
-The output `.svg` file can visualize the assembled alleles and help check how well the alleles are supported by reads.
-
-The first row of each panel shows the allele, followed by reads that support the allele. The repeat number is labeled on the allele. Upstream and downstream flanks are shown by the teal rectangles. The bases of alleles and reads are plotted at positions that have variants within the repeat unit in a sample, i.e. only a subset of positions in the 5.5kb repeat unit are plotted. Variant bases are shown as black, reference bases are shown as yellow, and magenta represents other bases or missing information such as deleted bases or low base quality bases.
-
-In this sample, the first repeat copy of the first allele is rich in variants at plotted sites. This is fingerprint #8 in the `.bam` IGV image shown above, where we could see the cluster of mismatches towards the right half of the repeat unit. This cluster of variants marks a subtype of KIV2, which is often located in the first few repeat units of a KIV2 allele.
-
-![HG03453 svg](docs/figures/HG03453.kivvi.kiv2.svg)
-
-The figure below shows a second example, using a Platinum Pedigree sample NA12885.
-
-The red-underlined reads here mark non-uniquely supporting reads. All reads without the underline are uniquely supporting an allele. The two alleles in this sample share two fingerprints in the middle and another two fingerprints at the end, so there are some reads that are consistent with both alleles and they are randomly plotted in this plot.
-
-![NA12885 svg](docs/figures/NA12885.kivvi.kiv2.svg)
-
-
-
-## D4Z4 repeat
-
-The D4Z4 repeat exists on both chr4 and chr10, while a contracted D4Z4 allele is only pathogenic on a specific distal haplotype (qA, with intact PolyA site) on chr4 (and when hypomethylated). Kivvi collects D4Z4 reads from both chromosomes and assembles them, and determines the chromosome backgrounds of each assembled allele. D4Z4 alleles can be very long (1-100 copies, 3.3kb each). Longer alleles are difficult to assemble. Kivvi is designed to assemble most, if not all, of those short alleles which are the pathogenic ones (10 copies or less). As we expect 4 alleles in total (chr4 and chr10), Kivvi can report 0-4 alleles for a sample. If no alleles are assembled, it is likely that all alleles in the sample are long and thus not pathogenic.
-
-In addition to information output by the KIV2 module, for each assembled D4Z4 allele, Kivvi determines the methylation status and the chromosome/distal haplotype. 
-
-### Running the program
-Similar to running KIV2.
+Or
 ```bash
 kivvi -b $WGS_BAM -o $OUTPUT_DIRECTORY -p $OUTPUT_PREFIX -r $GENOME_FASTA d4z4
 ```
 
-Kivvi can also take a bamlet of the region as input. Please extract `chr4:190022510-190093263 chr4:190173122-190185603 chr10:133622567-133685491 chr10:133740609-133768000` from the WGS BAM. 
+Kivvi is single-threaded and generally takes less than 5 minutes per sample.
 
-### Output
-Similar to running KIV2.
-- `$prefix.kivvi.d4z4.json`: reports allele and variant information for each sample
-- `$prefix.kivvi.d4z4.bam`: all D4Z4 reads (from both chr4 and chr10) realigned to one repeat unit (the D4Z4 repeat is noisy on GRCh38, so a different [reference](data/d4z4/d4z4_ref.fa) is used). Can be loaded into IGV (using the provided [reference](data/d4z4/d4z4_ref.fa)) to view different repeat copies. (Group by HP tag)
-- `$prefix.kivvi.d4z4.vcf`: small variants called on each assembled allele, reported using coordinate on the provided [reference](data/d4z4/d4z4_ref.fa).
-- `$prefix.kivvi.d4z4.svg`: reads plotted onto assembled alleles for visualization. (Only produced when at least one allele is assembled)
+## Output
 
-In addition, Kivvi generates
-- `$prefix.kivvi.d4z4.methyl.svg`: reads plotted onto assembled alleles for visualization of the methylation level. Only produced when at least one allele is assembled. Kivvi uses a set of 101 pre-selected CpG sites in the D4Z4 repeat unit for methylation analysis. Only those sites are plotted.
+- `$prefix.kivvi.$target.json`: detailed report of alleles, variants and other information for each sample. See more detailed documentation [here](docs/json.md).
+- `$prefix.kivvi.$target.svg`: reads plotted onto assembled alleles for visualization. (Only produced when at least one allele is assembled).
+- `$prefix.kivvi.$target.bam`: all reads realigned to one repeat unit. Can be loaded into IGV to view different repeat copies. (Group by HP tag).
+- `$prefix.kivvi.$target.vcf`: small variant calls. See more detailed documentation [here](docs/vcf.md). 
 
-### Examples and visualization
+For KIV2, the reference used for read alignment (BAM) and variant calling (VCF) is one copy of the repeat on GRCh38 (`chr6:160613619-160619170`). Please navigate to this region for visualizing the Kivvi produced BAM and VCF files. 
 
-Take the same sample HG03453 as an example. A bamlet of the region for this sample is available [here](example/HG03453_d4z4_extract.bam).
+For D4Z4, as the region is noisy on GRCh38, a different [reference](data/d4z4/d4z4_ref.fa) is used for read alignment (BAM) and variant calling (VCF) and can be loaded into IGV as the reference for visualizing the Kivvi produced BAM and VCF files. 
 
-Kivvi assembles three alleles (the remaining allele is too long to be assembled accurately. Note that long alleles are not medically relevant).
+## Demo and tutorials
 
-Assembled alleles
+Tutorials are available for understanding Kivvi output files:
+- [JSON](docs/json.md)
+- [Visualization (BAM/SVG)](docs/visualization.md)
+- [VCF](docs/vcf.md)
 
-![HG03453 d4z4 svg](docs/figures/HG03453.kivvi.d4z4.svg)
+In these tutorials, Sample HG03453 is used as an example. A bamlet of the KIV2 region for this sample is available [here](example/HG03453_kiv2_extract.bam). A bamlet of the D4Z4 region for this sample is available [here](example/HG03453_d4z4_extract.bam). Note that a warning of `Genome depth is unavailable` is expected when running Kivvi with these two bamlets, as these are not full WGS bams.
 
-The JSON file (example shown below) reports the copy number of assembled alleles with `allele_cn` (comma separated). 
-
-In the JSON, the `allele_background` field reports three sets of information:
-- The chromosome and distal haplotype for each complete allele (`complete_alleles`), in the format of `x-y` (`x` can be `qAIntactPolyA`, or `qADisruptedPolyA` or `qB`, and `y` can be `chr4` or `chr10`). `qAIntactPolyA-chr4` alleles with a copy number of 10 or less and with a low methylation level are candidates for pathogenic alleles. Studies have shown that carriers of 1-6 D4Z4 units are more severely affected, whereas carriers of a 7-10 unit allele may show more clinical variability and non-penetrance. 
-- The distal haplotype for all allele ends (`all_allele_ends`), i.e. the ends (up to five D4Z4 units before the repeat end) of all D4Z4 alleles, including partially assembled alleles. 
-- The chromosome for all allele starts (`all_allele_starts`), i.e. the starts (up to five D4Z4 units after the repeat start) of all D4Z4 alleles, including partially assembled alleles. 
-
-In the `methylation` field of the JSON, Kivvi reports the methylation levels of complete alleles (`complete_alleles`), as well as the ends of all alleles (`all_allele_ends`), which can be used to indicate FSHD2, where alleles may be long and unassembled but with low methylation. 
-- The `median_methylation_per_unit` field reports the median methylation level of each repeat unit on each allele (each repeat unit has a value). 
-- The `methylation_per_site` reports the methylation level of each CpG site (which is the median of values across supporting reads overlapping the CpG site) on each allele. Kivvi uses a set of 101 pre-selected CpG sites in the D4Z4 repeat unit for methylation analysis, so there are `repeat copy number * 101` values reported for each allele.
-
-The `d4z4_arrays_in_cis` field of the JSON provides calls of in-cis duplications of D4Z4 arrays, where D4Z4 arrays on the same chromosome are reported as a group.
-
-
-```json
-{
-  "allele_cn": "28,56,35",
-  "complete_alleles": [
-    "LeftFlank-1-8-8-7-3-4-6-8-5-5-10-13-13-12-11-12-9-12-17-8-8-12-14-15-18-14-14-16-RightFlank",
-    "LeftFlank-51-46-74-47-30-42-34-35-34-34-30-31-34-30-30-34-30-56-54-34-43-32-30-52-53-30-55-52-30-52-49-55-49-55-53-56-54-30-50-52-30-30-52-41-30-30-34-33-52-52-52-53-52-30-30-48-RightFlank",
-    "LeftFlank-29-68-65-65-70-71-26-64-24-25-72-27-75-2-67-69-66-63-28-57-73-58-58-59-20-19-20-21-21-19-21-22-21-21-23-RightFlank"
-  ],
-  "allele_background": {
-    "all_allele_ends": {
-      "15-18-14-14-16-RightFlank": "qAIntactPolyA",
-      "21-22-21-21-23-RightFlank": "qAIntactPolyA",
-      "37-62-34-34-61-RightFlank": "qADisruptedPolyA",
-      "53-52-30-30-48-RightFlank": "qADisruptedPolyA"
-    },
-    "all_allele_starts": {
-      "LeftFlank-1-8-8-7-3": "chr4",
-      "LeftFlank-29-68-65-65-70": "chr4",
-      "LeftFlank-51-46-74-47-30": "chr10"
-    },
-    "complete_alleles": {
-      "LeftFlank-1-8-8-7-3-4-6-8-5-5-10-13-13-12-11-12-9-12-17-8-8-12-14-15-18-14-14-16-RightFlank": "qAIntactPolyA-chr4",
-      "LeftFlank-29-68-65-65-70-71-26-64-24-25-72-27-75-2-67-69-66-63-28-57-73-58-58-59-20-19-20-21-21-19-21-22-21-21-23-RightFlank": "qAIntactPolyA-chr4",
-      "LeftFlank-51-46-74-47-30-42-34-35-34-34-30-31-34-30-30-34-30-56-54-34-43-32-30-52-53-30-55-52-30-52-49-55-49-55-53-56-54-30-50-52-30-30-52-41-30-30-34-33-52-52-52-53-52-30-30-48-RightFlank": "qADisruptedPolyA-chr10"
-    }
-  },
-  "methylation": {
-    "all_allele_ends": {
-      "median_methylation_per_unit": {
-        "15-18-14-14-16-RightFlank": "0.886,0.867,0.882,0.875,0.898",
-        "21-22-21-21-23-RightFlank": "0.878,0.878,0.902,0.929,0.941",
-        "37-62-34-34-61-RightFlank": "0.886,0.859,0.902,0.902,0.929",
-        "53-52-30-30-48-RightFlank": "0.914,0.878,0.878,0.898,0.922"
-      },
-      "methylation_per_site": {
-        "15-18-14-14-16-RightFlank": "0.796,0.937,0.91,...omitted...,0.855,0.949,0.933",
-        "21-22-21-21-23-RightFlank": "0.522,0.875,0.973,...omitted...,0.863,0.941,0.89",
-        "37-62-34-34-61-RightFlank": "0.494,0.978,0.992,...omitted...,0.8,0.929,0.808",
-        "53-52-30-30-48-RightFlank": "0.6,0.943,0.935,...omitted...,0.969,0.871,0.969"
-        }
-    },
-    "complete_alleles": {
-      "median_methylation_per_unit": {
-        "LeftFlank-1-8-8-7-3-4-6-8-5-5-10-13-13-12-11-12-9-12-17-8-8-12-14-15-18-14-14-16-RightFlank": "0.667,0.816,0.78,0.867,0.851,0.847,0.863,0.843,0.875,0.863,0.875,0.845,0.818,0.863,0.871,0.839,0.839,0.835,0.835,0.867,0.816,0.816,0.851,0.851,0.859,0.882,0.875,0.898",
-        "LeftFlank-29-68-65-65-70-71-26-64-24-25-72-27-75-2-67-69-66-63-28-57-73-58-58-59-20-19-20-21-21-19-21-22-21-21-23-RightFlank": "0.886,0.886,0.867,0.863,0.839,0.876,0.863,0.875,0.847,0.851,0.847,0.867,0.867,0.847,0.878,0.875,0.89,0.859,0.855,0.831,0.808,0.847,0.859,0.878,0.875,0.894,0.89,0.898,0.863,0.851,0.878,0.875,0.898,0.929,0.941",
-        "LeftFlank-51-46-74-47-30-42-34-35-34-34-30-31-34-30-30-34-30-56-54-34-43-32-30-52-53-30-55-52-30-52-49-55-49-55-53-56-54-30-50-52-30-30-52-41-30-30-34-33-52-52-52-53-52-30-30-48-RightFlank": "0.867,0.851,0.867,0.859,0.851,0.878,0.851,0.89,0.894,0.875,0.859,0.859,0.855,0.82,0.871,0.863,0.859,0.839,0.878,0.886,0.882,0.878,0.812,0.906,0.894,0.882,0.867,0.875,0.851,0.898,0.882,0.894,0.886,0.851,0.89,0.898,0.882,0.863,0.89,0.91,0.847,0.886,0.867,0.869,0.875,0.882,0.906,0.871,0.878,0.906,0.871,0.902,0.871,0.878,0.898,0.922"
-      },
-      "methylation_per_site": {
-        "LeftFlank-1-8-8-7-3-4-6-8-5-5-10-13-13-12-11-12-9-12-17-8-8-12-14-15-18-14-14-16-RightFlank": "0.667,0.957,0.224,...omitted...,0.855,0.949,0.933",
-        "LeftFlank-29-68-65-65-70-71-26-64-24-25-72-27-75-2-67-69-66-63-28-57-73-58-58-59-20-19-20-21-21-19-21-22-21-21-23-RightFlank": "0.455,0.929,0.969,...omitted...,0.863,0.941,0.89",
-        "LeftFlank-51-46-74-47-30-42-34-35-34-34-30-31-34-30-30-34-30-56-54-34-43-32-30-52-53-30-55-52-30-52-49-55-49-55-53-56-54-30-50-52-30-30-52-41-30-30-34-33-52-52-52-53-52-30-30-48-RightFlank": "0.484,0.949,0.643,...omitted...,0.969,0.871,0.969"
-        }
-    }
-  },
-}
+```bash
+# Download human GRCh38 if you don't have one
+wget https://downloads.pacbcloud.com/public/reference-genomes/human_GRCh38_no_alt_analysis_set.tar.2023-12-04.gz
+tar -xpvf human_GRCh38_no_alt_analysis_set.tar.2023-12-04.gz
+# Download the demo data for KIV2
+wget https://github.com/PacificBiosciences/kivvi/blob/main/example/HG03453_kiv2_extract.bam
+wget https://github.com/PacificBiosciences/kivvi/blob/main/example/HG03453_kiv2_extract.bam.bai
+# Run Kivvi for KIV2
+kivvi -b HG03453_kiv2_extract.bam -o ./kiv2_output/ -p HG03453 -r human_GRCh38_no_alt_analysis_set.fasta kiv2
+# Download the demo data for D4Z4
+wget https://github.com/PacificBiosciences/kivvi/blob/main/example/HG03453_d4z4_extract.bam
+wget https://github.com/PacificBiosciences/kivvi/blob/main/example/HG03453_d4z4_extract.bam.bai
+# Run Kivvi for D4Z4
+kivvi -b HG03453_d4z4_extract.bam -o ./d4z4_output/ -p HG03453 -r human_GRCh38_no_alt_analysis_set.fasta d4z4
 ```
+
