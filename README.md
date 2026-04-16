@@ -4,6 +4,8 @@ Kivvi is a HiFi-based tool that calls the copy number and sequence variants of l
 - The LPA Kringle IV-type 2 (KIV2) repeat (repeat unit 5.5kb). A short KIV2 allele is associated with a higher risk of cardiovascular diseases.
 - The D4Z4 repeat (repeat unit 3.3kb). D4Z4 is involved in [Facioscapulohumeral Muscular Dystrophy (FSHD)](https://www.ncbi.nlm.nih.gov/books/NBK1443/), which is caused by chromatin relaxation (hypomethylation) and/or contraction of D4Z4.
 
+For more details about Kivvi, please check out our latest [preprint](https://www.biorxiv.org/content/10.64898/2026.04.10.717730) on D4Z4.
+
 # Table of Contents
 
 - [Contact](#contact)

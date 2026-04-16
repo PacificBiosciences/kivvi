@@ -37,7 +37,7 @@ D4Z4 alleles can be very long (1-100 copies, 3.3kb each). Longer alleles are dif
 The most important field to check for D4Z4 is the `allele_info` field:
 - `allele_info`: reports all alleles, including partially assembled alleles. For each allele, it reports the size (a lower bound if partially assembled), originating chromosome, distal haplotype (status of polyA signal) and methylation level.
   - allele_name: alleles represented as an ordered list of repeat unit IDs.
-  - chromosome: chromsome 4 or chromosome 10, followed by assignment of upstream haplotype groups, which are discussed in our preprint (link available soon). The upstream haplotype group provides extra information since `chr4:Group2.1` indicates the 4A166 haplotype, which is not pathogenic when contracted.
+  - chromosome: chromsome 4 or chromosome 10, followed by assignment of upstream haplotype groups, which are discussed in our [preprint](https://www.biorxiv.org/content/10.64898/2026.04.10.717730). The upstream haplotype group provides extra information since `chr4:Group2.1` indicates the 4A166 haplotype, which is not pathogenic when contracted.
   - distal_haplotype: `qAIntactPolyA`, or `qADisruptedPolyA` or `qB`.
   - allele_type: `assembled`, `partial`, `merged` (two partial alleles merged into one) or `assembled_cis_duplication` (in-cis duplications).
   - allele_size: exact or lower bound (for partial or merged alleles)
