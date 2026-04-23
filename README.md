@@ -84,13 +84,13 @@ In these tutorials, Sample HG03453 is used as an example. A bamlet of the KIV2 r
 wget https://downloads.pacbcloud.com/public/reference-genomes/human_GRCh38_no_alt_analysis_set.tar.2023-12-04.gz
 tar -xpvf human_GRCh38_no_alt_analysis_set.tar.2023-12-04.gz
 # Download the demo data for KIV2
-wget https://github.com/PacificBiosciences/kivvi/blob/main/example/HG03453_kiv2_extract.bam
-wget https://github.com/PacificBiosciences/kivvi/blob/main/example/HG03453_kiv2_extract.bam.bai
+wget https://raw.githubusercontent.com/PacificBiosciences/kivvi/main/example/HG03453_kiv2_extract.bam
+wget https://raw.githubusercontent.com/PacificBiosciences/kivvi/main/example/HG03453_kiv2_extract.bam.bai
 # Run Kivvi for KIV2
 kivvi -b HG03453_kiv2_extract.bam -o ./kiv2_output/ -p HG03453 -r human_GRCh38_no_alt_analysis_set.fasta kiv2
 # Download the demo data for D4Z4
-wget https://github.com/PacificBiosciences/kivvi/blob/main/example/HG03453_d4z4_extract.bam
-wget https://github.com/PacificBiosciences/kivvi/blob/main/example/HG03453_d4z4_extract.bam.bai
+wget https://raw.githubusercontent.com/PacificBiosciences/kivvi/main/example/HG03453_d4z4_extract.bam
+wget https://raw.githubusercontent.com/PacificBiosciences/kivvi/main/example/HG03453_d4z4_extract.bam.bai
 # Run Kivvi for D4Z4
 kivvi -b HG03453_d4z4_extract.bam -o ./d4z4_output/ -p HG03453 -r human_GRCh38_no_alt_analysis_set.fasta d4z4
 ```
