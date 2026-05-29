@@ -1,5 +1,5 @@
 use crate::methylation::{get_methyl_prob, get_methyl_tags};
-use crate::util::{DError, DResult, FlankReads, RegionCoordinates};
+use crate::util::{append_kivvi_pg_header, DError, DResult, FlankReads, RegionCoordinates};
 use log::{debug, trace, warn};
 use minimap2::Built;
 use minimap2::{ffi, Aligner};
@@ -12,7 +12,6 @@ use rust_htslib::bam::{
 use rust_htslib::faidx;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
-use std::env;
 use std::path::PathBuf;
 
 /// Realign reads to repeat unit and filter alignments
@@ -60,6 +59,7 @@ pub fn realign(
 
     let mut header = Header::new();
     aligner.populate_header(&mut header);
+    append_kivvi_pg_header(&mut header);
     let header_view = HeaderView::from_header(&header);
     let writer = Writer::from_path(&realigned_bam, &header, Format::Bam)?;
     let regions = region_coordinates.extract_regions;
@@ -685,19 +685,12 @@ pub fn tag_reads(
 ) -> DResult {
     let ref_reader = faidx::Reader::from_path(reference)?;
     let mut header = bam::Header::new();
-    let args: Vec<String> = env::args().collect();
-    let command_line = args.join(" ");
     let chr_name = region_coordinates.chromosome_output;
     let mut record = HeaderRecord::new(b"SQ");
     record.push_tag(b"SN", chr_name.clone());
     record.push_tag(b"LN", region_coordinates.chromosome_len);
     header.push_record(&record);
-    let mut record = HeaderRecord::new(b"PG");
-    record.push_tag(b"ID", env!("CARGO_PKG_NAME"));
-    record.push_tag(b"PN", env!("CARGO_PKG_NAME"));
-    record.push_tag(b"CL", command_line);
-    record.push_tag(b"VN", env!("CARGO_PKG_VERSION"));
-    header.push_record(&record);
+    append_kivvi_pg_header(&mut header);
 
     let mut writer = Writer::from_path(&realigned_bam, &header, Format::Bam)?;
     for mut record in repeat_records {

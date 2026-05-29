@@ -8,6 +8,9 @@ edition = "2021"
 [workspace]
 members = ["crates/paraphase"]
 
+[build-dependencies]
+vergen = { version = "8.2.4", features = ["git", "gitcl"] }
+
 [dependencies]
 clap = { version = "=4.0", features = ["derive"] }
 chrono = "0.4.24"
@@ -33,4 +36,3 @@ rustc-hash = "1.1.0"
 strum_macros = "0.27.1"
 thiserror = "1.0.56"
 paraphase = { path = "crates/paraphase" }
-

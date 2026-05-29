@@ -1,11 +1,41 @@
 use crate::realignment::utilities::Variant;
 use log::debug;
+use rust_htslib::bam;
+use rust_htslib::bam::header::HeaderRecord;
 use std::collections::{BTreeMap, HashSet};
 use std::str;
 
 pub type DError = std::boxed::Box<dyn std::error::Error>;
 pub type DResult = Result<(), DError>;
 pub type Exception = simple_error::SimpleError;
+
+lazy_static::lazy_static! {
+    pub static ref GIT_DESCRIBE: String = option_env!("VERGEN_GIT_DESCRIBE")
+        .unwrap_or("unknown")
+        .to_string();
+    pub static ref FULL_VERSION: String = env!("CARGO_PKG_VERSION").to_string();
+    pub static ref FULL_VERSION_PROGRAM: String =
+        format!("{}-{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    pub static ref CLI_COMMAND: String = std::env::args().collect::<Vec<_>>().join(" ");
+}
+
+/// Append this Kivvi invocation metadata as a `@PG` record.
+pub fn append_kivvi_pg_header(header: &mut bam::Header) {
+    let mut pg = HeaderRecord::new(b"PG");
+    pg.push_tag(b"ID", env!("CARGO_PKG_NAME"));
+    pg.push_tag(b"PN", env!("CARGO_PKG_NAME"));
+    pg.push_tag(b"VN", &FULL_VERSION[..]);
+    pg.push_tag(b"CL", &CLI_COMMAND[..]);
+    header.push_record(&pg);
+}
+
+#[must_use]
+/// Build a BAM header with `@PG` metadata for this Kivvi invocation.
+pub fn output_bam_header(template: &bam::HeaderView) -> bam::Header {
+    let mut header = bam::Header::from_template(template);
+    append_kivvi_pg_header(&mut header);
+    header
+}
 
 /// For storing starting and ending reads
 #[derive(Clone, Debug)]

@@ -1,4 +1,4 @@
-use crate::util::{DError, DResult, RegionCoordinates};
+use crate::util::{DError, DResult, RegionCoordinates, FULL_VERSION};
 use crate::variant::VariantInfoByVariant;
 use itertools::Itertools;
 use rust_htslib::bcf::{self, record::GenotypeAllele, Format};
@@ -62,6 +62,8 @@ pub fn write_vcf(
     let command_line = args.join(" ");
     let line = format!("##{}Command={}", env!("CARGO_PKG_NAME"), command_line);
     vcf_header.push_record(line.as_bytes());
+    let version_line = format!("##{}Version={}", env!("CARGO_PKG_NAME"), &*FULL_VERSION);
+    vcf_header.push_record(version_line.as_bytes());
     //vcf_header.push_sample(sample_name.as_bytes());
     for i in 0..allele_len {
         let allele_name = format!("allele{}", i + 1);
