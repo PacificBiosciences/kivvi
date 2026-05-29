@@ -602,8 +602,8 @@ fn parse_meth_tags(mm_tag: Aux, ml_tag: Aux) -> Option<MethInfo> {
 /// * `rec` - A reference to the BAM record.
 ///
 /// # Returns
-/// Returns an `Option<Aux>` which is `Some` if the MM tag is present, otherwise `None`.
-fn get_mm_tag(rec: &Record) -> Option<Aux> {
+/// Returns an `Option<Aux<'_>>` which is `Some` if the MM tag is present, otherwise `None`.
+fn get_mm_tag(rec: &Record) -> Option<Aux<'_>> {
     rec.aux(b"MM").or_else(|_| rec.aux(b"Mm")).ok()
 }
 
@@ -613,7 +613,7 @@ fn get_mm_tag(rec: &Record) -> Option<Aux> {
 /// * `rec` - A reference to the BAM record.
 ///
 /// # Returns
-/// Returns an `Option<Aux>` which is `Some` if the ML tag is present, otherwise `None`.
-fn get_ml_tag(rec: &Record) -> Option<Aux> {
+/// Returns an `Option<Aux<'_>>` which is `Some` if the ML tag is present, otherwise `None`.
+fn get_ml_tag(rec: &Record) -> Option<Aux<'_>> {
     rec.aux(b"ML").or_else(|_| rec.aux(b"Ml")).ok()
 }

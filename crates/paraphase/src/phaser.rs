@@ -2049,7 +2049,7 @@ impl Phaser {
             None,
             &hom_sites_to_add,
         )?;
-        let mut phase_results: PhasedResult;
+        let phase_results: PhasedResult;
         let known_del: BTreeMap<char, String>;
         match self.update_indel_and_phase(init_read_hap_map.clone(), &mut call) {
             Ok(results) => {

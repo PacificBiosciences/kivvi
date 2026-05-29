@@ -448,7 +448,7 @@ impl WFAGraph {
             // trace!("WFAGraph ed={} start: farthest_progression = {}, set_len = {}", edit_distance, farthest_progression, index_to_treeset.len());
 
             // we can iterate over our nodes in order because they are DAGs entered in order
-            let mut wavefronts_scanned = 0;
+            let mut _wavefronts_scanned = 0;
             for (node_index, node) in self.nodes.iter().enumerate() {
                 /*
                  * Outline of this core extension loop:
@@ -495,7 +495,7 @@ impl WFAGraph {
                 // `offset` (below) represents the offset into the current node we are comparing currently
                 // if `other_start` is negative, then the corresponding `offset` values must be positive enough to overcome it (e.g. >= 0 when added)
                 for (other_start, vec_waves) in wavefront.iter_mut() {
-                    wavefronts_scanned += 1;
+                    _wavefronts_scanned += 1;
 
                     // first extend all wavefronts as far as possible, tracking the farthest
                     let mut max_offset: usize = 0;
@@ -714,7 +714,7 @@ impl WFAGraph {
             trace!(
                 "edit_distance => {}, wave_fronts scanned => {}, active_indices={}..{}",
                 edit_distance,
-                wavefronts_scanned,
+                _wavefronts_scanned,
                 min_active_wavefront,
                 max_active_wavefront
             );
