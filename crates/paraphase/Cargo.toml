@@ -3,9 +3,8 @@ name = "paraphase"
 version = "0.2.0"
 edition = "2021"
 authors = ["Xiao Chen, <xchen@pacificbiosciences.com>", "Daniel N. Baker <dbaker@pacificbiosciences.com>"]
-keywords = ["phasing", "assembly", "homology"]
-description = "Tools for homology resolution and sequence phasing, based on paraphase"
-categories = ["science", "algorithms", "config", "command-line-utilities"]
+description = "Paraphase: HiFi-based caller for highly similar paralogous genes"
+license-file = "../../LICENSE.md"
 
 [dependencies]
 env_logger = "0.10.1"
