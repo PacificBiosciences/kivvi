@@ -538,7 +538,12 @@ pub fn get_start_end_d4z4(
 
     bam_reader
         .fetch((&ref_name, 1, (region_coordinates.repeat_len as i64)))
-        .map_err(|e| format!("Failed to fetch region {ref_name}:1-{}: {e}", region_coordinates.repeat_len))?;
+        .map_err(|e| {
+            format!(
+                "Failed to fetch region {ref_name}:1-{}: {e}",
+                region_coordinates.repeat_len
+            )
+        })?;
     for read in bam_reader.records() {
         let record = read?;
         let record_cigar = record.cigar();

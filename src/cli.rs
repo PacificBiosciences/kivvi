@@ -1,12 +1,12 @@
-use clap::{Parser, ArgGroup, Subcommand};
 use chrono::Datelike;
+use clap::{ArgGroup, Parser, Subcommand};
+use log::{error, info};
 use std::path::PathBuf;
-use log::{info, error};
 
 #[derive(Parser)]
-#[clap(author, 
+#[clap(author,
     version = env!("CARGO_PKG_VERSION"),
-    about, 
+    about,
     after_help = format!("Copyright (C) 2004-{}     Pacific Biosciences of California, Inc.
 This program comes with ABSOLUTELY NO WARRANTY; it is intended for
 Research Use Only and not for use in diagnostic procedures.", chrono::Utc::now().year()))]
@@ -62,7 +62,7 @@ pub struct Settings {
     #[clap(hide = true)]
     #[clap(help = "If specified, will not run paraphase to phase up/downstream regions")]
     pub nopp: bool,
-  
+
     /// Enable verbose output
     #[clap(short = 'v')]
     #[clap(long = "verbose")]
@@ -96,11 +96,13 @@ pub fn get_raw_settings() -> Settings {
 /// Checks if required files exist
 pub fn check_settings(settings: Settings) -> Settings {
     if !&settings.bam_filename.exists() {
-        error!("Alignment file does not exist: \"{}\"", &settings.bam_filename.display());
+        error!(
+            "Alignment file does not exist: \"{}\"",
+            &settings.bam_filename.display()
+        );
         std::process::exit(1);
     } else {
         info!("Alignment file: \"{}\"", &settings.bam_filename.display());
     }
     settings
 }
-

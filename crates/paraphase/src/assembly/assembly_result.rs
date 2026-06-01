@@ -66,22 +66,32 @@ impl fmt::Debug for AssembledPaths {
 impl AssembledPaths {
     /// Empty multiset
     #[must_use]
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Build `AssembledPaths` from a `BTreeSet`
     #[must_use]
-    pub fn from_set(x: BTreeSet<VString>) -> Self { Self { paths: x } }
+    pub fn from_set(x: BTreeSet<VString>) -> Self {
+        Self { paths: x }
+    }
 
     /// Iterate over the keys
-    pub fn path_iter(&self) -> impl Iterator<Item = &VString> { self.paths.iter() }
+    pub fn path_iter(&self) -> impl Iterator<Item = &VString> {
+        self.paths.iter()
+    }
 
     /// Get a reference to inner `BTreeSet<VString>`
     #[must_use]
-    pub fn inner(&self) -> &BTreeSet<VString> { &self.paths }
+    pub fn inner(&self) -> &BTreeSet<VString> {
+        &self.paths
+    }
 
     /// Extract only the `BTreeSet` from `AssembledPaths`
     #[must_use]
-    pub fn into_inner(self) -> BTreeSet<VString> { self.paths }
+    pub fn into_inner(self) -> BTreeSet<VString> {
+        self.paths
+    }
 
     /// Generate from a set of items which can be converted into `VString`.
     /// `Vec<u8>`, `&[u8]`, `&str`, `String`, `VStr`, and `VString` all support this.
@@ -99,19 +109,27 @@ impl AssembledPaths {
 }
 impl std::ops::Deref for AssembledPaths {
     type Target = BTreeSet<VString>;
-    fn deref(&self) -> &Self::Target { &self.paths }
+    fn deref(&self) -> &Self::Target {
+        &self.paths
+    }
 }
 
 impl std::ops::DerefMut for AssembledPaths {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.paths }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.paths
+    }
 }
 
 impl std::ops::Index<usize> for AssembledPaths {
     type Output = VString;
-    fn index(&self, x: usize) -> &Self::Output { self.iter().nth(x).unwrap() }
+    fn index(&self, x: usize) -> &Self::Output {
+        self.iter().nth(x).unwrap()
+    }
 }
 
 impl std::ops::Index<&[u8]> for AssembledPaths {
     type Output = VString;
-    fn index(&self, x: &[u8]) -> &Self::Output { self.iter().find(|seq| &seq[..] == x).unwrap() }
+    fn index(&self, x: &[u8]) -> &Self::Output {
+        self.iter().find(|seq| &seq[..] == x).unwrap()
+    }
 }

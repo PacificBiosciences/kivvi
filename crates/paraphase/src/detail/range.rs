@@ -11,13 +11,17 @@ impl<
             + std::default::Default,
     > std::default::Default for Range<T>
 {
-    fn default() -> Self { Self::new(T::default(), T::default()) }
+    fn default() -> Self {
+        Self::new(T::default(), T::default())
+    }
 }
 
 impl<T: std::cmp::Eq + std::cmp::Ord + std::marker::Copy + std::fmt::Display> std::ops::DerefMut
     for Range<T>
 {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.inner }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
 }
 
 impl<
@@ -61,7 +65,9 @@ impl<T: std::cmp::Eq + std::cmp::Ord + std::marker::Copy + std::fmt::Display> st
     for Range<T>
 {
     type Target = std::ops::Range<T>;
-    fn deref(&self) -> &Self::Target { &self.inner }
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 impl<T: std::cmp::Ord + std::marker::Copy + std::fmt::Display> std::cmp::Eq for Range<T> {}
@@ -99,13 +105,17 @@ impl<T: std::cmp::Eq + std::cmp::Ord + std::marker::Copy + std::fmt::Display> st
 impl<T: std::cmp::Eq + std::cmp::Ord + std::marker::Copy + std::fmt::Display>
     std::convert::From<(T, T)> for Range<T>
 {
-    fn from(x: (T, T)) -> Range<T> { Range::new(x.0, x.1) }
+    fn from(x: (T, T)) -> Range<T> {
+        Range::new(x.0, x.1)
+    }
 }
 
 impl<T: std::cmp::Eq + std::cmp::Ord + std::marker::Copy + std::fmt::Display>
     std::convert::From<&(T, T)> for Range<T>
 {
-    fn from(x: &(T, T)) -> Range<T> { Range::new(x.0, x.1) }
+    fn from(x: &(T, T)) -> Range<T> {
+        Range::new(x.0, x.1)
+    }
 }
 
 pub type I64 = Range<i64>;
