@@ -1,9 +1,13 @@
 [package]
 name = "kivvi"
 version = "1.0.0"
-authors = ["Xiao Chen <xchen@pacificbiosciences.com>"]
-description = "Kivvi: KIV2/D4Z4 genotyper using HiFi WGS data"
 edition = "2021"
+build = "build.rs"
+default-run = "kivvi"
+license-file = "LICENSE.md"
+authors = ["Xiao Chen <xchen@pacificbiosciences.com>"]
+repository = "https://github.com/PacificBiosciences/kivvi"
+description = "Kivvi: KIV2/D4Z4 genotyper using HiFi WGS data"
 
 [workspace]
 members = ["crates/paraphase"]

@@ -91,28 +91,13 @@ pub fn percentile_i32(x: &[i32], percentile: i32) -> f64 {
     // let n_mul = (len as i32 - 1) as f64;
     let n_mul = f64::from(len as i32 - ALPHA - BETA + 1);
 
-    #[cfg(feature = "nightly")]
-    let virtual_index = fma::fma(percentile, n_mul, ALPHA as f64);
-
-    #[cfg(not(feature = "nightly"))]
     let virtual_index = percentile * n_mul + f64::from(ALPHA);
 
     let accessed_index = (virtual_index as usize) - 1;
     let fract = virtual_index.fract();
     let accessed_val = f64::from(copied[accessed_index]);
     if fract != 0.0 {
-        #[cfg(feature = "nightly")]
-        {
-            fma::fma(
-                accessed_val,
-                1. - fract,
-                copied[accessed_index + 1] as f64 * fract,
-            )
-        }
-        #[cfg(not(feature = "nightly"))]
-        {
-            accessed_val * (1. - fract) + f64::from(copied[accessed_index + 1]) * fract
-        }
+        accessed_val * (1. - fract) + f64::from(copied[accessed_index + 1]) * fract
         // Convex combination
         // Equivalent to: accessed_val * (1. - fract) + copied[accessed_index + 1] as f64 * fract
         // but better precision

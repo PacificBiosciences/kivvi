@@ -1377,7 +1377,6 @@ mod tests {
     };
 
     use crate::detail::range::I64 as Range64;
-    use assertables::{assert_lt, assert_lt_as_result};
     use itertools::Itertools;
     use rust_htslib::bam::record::{Cigar, CigarString, Record};
     use rust_htslib::bam::Read;
@@ -1742,7 +1741,10 @@ mod tests {
             .iter()
             .filter(|(k, v)| v != &read_to_hap.get(&k[..]).unwrap())
             .count();
-        assert_lt!(num_mismatches, 51, "We have some differences due to alignments. This assert ensures this does not regress. Nunber of read differences: {num_mismatches}");
+        assert!(
+            num_mismatches < 51,
+            "We have some differences due to alignments. This assert ensures this does not regress. Nunber of read differences: {num_mismatches}"
+        );
         /*
         assert_eq!(
             call.read_details, read_to_hap,
