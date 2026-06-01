@@ -349,18 +349,58 @@ pub fn seq_name_pairs(
     path: &std::path::Path,
     uppercase: bool,
 ) -> Result<Vec<(VString, VString)>, DError> {
-    use needletail::Sequence;
-    let mut file = needletail::parse_fastx_file(path)?;
-    let mut ret = Vec::with_capacity(8);
-    while let Some(record) = file.next() {
-        let record = record?;
-        let mut sequence = VString::from(&record.sequence().strip_returns()[..]);
-        if uppercase {
-            sequence.make_ascii_uppercase();
-        }
-        let name = VString::from(record.id());
-        ret.push((name, sequence));
+    let content = std::fs::read(path)?;
+    if content.is_empty() {
+        return Ok(Vec::new());
     }
+
+    let text = String::from_utf8(content)?;
+    let mut lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .peekable();
+
+    let mut ret = Vec::with_capacity(8);
+    while let Some(line) = lines.next() {
+        if let Some(name) = line.strip_prefix('>') {
+            let mut seq = Vec::<u8>::new();
+            while let Some(next_line) = lines.peek().copied() {
+                if next_line.starts_with('>') || next_line.starts_with('@') {
+                    break;
+                }
+                seq.extend_from_slice(lines.next().expect("peeked line missing").as_bytes());
+            }
+
+            let mut sequence = VString::from(seq);
+            if uppercase {
+                sequence.make_ascii_uppercase();
+            }
+            ret.push((VString::from(name.as_bytes()), sequence));
+        } else if let Some(name) = line.strip_prefix('@') {
+            let seq_line = lines
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("Malformed FASTQ: missing sequence line"))?;
+            let plus_line = lines
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("Malformed FASTQ: missing '+' line"))?;
+            if !plus_line.starts_with('+') {
+                return Err(anyhow::anyhow!("Malformed FASTQ: expected '+' line").into());
+            }
+            let _qual_line = lines
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("Malformed FASTQ: missing quality line"))?;
+
+            let mut sequence = VString::from(seq_line.as_bytes());
+            if uppercase {
+                sequence.make_ascii_uppercase();
+            }
+            ret.push((VString::from(name.as_bytes()), sequence));
+        } else {
+            return Err(anyhow::anyhow!("Unsupported FASTX format in {}", path.display()).into());
+        }
+    }
+
     Ok(ret)
 }
 
