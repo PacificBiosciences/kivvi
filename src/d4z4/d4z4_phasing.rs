@@ -18,6 +18,36 @@ use std::cmp;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
+fn strip_chr_region_token(token: &str) -> String {
+    if let Some((chr, rest)) = token.split_once(':') {
+        format!("{}:{rest}", chr.strip_prefix("chr").unwrap_or(chr))
+    } else {
+        token.to_string()
+    }
+}
+
+fn strip_chr_in_region_config_yaml(input: &[u8]) -> Result<Vec<u8>, DError> {
+    let text = std::str::from_utf8(input)?;
+    let mut out = Vec::<String>::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(value) = trimmed.strip_prefix("realign_region: ") {
+            let updated = strip_chr_region_token(value.trim());
+            out.push(format!("  realign_region: {updated}"));
+        } else if let Some(value) = trimmed.strip_prefix("extract_regions: ") {
+            let updated = value
+                .split_whitespace()
+                .map(strip_chr_region_token)
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push(format!("  extract_regions: {updated}"));
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    Ok(out.join("\n").into_bytes())
+}
+
 /// Use paraphase to phase upstream regions
 /// # Arguments
 /// * `sample` - sample name
@@ -39,15 +69,25 @@ pub fn phase_flanking(
         env!("CARGO_MANIFEST_DIR"),
         "/data/d4z4/paraphase_d4z4_config.yaml"
     ));
-    let region_config = try_load(Some(DATA))?;
-    debug!("paraphase region config {:?}", region_config);
-    let genes = region_config.keys().cloned().rev().collect::<Vec<_>>();
     let mut ret = BTreeMap::<String, _>::new();
     let mut bam_ret = std::collections::BTreeMap::<u64, Vec<bam::Record>>::new();
 
     // temp dir
     let tmp_dir = tempfile::TempDir::new()?;
     let reader = bam::Reader::from_path(wgs_bam)?;
+    let bam_uses_chr = reader
+        .header()
+        .target_names()
+        .into_iter()
+        .any(|name| name.starts_with(b"chr"));
+    let loaded_config_bytes = if bam_uses_chr {
+        DATA.to_vec()
+    } else {
+        strip_chr_in_region_config_yaml(DATA)?
+    };
+    let region_config = try_load(Some(&loaded_config_bytes))?;
+    let genes = region_config.keys().cloned().rev().collect::<Vec<_>>();
+    debug!("paraphase region config {:?}", region_config);
     let output_bam = output_path.join(format!("{sample}.kivvi.paraphase.bam"));
     let mut writer = bam::Writer::from_path(
         &output_bam,

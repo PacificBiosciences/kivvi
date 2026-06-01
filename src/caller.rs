@@ -19,7 +19,10 @@ use crate::util::{d4z4_coordinates, kiv2_coordinates, DError, DResult};
 use crate::variant::report_variants;
 use crate::vcf::write_vcf;
 use log::{debug, info};
+use paraphase::detail::phaser_util::build_faidx;
 use paraphase::io::json::GeneCall;
+use rust_htslib::bam;
+use rust_htslib::bam::Read;
 //use std::cmp;
 use std::collections::BTreeMap;
 use std::fmt::Display;
@@ -170,6 +173,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     let reference = output_path.join(format!("{sample_id}.kiv2.ref.fa"));
     std::fs::write(&reference, region_coordinates.clone().reference_seq)
         .expect("Unable to write temporary reference file");
+    build_faidx(&reference)?;
     // predefined variant list
     let predefined_variants = get_predefined_variants(cli_settings.variant_list)?;
 
@@ -387,14 +391,37 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     let reference = output_path.join(format!("{sample_id}.d4z4.ref.fa"));
     std::fs::write(&reference, region_coordinates.clone().reference_seq)
         .expect("Unable to write temporary reference file");
+    build_faidx(&reference)?;
     // create tempory file for the modified genome reference, specially made for d4z4
     lazy_static::lazy_static! {
         pub static ref GENOME_REFERENCE: &'static [u8] = std::include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/d4z4/chr4_mod.fa"));
     }
-    let d4z4_genome_reference_seq = str::from_utf8(&GENOME_REFERENCE).unwrap().to_string();
+    let bam_reader = bam::Reader::from_path(&cli_settings.bam_filename)?;
+    let bam_uses_chr = bam_reader
+        .header()
+        .target_names()
+        .into_iter()
+        .any(|name| name.starts_with(b"chr"));
+    let d4z4_genome_reference_seq = if bam_uses_chr {
+        str::from_utf8(&GENOME_REFERENCE).unwrap().to_string()
+    } else {
+        str::from_utf8(&GENOME_REFERENCE)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                if line.starts_with(">chr") {
+                    line.replacen(">chr", ">", 1)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let genome_reference = output_path.join(format!("{sample_id}.d4z4.genome.fa"));
     std::fs::write(&genome_reference, d4z4_genome_reference_seq)
         .expect("Unable to write temporary genome reference file");
+    build_faidx(&genome_reference)?;
 
     // predefined variant list
     let predefined_variants = get_predefined_variants(cli_settings.variant_list)?;
