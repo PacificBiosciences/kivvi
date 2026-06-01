@@ -10,6 +10,8 @@ use rust_htslib::{bam, htslib};
 use std::{
     collections::BTreeMap,
     error,
+    fs::File,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
 
@@ -430,23 +432,23 @@ pub fn load_all_seqs_view(index: &rust_htslib::faidx::Reader) -> Vec<VString> {
 #[must_use]
 /// Parse homopolymer sites from a text file.
 /// Format: "{pos}\t{characters}"
-/// # Panics
-/// If the position is not an integer.
 pub fn parse_homopolymers(path: &std::path::Path) -> LowConfidenceSites {
-    LowConfidenceSites::from_map(
-        slurp::iterate_all_lines(path)
-            .map(|x| x.expect("Line is not utf-8' in agap9-hpol-expected"))
-            .map(|x| {
-                let (k, v) = x.split_terminator('\t').next_tuple().unwrap();
-                (
-                    k.parse::<i64>().unwrap(),
-                    v.split_terminator(',')
-                        .map(|x| x.chars().next().unwrap() as u8)
-                        .collect::<linear_map::set::LinearSet<_>>(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>(),
-    )
+    let mut ret = BTreeMap::new();
+    if let Ok(file) = File::open(path) {
+        let reader = BufReader::new(file);
+        for line in reader.lines().map_while(Result::ok) {
+            if let Some((k, v)) = line.split_terminator('\t').next_tuple() {
+                if let Ok(k) = k.parse::<i64>() {
+                    let chars = v
+                        .split_terminator(',')
+                        .filter_map(|x| x.chars().next().map(|ch| ch as u8))
+                        .collect::<std::collections::BTreeSet<_>>();
+                    ret.insert(k, chars);
+                }
+            }
+        }
+    }
+    LowConfidenceSites::from_map(ret)
 }
 
 pub trait DeletionInsensitiveCompare {

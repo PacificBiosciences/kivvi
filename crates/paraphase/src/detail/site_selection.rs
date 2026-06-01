@@ -678,6 +678,7 @@ fn filtered_sites(
                             .or_default()
                             .push((ref_seq, VString::from(var_seq)));
                     } else if hp_site_data
+                        .as_ref()
                         .map_or(true, |x| !(var_seq.len() == 1 && x.contains(&var_seq[0])))
                     {
                         phaser
@@ -723,11 +724,12 @@ fn filtered_sites(
                         if is_hp_site {
                             let var_seq_prohibited = var_seq.len() == 1
                                 && hp_site_data
+                                    .as_ref()
                                     .map_or(false, |forbid| forbid.contains(&var_seq[0]));
-                            log::trace!("At pos {pos}, {var_seq} SNV is in a homopolymer site. Is it prohibited_bases? {var_seq_prohibited}. Forbidden: {:?}", hp_site_data.map_or(vec![], |x| x.iter().copied().collect::<Vec<_>>()));
+                            log::trace!("At pos {pos}, {var_seq} SNV is in a homopolymer site. Is it prohibited_bases? {var_seq_prohibited}. Forbidden: {:?}", hp_site_data.as_ref().map_or(vec![], |x| x.iter().copied().collect::<Vec<_>>()));
                             log::trace!("Forbidden at neighbors: {:?}, {:?}", if pos > 0 {phaser.low_complexity_sites.get(&(pos - 1))} else {None}, phaser.low_complexity_sites.get(&(pos + 1)));
                             if !var_seq_prohibited {
-                                if hp_site_data.map_or(false, |x| x.contains(&b'1')) {
+                                if hp_site_data.as_ref().map_or(false, |x| x.contains(&b'1')) {
                                     log::trace!("At pos {pos}, {var_seq} SNV is in a homopolymer site. var seq is not prohibited.");
                                     variants
                                         .entry(pos)
