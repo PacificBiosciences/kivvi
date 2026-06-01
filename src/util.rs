@@ -37,6 +37,29 @@ pub fn output_bam_header(template: &bam::HeaderView) -> bam::Header {
     header
 }
 
+#[must_use]
+pub fn normalize_chrom_name(name: &str) -> &str {
+    name.strip_prefix("chr").unwrap_or(name)
+}
+
+#[must_use]
+pub fn resolve_chrom_name_from_header(header: &bam::HeaderView, requested: &str) -> Option<String> {
+    let targets = header
+        .target_names()
+        .into_iter()
+        .map(|x| String::from_utf8_lossy(x).to_string())
+        .collect::<Vec<_>>();
+
+    if targets.iter().any(|x| x == requested) {
+        return Some(requested.to_string());
+    }
+
+    let requested_normalized = normalize_chrom_name(requested);
+    targets
+        .into_iter()
+        .find(|x| normalize_chrom_name(x) == requested_normalized)
+}
+
 /// For storing starting and ending reads
 #[derive(Clone, Debug)]
 pub struct FlankReads {

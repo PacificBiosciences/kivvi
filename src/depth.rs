@@ -35,10 +35,15 @@ pub fn depth_based_cn(
     let mut rdepth: Vec<i32> = Vec::new();
     // genome depth
     let mut bam_reader = IndexedReader::from_path(wgs_bam)?;
+    let depth_chrom = if bam_reader.header().tid(b"chr6").is_some() {
+        "chr6"
+    } else {
+        "6"
+    };
     for pos in region_coordinates.genome_depth_sites {
         bam_reader
             .fetch(bam::FetchDefinition::RegionString(
-                String::from("chr6").as_bytes(),
+                depth_chrom.as_bytes(),
                 pos + 500,
                 pos + 1500,
             ))

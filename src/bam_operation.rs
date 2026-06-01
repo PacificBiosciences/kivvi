@@ -1,5 +1,8 @@
 use crate::methylation::{get_methyl_prob, get_methyl_tags};
-use crate::util::{append_kivvi_pg_header, DError, DResult, FlankReads, RegionCoordinates};
+use crate::util::{
+    append_kivvi_pg_header, resolve_chrom_name_from_header, DError, DResult, FlankReads,
+    RegionCoordinates,
+};
 use log::{debug, trace, warn};
 use minimap2::Built;
 use minimap2::{ffi, Aligner};
@@ -69,10 +72,12 @@ pub fn realign(
         let coords = fields[1].split_terminator('-').collect::<Vec<_>>();
         let start = coords[0].parse::<i64>()?;
         let stop = coords[1].parse::<i64>()?;
-        debug!("fetching region: {nchr:?} {start:?} {stop:?}");
+        let resolved_chr = resolve_chrom_name_from_header(bam_reader.header(), nchr)
+            .ok_or_else(|| format!("Chromosome '{nchr}' not found in input BAM header"))?;
+        debug!("fetching region: {resolved_chr:?} {start:?} {stop:?}");
         bam_reader
-            .fetch((nchr, start, stop))
-            .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
+            .fetch((resolved_chr.as_str(), start, stop))
+            .map_err(|e| format!("Failed to fetch region {resolved_chr}:{start}-{stop}: {e}"))?;
 
         for read in bam_reader.records() {
             let record = read?;
@@ -362,50 +367,32 @@ pub fn get_start_end_from_genome(
     let mut starting_reads_flank = HashSet::new();
     let mut ending_reads_flank = HashSet::new();
     let mut bam_reader = bam::IndexedReader::from_path(bam_name)?;
-    let regions = region_coordinates.flanking_regions.unwrap();
-    let fields = regions
-        .first()
-        .ok_or("first not found")?
-        .split_terminator(':')
-        .collect::<Vec<_>>();
-    let nchr = fields[0];
-    let coords = fields[1].split_terminator('-').collect::<Vec<_>>();
-    let start = coords[0].parse::<i64>()?;
-    let stop = coords[1].parse::<i64>()?;
+    let regions = region_coordinates.flanking_regions.unwrap_or_default();
+    for (i, region) in regions.iter().take(2).enumerate() {
+        let fields = region.split_terminator(':').collect::<Vec<_>>();
+        let nchr = fields[0];
+        let coords = fields[1].split_terminator('-').collect::<Vec<_>>();
+        let start = coords[0].parse::<i64>()?;
+        let stop = coords[1].parse::<i64>()?;
 
-    trace!("fetching region: {nchr:?} {start:?} {stop:?}");
-    bam_reader
-        .fetch((nchr, start, stop))
-        .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
-    for read in bam_reader.records() {
-        let record = read?;
-        let keep_record = interval_mismatch(&record, genome_reference, start, stop)?;
-        if !record.is_secondary() && record.mapq() >= 30 && keep_record {
-            let qname = std::str::from_utf8(record.qname())?.to_string();
-            starting_reads_flank.insert(qname);
-        }
-    }
+        let resolved_chr = resolve_chrom_name_from_header(bam_reader.header(), nchr)
+            .ok_or_else(|| format!("Chromosome '{nchr}' not found in input BAM header"))?;
+        trace!("fetching region: {resolved_chr:?} {start:?} {stop:?}");
+        bam_reader
+            .fetch((resolved_chr.as_str(), start, stop))
+            .map_err(|e| format!("Failed to fetch region {resolved_chr}:{start}-{stop}: {e}"))?;
 
-    let fields = regions
-        .get(1)
-        .ok_or("index not found")?
-        .split_terminator(':')
-        .collect::<Vec<_>>();
-    let nchr = fields[0];
-    let coords = fields[1].split_terminator('-').collect::<Vec<_>>();
-    let start = coords[0].parse::<i64>()?;
-    let stop = coords[1].parse::<i64>()?;
-
-    trace!("fetching region: {nchr:?} {start:?} {stop:?}");
-    bam_reader
-        .fetch((nchr, start, stop))
-        .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
-    for read in bam_reader.records() {
-        let record = read?;
-        let keep_record = interval_mismatch(&record, genome_reference, start, stop)?;
-        if !record.is_secondary() && record.mapq() >= 30 && keep_record {
-            let qname = std::str::from_utf8(record.qname())?.to_string();
-            ending_reads_flank.insert(qname);
+        for read in bam_reader.records() {
+            let record = read?;
+            let keep_record = interval_mismatch(&record, genome_reference, start, stop)?;
+            if !record.is_secondary() && record.mapq() >= 30 && keep_record {
+                let qname = std::str::from_utf8(record.qname())?.to_string();
+                if i == 0 {
+                    starting_reads_flank.insert(qname);
+                } else {
+                    ending_reads_flank.insert(qname);
+                }
+            }
         }
     }
 
@@ -551,7 +538,7 @@ pub fn get_start_end_d4z4(
 
     bam_reader
         .fetch((&ref_name, 1, (region_coordinates.repeat_len as i64)))
-        .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
+        .map_err(|e| format!("Failed to fetch region {ref_name}:1-{}: {e}", region_coordinates.repeat_len))?;
     for read in bam_reader.records() {
         let record = read?;
         let record_cigar = record.cigar();
