@@ -38,14 +38,6 @@ pub struct Settings {
     #[clap(help_heading = Some("Input/Output"))]
     pub prefix: String,
 
-    /// Path to reference genome FASTA
-    #[clap(required = true)]
-    #[clap(short = 'r')]
-    #[clap(long = "reference")]
-    #[clap(value_name = "FASTA")]
-    #[clap(help_heading = Some("Input/Output"))]
-    pub reference: PathBuf,
-
     /// sensitive mode
     #[clap(long, action)]
     #[clap(help = "If specified, paraphase will use lower cutoff for fingerprint")]

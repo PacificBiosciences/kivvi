@@ -47,14 +47,14 @@ Kivvi can take a bamlet of the WGS bam as input. The region needed is (GRCh38):
 
 ## Running the program
 
-Kivvi requires a genome-aligned BAM, a FASTA file for the genome that the BAM is aligned to, an output directory and a prefix to output files. The command ends in a preset (`kiv2` or `d4z4`) for specifying which target region to run. 
+Kivvi requires a genome-aligned BAM, an output directory and a prefix to output files. The command ends in a preset (`kiv2` or `d4z4`) for specifying which target region to run.
 
 ```bash
-kivvi -b $WGS_BAM -o $OUTPUT_DIRECTORY -p $OUTPUT_PREFIX -r $GENOME_FASTA kiv2
+kivvi -b $WGS_BAM -o $OUTPUT_DIRECTORY -p $OUTPUT_PREFIX kiv2
 ```
 Or
 ```bash
-kivvi -b $WGS_BAM -o $OUTPUT_DIRECTORY -p $OUTPUT_PREFIX -r $GENOME_FASTA d4z4
+kivvi -b $WGS_BAM -o $OUTPUT_DIRECTORY -p $OUTPUT_PREFIX d4z4
 ```
 
 Kivvi is single-threaded and generally takes less than 5 minutes per sample.
@@ -87,11 +87,10 @@ tar -xpvf human_GRCh38_no_alt_analysis_set.tar.2023-12-04.gz
 wget https://raw.githubusercontent.com/PacificBiosciences/kivvi/main/example/HG03453_kiv2_extract.bam
 wget https://raw.githubusercontent.com/PacificBiosciences/kivvi/main/example/HG03453_kiv2_extract.bam.bai
 # Run Kivvi for KIV2
-kivvi -b HG03453_kiv2_extract.bam -o ./kiv2_output/ -p HG03453 -r human_GRCh38_no_alt_analysis_set.fasta kiv2
+kivvi -b HG03453_kiv2_extract.bam -o ./kiv2_output/ -p HG03453 kiv2
 # Download the demo data for D4Z4
 wget https://raw.githubusercontent.com/PacificBiosciences/kivvi/main/example/HG03453_d4z4_extract.bam
 wget https://raw.githubusercontent.com/PacificBiosciences/kivvi/main/example/HG03453_d4z4_extract.bam.bai
 # Run Kivvi for D4Z4
-kivvi -b HG03453_d4z4_extract.bam -o ./d4z4_output/ -p HG03453 -r human_GRCh38_no_alt_analysis_set.fasta d4z4
+kivvi -b HG03453_d4z4_extract.bam -o ./d4z4_output/ -p HG03453 d4z4
 ```
-
