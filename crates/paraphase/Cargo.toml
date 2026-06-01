@@ -9,8 +9,6 @@ license-file = "../../LICENSE.md"
 [dependencies]
 env_logger = "0.10.1"
 log = "0.4.20"
-clap = { version = "=4.0", features = ["derive"] }
-chrono = "0.4.31"
 rust-htslib = { version = "0.49.0", default-features = false, features = ["static"] }
 counter = "0.5.7"
 lazy_static = "1.4.0"
@@ -18,7 +16,6 @@ serde = { version = "1.0.104", features = ["derive"] }
 serde_json = {version = "1.0.48", features = ["std"]}
 serde_yaml = "0.9.27"
 simple-error = "0.3"
-exitcode = "1.1.2"
 regex = "1.10.2"
 
 vstr = { path = "../vstr/" }
@@ -27,9 +24,7 @@ static_assertions = "1.1.0"
 indexmap = "2.1"
 anyhow = "1.0.75"
 trimothy = "0.2.2"
-rayon = "1.6.1"
 fnv = "1.0.7"
-pprof = { version = "0.11", features = ["flamegraph", "protobuf-codec", "cpp", "frame-pointer", "prost-codec"], optional=true}
 assertables = "7.0"
 linear-map = {version = "1.2.2", git = "https://github.com/PB-DB/linear-map"}
 tempfile = "3.3.0"
@@ -43,8 +38,6 @@ rand = {version = "0.8.5", features = ["small_rng"]}
 threadpool = "1.8.1"
 needletail = {git = "https://github.com/onecodex/needletail/", version = "0.6.0", default-features = false, features = ["bzip2", "flate2"]}
 slurp = "1.0.1"
-pca = {version = "0.1.4", optional = true}
-ndarray = {version = "0.15.6", optional = true}
 
 [dependencies.petgraph]
 version = "0.6.4"
@@ -58,8 +51,8 @@ assert_cmd = "^2.0.11"
 default = ["long_tests"]
 long_tests = []
 nightly = ["fma"]
-profile = ["pprof"]
+profile = []
 curl = ["rust-htslib/curl"]
 paraphase_2_2 = []
 map_hifi = []
-decomp = ["pca", "ndarray"]
+decomp = []

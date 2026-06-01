@@ -18,10 +18,8 @@ log = "0.4.17"
 env_logger = "0.9.1"
 lazy_static = "1.4.0"
 itertools = "0.10.5"
-url = "2.4.1"
 rust-htslib = { version = "0.49.0", default-features = false, features = ["static"] }
 minimap2 = { version = "0.1.23", features = ["simde", "htslib", "static"]}
-threadpool = "1.8.1"
 simple-error = "0.3"
 static_assertions = "1.1.0"
 serde_json = {version = "1.0.48", features = ["std", "arbitrary_precision"]}
