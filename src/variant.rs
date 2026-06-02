@@ -1082,6 +1082,15 @@ mod tests {
 
         let bases = vec![
             String::from("A").as_bytes().to_vec(),
+            String::from("C").as_bytes().to_vec(),
+        ];
+        let refseq = &[b'T', b'A', b'T'];
+        let consensus_var = get_consensus_var(bases, 0, refseq).unwrap();
+        assert_eq!(consensus_var.base, None);
+        assert_eq!(consensus_var.nread, 0);
+
+        let bases = vec![
+            String::from("A").as_bytes().to_vec(),
             String::from("A").as_bytes().to_vec(),
             String::from("C").as_bytes().to_vec(),
         ];
