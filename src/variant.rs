@@ -383,7 +383,9 @@ fn get_consensus_var(
         .iter()
         .map(|(x, y)| (x.clone(), *y))
         .collect::<Vec<_>>();
-    bases_count2.sort_by(|a, b| b.1.cmp(&a.1));
+    // Make equal-depth consensus selection deterministic by falling back to a
+    // stable lexical ordering of the observed allele strings.
+    bases_count2.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     if bases_count2.is_empty() {
         return Ok(none_var.clone());
     }
@@ -394,8 +396,12 @@ fn get_consensus_var(
             return Ok(none_var.clone());
         }
     }
+    let consensus_count = bases_count2[0].1;
     let fp_base_consensus = bases_count2[0].0.clone();
     if fp_base_consensus != ref_base && !fp_base_consensus.contains(&b'*') {
+        if consensus_count < 2 {
+            return Ok(none_var.clone());
+        }
         let fp_base_consensus_string = std::str::from_utf8(&fp_base_consensus)?.to_string();
         // check neighboring bases on ref for indels
         if fp_base_consensus.len() > 1 && fp_base_consensus.contains(&b'-') {
@@ -425,7 +431,7 @@ fn get_consensus_var(
                 base: Some(ref_base_string.clone()),
                 ref_base: std::str::from_utf8(&new_ref_base)?.to_string(),
                 depth,
-                nread: bases_count2[0].1,
+                nread: consensus_count,
                 original_base: Some(fp_base_consensus_string),
             });
         }
@@ -455,20 +461,20 @@ fn get_consensus_var(
                 base: Some(std::str::from_utf8(&variant_base)?.to_string()),
                 ref_base: ref_base_string.clone(),
                 depth,
-                nread: bases_count2[0].1,
+                nread: consensus_count,
                 original_base: Some(fp_base_consensus_string),
             });
         }
         if fp_base_consensus_string != String::from("x")
             && fp_base_consensus_string != String::from("-")
         {
-            return Ok(VariantInfoByFP {
-                base: Some(fp_base_consensus_string.clone()),
-                ref_base: ref_base_string.clone(),
-                depth,
-                nread: bases_count2[0].1,
-                original_base: Some(fp_base_consensus_string.clone()),
-            });
+                return Ok(VariantInfoByFP {
+                    base: Some(fp_base_consensus_string.clone()),
+                    ref_base: ref_base_string.clone(),
+                    depth,
+                    nread: consensus_count,
+                    original_base: Some(fp_base_consensus_string.clone()),
+                });
         }
     }
     Ok(none_var.clone())
