@@ -24,7 +24,7 @@ use paraphase::io::json::GeneCall;
 use rust_htslib::bam;
 use rust_htslib::bam::Read;
 //use std::cmp;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -278,13 +278,25 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     // write to json
     debug!("Write to json...");
     // convert supporting reads to renamed alleles
+    let nonunique_reads: HashSet<&str> = assembly_result
+        .nonunique_reads
+        .iter()
+        .map(String::as_str)
+        .collect();
     let mut support: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (hap, reads) in assembly_result.supporting_reads.iter() {
         let allele_name = vec_to_string(&vec![hap.to_vec()], "-");
         let hap_string = &allele_name[0];
-        support
-            .entry(hap_string.to_string())
-            .or_insert(reads.iter().cloned().collect::<Vec<String>>());
+        let unique_reads = reads
+            .iter()
+            .filter(|read| !nonunique_reads.contains(read.as_str()))
+            .cloned()
+            .collect::<Vec<String>>();
+        if !unique_reads.is_empty() {
+            support
+                .entry(hap_string.to_string())
+                .or_insert(unique_reads);
+        }
     }
     let allele_cn = &assembly_result
         .complete
@@ -680,6 +692,11 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     // write to json
     debug!("Write to json...");
     // convert supporting reads to renamed alleles
+    let nonunique_reads: HashSet<&str> = assembly_result
+        .nonunique_reads
+        .iter()
+        .map(String::as_str)
+        .collect();
     let mut support: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for allele in &assembly_result.complete {
         if assembly_result.supporting_reads.contains_key(allele) {
@@ -689,9 +706,16 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
                 .ok_or("hap not in assembly_result.supporting_reads.")?;
             let allele_name = vec_to_string(&vec![allele.clone()], "-");
             let hap_string = &allele_name[0];
-            support
-                .entry(hap_string.to_string())
-                .or_insert(reads.iter().cloned().collect::<Vec<String>>());
+            let unique_reads = reads
+                .iter()
+                .filter(|read| !nonunique_reads.contains(read.as_str()))
+                .cloned()
+                .collect::<Vec<String>>();
+            if !unique_reads.is_empty() {
+                support
+                    .entry(hap_string.to_string())
+                    .or_insert(unique_reads);
+            }
         }
     }
 

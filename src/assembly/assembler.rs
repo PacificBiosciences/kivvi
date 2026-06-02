@@ -3,7 +3,7 @@ use crate::assembly::assembler_utils::{
 };
 use crate::util::{DError, DResult};
 use log::{debug, trace};
-use rand::seq::SliceRandom;
+use rand::{prelude::SliceRandom, SeedableRng};
 
 use std::cmp;
 use std::collections::{BTreeMap, HashSet};
@@ -46,6 +46,18 @@ pub struct ProcessCompleteHaplotypesResult {
     pub support_by_read: BTreeMap<String, Vec<Vec<i32>>>,
     /// need to perform a second assembly run
     need_for_2nd_run: bool,
+}
+
+fn pick_supported_hap_with_seed(
+    rng: &mut rand::rngs::SmallRng,
+    supported_haps: &[Vec<i32>],
+) -> Option<Vec<i32>> {
+    if supported_haps.is_empty() {
+        return None;
+    }
+    let mut sorted_haps = supported_haps.to_vec();
+    sorted_haps.sort();
+    sorted_haps.choose(rng).cloned()
 }
 
 /// Result of assembly
@@ -266,14 +278,14 @@ impl FpGraph {
             false,
             graph_parameters.less_filtering,
         )?;
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
         let mut nonunique_reads: Vec<String> = Vec::new();
         let mut supporting_including_nonuniq = check_complete_haps.supporting_reads.clone();
         for (read, supported_haps) in check_complete_haps.support_by_read.iter() {
             if supported_haps.len() > 1 {
                 nonunique_reads.push(read.to_string());
-                let support_hap_picked = supported_haps
-                    .choose(&mut rand::thread_rng())
-                    .ok_or("error with random choice")?;
+                let support_hap_picked = pick_supported_hap_with_seed(&mut rng, supported_haps)
+                    .ok_or("error with seeded choice")?;
                 trace!(
                     "nonunique read {:?} haps {:?} picked {:?}",
                     read.to_string(),
@@ -281,7 +293,7 @@ impl FpGraph {
                     support_hap_picked
                 );
                 supporting_including_nonuniq
-                    .entry(support_hap_picked.to_vec())
+                    .entry(support_hap_picked)
                     .or_default()
                     .insert(read.to_string());
             }
@@ -2689,5 +2701,21 @@ mod tests {
         ]);
         let candidates = filter_assembled_candidates(unique_support, support_length).unwrap();
         assert_eq!(candidates, vec![vec![1, 2, 3, 4, 5], vec![1, 2, 3, 4, 6]]);
+    }
+
+    #[test]
+    fn test_pick_supported_hap_with_seed() {
+        let supported_haps = vec![vec![4, 5, 6], vec![1, 2, 3], vec![7, 8, 9]];
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+        let first = pick_supported_hap_with_seed(&mut rng, &supported_haps).unwrap();
+
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+        let second = pick_supported_hap_with_seed(&mut rng, &supported_haps).unwrap();
+        assert_eq!(first, second);
+
+        let reordered_haps = vec![vec![7, 8, 9], vec![4, 5, 6], vec![1, 2, 3]];
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+        let reordered_pick = pick_supported_hap_with_seed(&mut rng, &reordered_haps).unwrap();
+        assert_eq!(first, reordered_pick);
     }
 }
