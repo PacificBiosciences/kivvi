@@ -399,7 +399,7 @@ fn get_consensus_var(
     let consensus_count = bases_count2[0].1;
     let fp_base_consensus = bases_count2[0].0.clone();
     if fp_base_consensus != ref_base && !fp_base_consensus.contains(&b'*') {
-        if consensus_count < 2 {
+        if consensus_count < 2 && depth > 1 {
             return Ok(none_var.clone());
         }
         let fp_base_consensus_string = std::str::from_utf8(&fp_base_consensus)?.to_string();
@@ -1079,6 +1079,12 @@ mod tests {
         let refseq = &[b'T', b'A', b'T'];
         let consensus_var = get_consensus_var(bases, 0, refseq).unwrap();
         assert_eq!(consensus_var.base, Some(String::from("A")));
+
+        let bases = vec![String::from("A").as_bytes().to_vec()];
+        let refseq = &[b'T', b'A', b'T'];
+        let consensus_var = get_consensus_var(bases, 0, refseq).unwrap();
+        assert_eq!(consensus_var.base, Some(String::from("A")));
+        assert_eq!(consensus_var.nread, 1);
 
         let bases = vec![
             String::from("A").as_bytes().to_vec(),
