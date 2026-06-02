@@ -468,13 +468,13 @@ fn get_consensus_var(
         if fp_base_consensus_string != String::from("x")
             && fp_base_consensus_string != String::from("-")
         {
-                return Ok(VariantInfoByFP {
-                    base: Some(fp_base_consensus_string.clone()),
-                    ref_base: ref_base_string.clone(),
-                    depth,
-                    nread: consensus_count,
-                    original_base: Some(fp_base_consensus_string.clone()),
-                });
+            return Ok(VariantInfoByFP {
+                base: Some(fp_base_consensus_string.clone()),
+                ref_base: ref_base_string.clone(),
+                depth,
+                nread: consensus_count,
+                original_base: Some(fp_base_consensus_string.clone()),
+            });
         }
     }
     Ok(none_var.clone())
