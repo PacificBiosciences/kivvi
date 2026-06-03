@@ -25,7 +25,7 @@ Xiao Chen: xchen@pacificbiosciences.com
 
 ```bash
 # Specify the version
-VERSION="v1.0.0"
+VERSION="v1.1.0"
 # Download the release file
 wget https://github.com/PacificBiosciences/kivvi/releases/download/${VERSION}/kivvi-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
 # Decompress the file
