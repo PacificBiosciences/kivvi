@@ -637,6 +637,7 @@ pub fn get_start_end_d4z4(
         .most_common_ordered()
         .into_iter()
         .filter(|x| x.1 >= 3 || end_positions_flank.contains(&x.0 .1))
+        .filter(|x| x.0 .1 != 1579 && x.0 .1 != 1580 && x.0 .1 != 1578) // exclude softclip positions corresponding to blacklist deletion
         .map(|x| x.0)
         .collect::<Vec<_>>();
     debug!("good_clips {good_clips_p5:?} {good_clips_p3:?}");

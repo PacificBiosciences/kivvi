@@ -169,8 +169,14 @@ pub fn filter_realignments_d4z4(
     mut writer: Writer,
     _reference: &PathBuf,
     realigned_bam: PathBuf,
-) -> Result<(Vec<bam::Record>, Vec<String>), DError> {
+) -> Result<(Vec<bam::Record>, Vec<String>, Vec<String>), DError> {
+    const D4Z4_FILTER_DEL_POS: i64 = 1574;
+    const D4Z4_FILTER_DEL_POS_PADDING: i64 = 5;
+    const D4Z4_FILTER_DEL_LEN: i64 = 1685;
+    const D4Z4_FILTER_DEL_LEN_PADDING: i64 = 20;
+
     let mut white_list_read_segments = Vec::new();
+    let mut blacklist_segments = Vec::new();
     let mut records_to_keep = HashSet::new();
     let mut repeat_records = Vec::<bam::Record>::new();
     for realn_record in &realn_records {
@@ -209,6 +215,21 @@ pub fn filter_realignments_d4z4(
                     keep_record = true;
                 }
             }
+            if keep_record
+                && has_deletion_near_position(
+                    realn_record,
+                    D4Z4_FILTER_DEL_POS,
+                    D4Z4_FILTER_DEL_POS_PADDING,
+                    D4Z4_FILTER_DEL_LEN,
+                    D4Z4_FILTER_DEL_LEN_PADDING,
+                )
+            {
+                let cigar_string = realn_record.cigar().to_string();
+                debug!(
+                    "Found read segment with blacklist deletion: {segment_name} cigar {cigar_string}"
+                );
+                blacklist_segments.push(segment_name.clone());
+            }
             if keep_record {
                 //writer.write(realn_record)?;
                 //repeat_records.push(realn_record.clone());
@@ -229,7 +250,36 @@ pub fn filter_realignments_d4z4(
     }
     drop(writer);
     bam::index::build(&realigned_bam, None, bam::index::Type::Bai, 1)?;
-    Ok((repeat_records, white_list_read_segments))
+    Ok((repeat_records, white_list_read_segments, blacklist_segments))
+}
+
+fn has_deletion_near_position(
+    record: &bam::Record,
+    target_pos: i64,
+    pos_padding: i64,
+    target_len: i64,
+    len_padding: i64,
+) -> bool {
+    let mut ref_pos = record.pos();
+    for cigar in &record.cigar() {
+        match cigar {
+            Cigar::Del(len) => {
+                let deletion_start = ref_pos + 1;
+                let deletion_len = i64::from(*len);
+                if (deletion_start - target_pos).abs() <= pos_padding
+                    && (deletion_len - target_len).abs() <= len_padding
+                {
+                    return true;
+                }
+                ref_pos += deletion_len;
+            }
+            Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) | Cigar::RefSkip(len) => {
+                ref_pos += i64::from(*len);
+            }
+            Cigar::Ins(_) | Cigar::SoftClip(_) | Cigar::HardClip(_) | Cigar::Pad(_) => {}
+        }
+    }
+    false
 }
 
 /// Filter alignments based on a more detailed mismatch calculation, used for hrnr and nbpf

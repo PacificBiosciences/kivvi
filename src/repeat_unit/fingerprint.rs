@@ -93,6 +93,7 @@ pub fn get_fingerprint(
     read_length: &BTreeMap<String, usize>,
     read_parameters: ReadParameters,
     read_whitelist: Vec<String>,
+    excluded_count_segments: Vec<String>,
     is_d4z4: bool,
     sensitive: bool,
 ) -> Result<
@@ -106,6 +107,7 @@ pub fn get_fingerprint(
     // reference
     let ref_reader = faidx::Reader::from_path(reference)?;
     let ref_names = ref_reader.seq_names()?;
+    let excluded_count_segments = excluded_count_segments.into_iter().collect::<HashSet<_>>();
 
     // read name -> pos -> base
     let mut read_info: BTreeMap<String, BTreeMap<(i32, i64), Vec<u8>>> = BTreeMap::new();
@@ -192,6 +194,7 @@ pub fn get_fingerprint(
                     &read_segment_raw_fp,
                     &read_parameters,
                     &read_whitelist,
+                    &excluded_count_segments,
                     &start_end_fps,
                     is_d4z4,
                     sensitive,

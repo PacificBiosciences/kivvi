@@ -1146,6 +1146,12 @@ impl FpGraph {
         if check_overlap_length > this_hap.len() + 1 {
             check_overlap_length = this_hap.len() + 1;
         }
+        if check_overlap_length == this_hap.len() && check_overlap_length >= 6 {
+            let last_node = this_hap.last().ok_or("last node not found")?;
+            if *last_node == -10 {
+                check_overlap_length = this_hap.len() - 1;
+            }
+        }
         debug!("check positions n={check_overlap_length}");
         let read_support = match_reads_and_haplotypes(
             self.reads.clone(),

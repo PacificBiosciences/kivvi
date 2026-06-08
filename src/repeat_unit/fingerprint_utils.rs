@@ -342,6 +342,7 @@ pub fn select_fps(
     read_segment_raw_fp: &BTreeMap<String, Vec<u8>>,
     read_parameters: &ReadParameters,
     read_whitelist: &Vec<String>,
+    excluded_count_segments: &HashSet<String>,
     start_end_fps: &BTreeMap<Vec<u8>, i32>,
     _is_d4z4: bool,
     sensitive: bool,
@@ -359,7 +360,14 @@ pub fn select_fps(
     let mut fp_whitelist = HashSet::new();
 
     for (read, read_seq) in read_segment_raw_fp {
-        *fp_count.entry(read_seq.clone()).or_default() += 1;
+        if !excluded_count_segments.contains(read) {
+            *fp_count.entry(read_seq.clone()).or_default() += 1;
+        } else {
+            debug!(
+                "excluded read segment {read} {:?}",
+                std::str::from_utf8(read_seq)?
+            );
+        }
         // white list fps, always add
         let full_read_name = read
             .split(':')

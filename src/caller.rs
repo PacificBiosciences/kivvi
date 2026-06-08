@@ -13,7 +13,7 @@ use crate::depth::{depth_based_cn, DepthSummary};
 use crate::methylation::{get_methyl_info, methyl_prob_by_position, MethOutput};
 use crate::plot::plot_alleles::plot_alleles_and_reads;
 use crate::read_filtering::{filter_realignments_d4z4, filter_realignments_kiv2};
-use crate::repeat_unit::fingerprint::{get_fingerprint, ReadParameters};
+use crate::repeat_unit::fingerprint::{get_fingerprint, FingerprintInfo, ReadParameters};
 use crate::repeat_unit::fingerprint_utils::rm_redundant_finger_prints;
 use crate::util::{d4z4_coordinates, kiv2_coordinates, DError, DResult};
 use crate::variant::report_variants;
@@ -75,6 +75,111 @@ pub struct D4Z4QCMetrics {
     pub median_read_length: f32,
     /// per allele depth
     pub per_allele_depth: f32,
+}
+
+fn mark_segments_as_unknown(
+    fp_info: &mut FingerprintInfo,
+    segment_names_to_zero: &HashSet<String>,
+) {
+    let segment_names_to_zero_short = segment_names_to_zero
+        .iter()
+        .filter_map(|segment_name| {
+            let mut fields = segment_name.split(':');
+            let read_name = fields.next()?;
+            let read_start = fields.next()?;
+            Some(format!("{read_name}:{read_start}"))
+        })
+        .collect::<HashSet<_>>();
+    let affected_reads = segment_names_to_zero_short
+        .iter()
+        .filter_map(|segment_name| segment_name.split(':').next().map(str::to_string))
+        .collect::<HashSet<_>>();
+    let blacklist_fingerprints = segment_names_to_zero_short
+        .iter()
+        .filter_map(|segment_name| fp_info.grouped_reads.get(segment_name).copied())
+        .filter(|fingerprint| *fingerprint != 0)
+        .collect::<HashSet<_>>();
+    debug!("blacklist fingerprints: {:?}", blacklist_fingerprints);
+
+    for segment_name in &segment_names_to_zero_short {
+        fp_info.grouped_reads.insert(segment_name.clone(), 0);
+    }
+
+    let read_positions = fp_info.read_positions.clone();
+    for (read_name, positions) in read_positions {
+        if let Some(read_edges) = fp_info.read_edges.get_mut(&read_name) {
+            for (segment_index, read_position) in positions.iter().enumerate() {
+                let segment_name = format!("{read_name}:{read_position}");
+                if segment_names_to_zero_short.contains(&segment_name) {
+                    if let Some(read_edge) = read_edges.get_mut(segment_index) {
+                        *read_edge = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    for read_name in affected_reads {
+        let read_positions = fp_info.read_positions.get(&read_name).cloned();
+        let read_edges = fp_info.read_edges.get_mut(&read_name);
+        debug!("read {read_name} read edges to update: {:?}", read_edges);
+        if let (Some(read_positions), Some(read_edges)) = (read_positions, read_edges) {
+            let mut start_index = read_edges.len();
+            if let Some(last_read_edge) = read_edges.last_mut() {
+                if *last_read_edge == -10 {
+                    *last_read_edge = 0;
+                    if let Some(last_position) = read_positions.last() {
+                        let segment_name = format!("{read_name}:{last_position}");
+                        fp_info.grouped_reads.insert(segment_name, 0);
+                        debug!("marked last read segment as unknown");
+                    }
+                    start_index = start_index.saturating_sub(1);
+                }
+            }
+
+            for (segment_index, read_edge) in
+                read_edges.iter_mut().enumerate().take(start_index).rev()
+            {
+                if *read_edge != 0 {
+                    debug!("marked read segment {read_name}:{segment_index} as unknown");
+                    *read_edge = 0;
+                    if let Some(read_position) = read_positions.get(segment_index) {
+                        let segment_name = format!("{read_name}:{read_position}");
+                        fp_info.grouped_reads.insert(segment_name, 0);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /*
+    // mark blacklist fingerprints as unknown
+    let read_positions = fp_info.read_positions.clone();
+    for (read_name, positions) in read_positions {
+        if let Some(read_edges) = fp_info.read_edges.get_mut(&read_name) {
+            if let Some(first_blacklist_index) = read_edges
+                .iter()
+                .position(|fingerprint| blacklist_fingerprints.contains(fingerprint))
+            {
+                let zero_from = first_blacklist_index.saturating_sub(1);
+                debug!(
+                    "marking segments of read {read_name}, {:?}, from index {zero_from} to end as unknown", read_edges
+                );
+                for segment_index in zero_from..read_edges.len() {
+                    if let Some(read_edge) = read_edges.get_mut(segment_index) {
+                        *read_edge = 0;
+                    }
+                    if let Some(read_position) = positions.get(segment_index) {
+                        let segment_name = format!("{read_name}:{read_position}");
+                        fp_info.grouped_reads.insert(segment_name, 0);
+                    }
+                }
+                debug!("Updated read edges of read {read_name} to {:?}", read_edges);
+            }
+        }
+    }
+    */
 }
 
 /// Convert alleles from vectors to strings
@@ -221,6 +326,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
         ClippedReads::default(),
         &read_length,
         kiv2_read_parameters.clone(),
+        vec![],
         vec![],
         false,
         cli_settings.sensitive,
@@ -463,12 +569,13 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         realigned_bam.clone(),
         true,
     )?;
-    let (repeat_records, mut white_list_read_segments) = filter_realignments_d4z4(
-        realn_records_unfiltered,
-        writer,
-        &reference,
-        realigned_bam.clone(),
-    )?;
+    let (repeat_records, mut white_list_read_segments, blacklist_segments) =
+        filter_realignments_d4z4(
+            realn_records_unfiltered,
+            writer,
+            &reference,
+            realigned_bam.clone(),
+        )?;
     //debug!("white_list_read_segments {:?}", white_list_read_segments);
 
     // get flanking reads
@@ -513,6 +620,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         &read_length,
         d4z4_read_parameters.clone(),
         white_list_read_segments,
+        blacklist_segments.clone(),
         true,
         cli_settings.sensitive,
     )?;
@@ -532,6 +640,9 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
             }
         }
     }
+
+    let blacklist_segments = blacklist_segments.into_iter().collect::<HashSet<_>>();
+    mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
 
     // qc metrics
     let all_read_length = read_length
