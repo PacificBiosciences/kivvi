@@ -109,6 +109,88 @@ pub(crate) fn classify_allele(this_allele_fps_classified: &Vec<String>) -> Strin
     return String::from("unknown");
 }
 
+fn is_cis_dup_by_read_start_offset(
+    allele: &str,
+    fp_info: &FingerprintInfo,
+) -> Result<bool, DError> {
+    debug!("checking cis dup by read start offset for allele {allele}");
+    let allele_nodes = allele
+        .split('-')
+        .filter(|node| !node.contains("Flank"))
+        .map(|node| node.parse::<i32>())
+        .collect::<Result<Vec<_>, _>>()?;
+    if allele_nodes.len() < 2 {
+        return Ok(false);
+    }
+
+    let mut supporting_reads = 0;
+    let mut delayed_start_reads = 0;
+    for (read, read_nodes) in fp_info.read_edges.iter() {
+        let Some(read_positions) = fp_info.read_positions.get(read) else {
+            continue;
+        };
+        if read_nodes.len() != read_positions.len() {
+            continue;
+        }
+
+        let start_idx = 0;
+        if read_nodes[start_idx] == allele_nodes[0] {
+            let overlap_len = cmp::min(read_nodes.len() - start_idx, allele_nodes.len());
+            if overlap_len < 2 {
+                continue;
+            }
+
+            let nodes_in_read = &read_nodes[start_idx..(start_idx + overlap_len)];
+            let nodes_in_allele = &allele_nodes[..overlap_len];
+            let mut match_count = 0;
+            let mut has_mismatch = false;
+            for (read_node, allele_node) in nodes_in_read.iter().zip(nodes_in_allele.iter()) {
+                if *read_node == 0 {
+                    continue;
+                }
+                if read_node == allele_node {
+                    match_count += 1;
+                } else {
+                    has_mismatch = true;
+                    break;
+                }
+            }
+
+            if !has_mismatch && match_count > 1 {
+                supporting_reads += 1;
+                debug!("supporting read {read} edges {read_nodes:?} positions {read_positions:?}");
+                if read_positions[start_idx] > 300 {
+                    delayed_start_reads += 1;
+                    debug!("delayed start read {read} edges {read_nodes:?} positions {read_positions:?}");
+                }
+            }
+        }
+    }
+    debug!("supporting_reads {supporting_reads} delayed_start_reads {delayed_start_reads}");
+    let delayed_start_threshold = (supporting_reads as f64 * 0.8).floor() as i32;
+    Ok(supporting_reads >= 3
+        && delayed_start_reads >= (supporting_reads - 1).min(delayed_start_threshold))
+}
+
+fn is_cis_dup(allele: &str, fp_info: &FingerprintInfo) -> Result<bool, DError> {
+    let first_node = allele.split("-").next().unwrap_or("");
+    if first_node == "LeftFlank" {
+        return Ok(false);
+    }
+    if first_node == "RightFlank" {
+        return Ok(true);
+    }
+    if first_node != "LeftFlank" {
+        let first_node = first_node.parse::<i32>()?;
+        if let Some(first_node_seq) = fp_info.good_name_to_seq.get(&first_node) {
+            if first_node_seq[0] == b'S' {
+                return Ok(true);
+            }
+        }
+    }
+    is_cis_dup_by_read_start_offset(allele, fp_info)
+}
+
 /// Check if the two partial alleles have a left flank for one and a right flank for the other
 /// # Arguments
 /// * `alleles` - two partial alleles to merge
@@ -616,7 +698,8 @@ pub fn join_partial_alleles(
         }
     }
     for (allele, background) in all_ends_hap_backgrounds.iter() {
-        if !complete_hap_backgrounds.contains_key(allele) {
+        let is_cis_dup = is_cis_dup(allele, fp_info)?;
+        if !complete_hap_backgrounds.contains_key(allele) && !is_cis_dup {
             partial_allele_ends += 1;
             let mut this_allele_fps_classified = Vec::new();
             let nodes = allele.split("-").collect::<Vec<&str>>();
@@ -770,11 +853,7 @@ pub fn join_partial_alleles(
             }
             if !allele_considered {
                 let allele_size = allele.split("-").filter(|x| !x.contains("Flank")).count();
-                let first_node = allele.split("-").next().unwrap();
-                let mut is_cis_dup = false;
-                // determine if the allele is a cis duplication
-                if first_node == "RightFlank" {
-                    is_cis_dup = true;
+                if is_cis_dup(allele, fp_info)? {
                     merged_allele_summary.push(AlleleSummary {
                         allele_name: allele.clone(),
                         chromosome: String::from("unknown"),
@@ -783,24 +862,7 @@ pub fn join_partial_alleles(
                         allele_size: format!("{allele_size}"),
                         methylation: methylation_value,
                     });
-                } else if first_node != "LeftFlank" {
-                    let first_node = first_node.parse::<i32>()?;
-                    if let Some(first_node_seq) = fp_info.good_name_to_seq.get(&first_node) {
-                        let first_node_seq_first_base = first_node_seq[0];
-                        if first_node_seq_first_base == b'S' {
-                            merged_allele_summary.push(AlleleSummary {
-                                allele_name: allele.clone(),
-                                chromosome: String::from("unknown"),
-                                distal_haplotype: background.clone(),
-                                allele_type: String::from("assembled_cis_duplication"),
-                                allele_size: format!("{allele_size}"),
-                                methylation: methylation_value,
-                            });
-                            is_cis_dup = true;
-                        }
-                    }
-                }
-                if !is_cis_dup {
+                } else {
                     if ((background == "qAIntactPolyA" && start_allele_chr4 >= 2)
                         || (background == "qB" && start_allele_chr4 >= 2)
                         || (background == "qADisruptedPolyA" && start_allele_chr10 >= 2))
@@ -1895,5 +1957,124 @@ mod tests {
         let result = classify_allele(&fps_classified);
         // 10 elements, 8 qAIntactPolyA: 8 >= 10 * 0.8 = 8.0, so should return qAIntactPolyA
         assert_eq!(result, "qAIntactPolyA");
+    }
+
+    #[test]
+    fn test_is_cis_dup_by_read_start_offset_three_supporting_reads_two_delayed() {
+        let mut read_edges = BTreeMap::new();
+        read_edges.insert("read1".to_string(), vec![7, 8, 9]);
+        read_edges.insert("read2".to_string(), vec![7, 8]);
+        read_edges.insert("read3".to_string(), vec![7, 8]);
+
+        let mut read_positions = BTreeMap::new();
+        read_positions.insert("read1".to_string(), vec![650, 800, 950]);
+        read_positions.insert("read2".to_string(), vec![620, 770]);
+        read_positions.insert("read3".to_string(), vec![700, 850]);
+
+        let fp_info = FingerprintInfo {
+            read_edges,
+            grouped_reads: BTreeMap::new(),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions,
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+        };
+
+        assert!(is_cis_dup_by_read_start_offset("7-8-9-10", &fp_info).unwrap());
+    }
+
+    #[test]
+    fn test_is_cis_dup_by_read_start_offset_requires_two_delayed_when_three_support() {
+        let mut read_edges = BTreeMap::new();
+        read_edges.insert("read1".to_string(), vec![7, 8, 9]);
+        read_edges.insert("read2".to_string(), vec![7, 8]);
+        read_edges.insert("read3".to_string(), vec![7, 8]);
+
+        let mut read_positions = BTreeMap::new();
+        read_positions.insert("read1".to_string(), vec![300, 450, 600]);
+        read_positions.insert("read2".to_string(), vec![480, 630]);
+        read_positions.insert("read3".to_string(), vec![700, 850]);
+
+        let fp_info = FingerprintInfo {
+            read_edges,
+            grouped_reads: BTreeMap::new(),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions,
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+        };
+
+        assert!(!is_cis_dup_by_read_start_offset("7-8-9-10", &fp_info).unwrap());
+    }
+
+    #[test]
+    fn test_is_cis_dup_by_read_start_offset_requires_at_least_three_supporting_reads() {
+        let mut read_edges = BTreeMap::new();
+        read_edges.insert("read1".to_string(), vec![7, 8, 9]);
+        read_edges.insert("read2".to_string(), vec![7, 8]);
+
+        let mut read_positions = BTreeMap::new();
+        read_positions.insert("read1".to_string(), vec![650, 800, 950]);
+        read_positions.insert("read2".to_string(), vec![700, 850]);
+
+        let fp_info = FingerprintInfo {
+            read_edges,
+            grouped_reads: BTreeMap::new(),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions,
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+        };
+
+        assert!(!is_cis_dup_by_read_start_offset("7-8-9-10", &fp_info).unwrap());
+    }
+
+    #[test]
+    fn test_is_cis_dup_by_read_start_offset_requires_matching_first_unit() {
+        let mut read_edges = BTreeMap::new();
+        read_edges.insert("read1".to_string(), vec![0, 7, 8, 9]);
+        read_edges.insert("read2".to_string(), vec![7, 8, 4]);
+
+        let mut read_positions = BTreeMap::new();
+        read_positions.insert("read1".to_string(), vec![700, 820, 940, 1060]);
+        read_positions.insert("read2".to_string(), vec![300, 450, 600]);
+
+        let fp_info = FingerprintInfo {
+            read_edges,
+            grouped_reads: BTreeMap::new(),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions,
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+        };
+
+        assert!(!is_cis_dup_by_read_start_offset("7-8-9-10", &fp_info).unwrap());
+    }
+
+    #[test]
+    fn test_is_cis_dup_by_read_start_offset_requires_allele_first_unit_to_be_read_first_unit() {
+        let mut read_edges = BTreeMap::new();
+        read_edges.insert("read1".to_string(), vec![1, 7, 8, 9]);
+        read_edges.insert("read2".to_string(), vec![7, 8, 4]);
+
+        let mut read_positions = BTreeMap::new();
+        read_positions.insert("read1".to_string(), vec![100, 820, 940, 1060]);
+        read_positions.insert("read2".to_string(), vec![300, 450, 600]);
+
+        let fp_info = FingerprintInfo {
+            read_edges,
+            grouped_reads: BTreeMap::new(),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions,
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+        };
+
+        assert!(!is_cis_dup_by_read_start_offset("7-8-9-10", &fp_info).unwrap());
     }
 }
