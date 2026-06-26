@@ -15,9 +15,9 @@ fn main() {
     // setup logging
     env_logger::builder()
         .format_timestamp_millis()
-        //.filter_level(filter_level)
-        .filter_level(LevelFilter::Warn)
-        .filter_module(env!("CARGO_PKG_NAME"), filter_level)
+        .filter_level(filter_level)
+        //.filter_level(LevelFilter::Warn)
+        //.filter_module(env!("CARGO_PKG_NAME"), filter_level)
         .init();
 
     // run caller

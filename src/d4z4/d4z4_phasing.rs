@@ -1032,6 +1032,40 @@ pub fn find_cis_dup(
                 trace!("adding non-read links {first:?} to {middle:?}");
                 trace!("adding non-read links {middle:?} to {last:?}");
             }
+        } else if paraphase_hap_linking_repeat_haps_upstream_set.len() == 2
+            && paraphase_hap_linking_repeat_haps_downstream_set.len() == 1
+        {
+            let ovl = paraphase_hap_linking_repeat_haps_upstream_set
+                .iter()
+                .filter(|x| paraphase_hap_linking_repeat_haps_downstream_set.contains(*x))
+                .map(|x| x.clone())
+                .collect::<Vec<_>>();
+            if ovl.len() == 1 {
+                let b = ovl.into_iter().next().unwrap();
+                let a = paraphase_hap_linking_repeat_haps_upstream_set
+                    .iter()
+                    .filter(|x| **x != b)
+                    .map(|x| x.clone())
+                    .collect::<Vec<_>>()
+                    .first()
+                    .unwrap()
+                    .to_vec();
+                allele_links.entry(a.to_vec()).or_default().push(b.to_vec());
+                if !haps_to_node_names.contains_key(&a) {
+                    let a_name = node_name;
+                    haps_to_node_names.insert(a.to_vec(), a_name);
+                    node_name += 1;
+                }
+                if !haps_to_node_names.contains_key(&b) {
+                    let b_name = node_name;
+                    haps_to_node_names.insert(b.to_vec(), b_name);
+                    node_name += 1;
+                }
+                let a_name = haps_to_node_names.get(&a).unwrap();
+                let b_name = haps_to_node_names.get(&b).unwrap();
+                read_edges_for_haps.insert(downstream_hap.to_string(), vec![*a_name, *b_name]);
+                trace!("adding non-read links {a:?} to {b:?}");
+            }
         }
     }
     // check reads now
