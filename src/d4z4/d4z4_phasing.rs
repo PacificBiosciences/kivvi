@@ -7,8 +7,9 @@ use crate::assembly::assembler_utils::{
 use crate::caller::vec_to_string;
 use crate::d4z4::join_partial_alleles::is_cis_dup_by_read_start_offset;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
-use crate::util::DError;
+use crate::util::{d4z4_coordinates, DError};
 use crate::variant::get_read_position_in_allele;
+use itertools::Itertools;
 use log::{debug, trace};
 use paraphase::config::region::try_load;
 use paraphase::io::bam::BamWriter;
@@ -856,6 +857,51 @@ pub fn get_background_for_allele_ends(
     Ok((all_ends_hap_backgrounds, all_ends_reads_match_allele_index))
 }
 
+fn find_qal_alleles(all_haps: &[Vec<i32>], fp_info: &FingerprintInfo) -> HashSet<Vec<i32>> {
+    let d4z4_region_coordinates = d4z4_coordinates();
+    let long_insertion_variants = d4z4_region_coordinates
+        .variants_to_call
+        .iter()
+        .rev()
+        .take(2)
+        .cloned()
+        .collect::<Vec<_>>();
+    let long_insertion_variant_codes = fp_info
+        .variants_by_position
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_pos, variants_at_pos))| {
+            for long_insertion_variant in &long_insertion_variants {
+                if let Some(alt_index) = variants_at_pos
+                    .iter()
+                    .position(|variant| variant == long_insertion_variant)
+                {
+                    if alt_index <= 8 {
+                        return Some((index, b'1' + alt_index as u8));
+                    }
+                }
+            }
+            None
+        })
+        .collect::<Vec<_>>();
+    all_haps
+        .iter()
+        .filter(|hap| hap.last() == Some(&-10) && hap.len() >= 2)
+        .filter_map(|hap| {
+            let second_to_last_unit = hap[hap.len() - 2];
+            let unit_fp = fp_info.good_name_to_seq.get(&second_to_last_unit)?;
+            if long_insertion_variant_codes
+                .iter()
+                .any(|&(index, expected_code)| unit_fp.get(index) == Some(&expected_code))
+            {
+                Some(hap.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<HashSet<_>>()
+}
+
 /// find in-cis duplications
 /// # Arguments
 /// * `assembly_result` - assembly result
@@ -888,6 +934,8 @@ pub fn find_cis_dup(
         all_haps.insert(hap.to_vec());
     }
     let all_haps: Vec<Vec<i32>> = all_haps.iter().map(|x| x.clone()).collect::<Vec<_>>();
+    let qal_alleles = find_qal_alleles(&all_haps, fp_info);
+    debug!("qal_alleles identified by long insertion before -10 {qal_alleles:?}");
     let cis_dup_alleles = all_haps
         .iter()
         .filter_map(|hap| {
@@ -1081,6 +1129,127 @@ pub fn find_cis_dup(
                 let b_name = haps_to_node_names.get(&b).unwrap();
                 read_edges_for_haps.insert(downstream_hap.to_string(), vec![*a_name, *b_name]);
                 trace!("adding non-read links {a:?} to {b:?}");
+            }
+        } else if paraphase_hap_linking_repeat_haps_downstream_set.len() <= 2 {
+            let paraphase_hap_linking_repeat_haps_downstream_set_is_not_cis_dup =
+                paraphase_hap_linking_repeat_haps_downstream_set
+                    .iter()
+                    .filter(|x| !cis_dup_alleles.contains(*x))
+                    .map(|x| x.clone())
+                    .collect::<HashSet<_>>();
+            let paraphase_hap_linking_repeat_haps_upstream_set_is_not_cis_dup_and_is_qal =
+                paraphase_hap_linking_repeat_haps_upstream_set
+                    .iter()
+                    .filter(|x| !cis_dup_alleles.contains(*x))
+                    .filter(|x| qal_alleles.contains(*x))
+                    .map(|x| x.clone())
+                    .collect::<HashSet<_>>();
+            let paraphase_hap_linking_repeat_haps_downstream_set_is_not_qal =
+                paraphase_hap_linking_repeat_haps_downstream_set
+                    .iter()
+                    .filter(|x| !qal_alleles.contains(*x))
+                    .map(|x| x.clone())
+                    .collect::<HashSet<_>>();
+
+            debug!(
+                "paraphase_hap_linking_repeat_haps_downstream_set_is_not_cis_dup {:?}",
+                paraphase_hap_linking_repeat_haps_downstream_set_is_not_cis_dup
+            );
+            debug!(
+                "paraphase_hap_linking_repeat_haps_downstream_set_is_not_qal {:?}",
+                paraphase_hap_linking_repeat_haps_downstream_set_is_not_qal
+            );
+            debug!(
+                "paraphase_hap_linking_repeat_haps_upstream_set_is_not_cis_dup_and_is_qal {:?}",
+                paraphase_hap_linking_repeat_haps_upstream_set_is_not_cis_dup_and_is_qal
+            );
+
+            if paraphase_hap_linking_repeat_haps_downstream_set_is_not_cis_dup.is_empty()
+                && paraphase_hap_linking_repeat_haps_downstream_set_is_not_qal.is_empty()
+                && paraphase_hap_linking_repeat_haps_upstream_set_is_not_cis_dup_and_is_qal.len()
+                    == 1
+            {
+                if paraphase_hap_linking_repeat_haps_downstream_set.len() == 1 {
+                    let b = paraphase_hap_linking_repeat_haps_downstream_set
+                        .into_iter()
+                        .next()
+                        .unwrap();
+                    let a =
+                        paraphase_hap_linking_repeat_haps_upstream_set_is_not_cis_dup_and_is_qal
+                            .into_iter()
+                            .next()
+                            .unwrap();
+                    allele_links.entry(a.to_vec()).or_default().push(b.to_vec());
+                    if !haps_to_node_names.contains_key(&a) {
+                        let a_name = node_name;
+                        haps_to_node_names.insert(a.to_vec(), a_name);
+                        node_name += 1;
+                    }
+                    if !haps_to_node_names.contains_key(&b) {
+                        let b_name = node_name;
+                        haps_to_node_names.insert(b.to_vec(), b_name);
+                        node_name += 1;
+                    }
+                    let a_name = haps_to_node_names.get(&a).unwrap();
+                    let b_name = haps_to_node_names.get(&b).unwrap();
+                    read_edges_for_haps.insert(downstream_hap.to_string(), vec![*a_name, *b_name]);
+                    trace!("adding non-read links {a:?} to {b:?}");
+                } else if paraphase_hap_linking_repeat_haps_downstream_set.len() == 2 {
+                    let paraphase_hap_linking_repeat_haps_downstream_set =
+                        paraphase_hap_linking_repeat_haps_downstream_set
+                            .into_iter()
+                            .sorted_by_key(|inner| std::cmp::Reverse(inner.len()))
+                            .collect::<Vec<_>>();
+
+                    let middle = paraphase_hap_linking_repeat_haps_downstream_set
+                        .iter()
+                        .next()
+                        .unwrap()
+                        .to_vec();
+                    let first =
+                        paraphase_hap_linking_repeat_haps_upstream_set_is_not_cis_dup_and_is_qal
+                            .iter()
+                            .next()
+                            .unwrap()
+                            .to_vec();
+                    let last = paraphase_hap_linking_repeat_haps_downstream_set
+                        .iter()
+                        .last()
+                        .unwrap()
+                        .to_vec();
+                    allele_links
+                        .entry(first.to_vec())
+                        .or_default()
+                        .push(middle.to_vec());
+                    allele_links
+                        .entry(middle.to_vec())
+                        .or_default()
+                        .push(last.to_vec());
+                    if !haps_to_node_names.contains_key(&first) {
+                        let first_name = node_name;
+                        haps_to_node_names.insert(first.to_vec(), first_name);
+                        node_name += 1;
+                    }
+                    if !haps_to_node_names.contains_key(&middle) {
+                        let middle_name = node_name;
+                        haps_to_node_names.insert(middle.to_vec(), middle_name);
+                        node_name += 1;
+                    }
+                    if !haps_to_node_names.contains_key(&last) {
+                        let last_name = node_name;
+                        haps_to_node_names.insert(last.to_vec(), last_name);
+                        node_name += 1;
+                    }
+                    let first_name = haps_to_node_names.get(&first).unwrap();
+                    let middle_name = haps_to_node_names.get(&middle).unwrap();
+                    let last_name = haps_to_node_names.get(&last).unwrap();
+                    read_edges_for_haps.insert(
+                        downstream_hap.to_string(),
+                        vec![*first_name, *middle_name, *last_name],
+                    );
+                    trace!("adding non-read links {first:?} to {middle:?}");
+                    trace!("adding non-read links {middle:?} to {last:?}");
+                }
             }
         }
     }

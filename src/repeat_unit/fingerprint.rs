@@ -1,5 +1,6 @@
 use crate::bam_operation::{start_pos_on_read, ClippedReads};
 use crate::realignment::realign::{force_call_d4z4, force_call_kiv2};
+use crate::realignment::utilities::Variant;
 use crate::repeat_unit::d4z4_variants::update_read_with_special_calls;
 use crate::repeat_unit::fingerprint_utils::{
     clean_up_segment_raw_fps, get_good_variants, get_start_end_fps, select_fps, update_fps,
@@ -60,6 +61,8 @@ pub struct FingerprintInfo {
     pub read_bases: BTreeMap<String, BTreeMap<(i32, i64), Vec<u8>>>,
     /// fingerprint name -> tid
     pub fp_to_tid: BTreeMap<i32, i32>,
+    /// retained variants grouped by position
+    pub variants_by_position: BTreeMap<i64, Vec<Variant>>,
 }
 
 /// Get fingerprints from a realigned bam
@@ -134,6 +137,7 @@ pub fn get_fingerprint(
     let mut good_name_to_seq_all = BTreeMap::new();
     //let mut fp_types = BTreeMap::new();
     let mut fp_to_tid = BTreeMap::new();
+    let mut variants_by_position = BTreeMap::new();
     let mut starting_index = 1;
     let num_refs = ref_names.len();
     debug!("num_refs {num_refs}");
@@ -168,22 +172,34 @@ pub fn get_fingerprint(
                     i,
                 )?
             };
-            read_segment_raw_fp = clean_up_segment_raw_fps(
-                &mut read_segment_raw_fp,
-                &variant_calls,
-                &flanking_reads,
-                &clipped_reads,
-                &region_coordinates,
-                read_parameters.min_variant_support as usize,
-            )?;
+            let (cleaned_read_segment_raw_fp, mut new_variants_by_position) =
+                clean_up_segment_raw_fps(
+                    &mut read_segment_raw_fp,
+                    &variant_calls,
+                    &flanking_reads,
+                    &clipped_reads,
+                    &region_coordinates,
+                    read_parameters.min_variant_support as usize,
+                )?;
+            read_segment_raw_fp = cleaned_read_segment_raw_fp;
             if is_d4z4 {
                 // for d4z4, genotype two special sites
-                read_segment_raw_fp = update_read_with_special_calls(
+                (read_segment_raw_fp, new_variants_by_position) = update_read_with_special_calls(
                     &read_segment_raw_fp,
+                    &new_variants_by_position,
                     realigned_bam.clone(),
                     reference,
                     &region_coordinates,
                 )?;
+            }
+            if let Some(raw_fp) = read_segment_raw_fp.values().next() {
+                assert_eq!(new_variants_by_position.len(), raw_fp.len());
+            }
+            for (pos, variants) in new_variants_by_position {
+                variants_by_position
+                    .entry(pos)
+                    .or_insert_with(Vec::new)
+                    .extend(variants);
             }
             // check any starting or ending fingerprints
             let start_end_fps = get_start_end_fps(is_d4z4, &read_segment_raw_fp, &flanking_reads)?;
@@ -483,6 +499,7 @@ pub fn get_fingerprint(
             read_positions,
             read_bases: read_info_simple,
             fp_to_tid,
+            variants_by_position,
         },
         bases_at_pivot_site,
         cpg_sites_per_read,

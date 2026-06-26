@@ -10,17 +10,25 @@ use std::path::PathBuf;
 /// Update the read with special calls
 /// # Arguments
 /// * `read_segment_raw_fp` - read segment -> raw fps
+/// * `new_variants_by_position` - retained variants grouped by position
 /// * `realigned_bam` - realigned bam file
 /// * `reference` - reference file
 /// * `region_coordinates` - region coordinates
 /// # Returns
-/// * `BTreeMap<String, Vec<u8>>` - read segment -> updated fps
+/// * `(BTreeMap<String, Vec<u8>>, BTreeMap<i64, Vec<crate::realignment::utilities::Variant>>)` - read segment -> updated fps and retained variants grouped by position
 pub fn update_read_with_special_calls(
     read_segment_raw_fp: &BTreeMap<String, Vec<u8>>,
+    new_variants_by_position: &BTreeMap<i64, Vec<crate::realignment::utilities::Variant>>,
     realigned_bam: PathBuf,
     reference: &PathBuf,
     region_coordinates: &RegionCoordinates,
-) -> Result<BTreeMap<String, Vec<u8>>, DError> {
+) -> Result<
+    (
+        BTreeMap<String, Vec<u8>>,
+        BTreeMap<i64, Vec<crate::realignment::utilities::Variant>>,
+    ),
+    DError,
+> {
     let (special_calls_homopolymer, success_homopolymer) =
         genotype_homopolymer(realigned_bam.clone(), reference, region_coordinates)?;
     let (special_calls_str, success_str) =
@@ -52,7 +60,14 @@ pub fn update_read_with_special_calls(
         }
         read_segment_raw_fp_updated.insert(segment_name.clone(), new_fp);
     }
-    Ok(read_segment_raw_fp_updated)
+    let mut new_variants_by_position_updated = new_variants_by_position.clone();
+    if success_str {
+        new_variants_by_position_updated.entry(0).or_insert(vec![]);
+    }
+    if success_homopolymer {
+        new_variants_by_position_updated.entry(5000).or_insert(vec![]);
+    }
+    Ok((read_segment_raw_fp_updated, new_variants_by_position_updated))
 }
 
 /// Genotype the homopolymer region

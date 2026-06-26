@@ -1979,6 +1979,7 @@ mod tests {
             read_positions,
             read_bases: BTreeMap::new(),
             fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
         };
 
         assert!(is_cis_dup_by_read_start_offset("7-8-9-10", &fp_info).unwrap());
@@ -2004,6 +2005,7 @@ mod tests {
             read_positions,
             read_bases: BTreeMap::new(),
             fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
         };
 
         assert!(!is_cis_dup_by_read_start_offset("7-8-9-10", &fp_info).unwrap());
@@ -2027,6 +2029,7 @@ mod tests {
             read_positions,
             read_bases: BTreeMap::new(),
             fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
         };
 
         assert!(!is_cis_dup_by_read_start_offset("7-8-9-10", &fp_info).unwrap());
@@ -2050,6 +2053,7 @@ mod tests {
             read_positions,
             read_bases: BTreeMap::new(),
             fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
         };
 
         assert!(!is_cis_dup_by_read_start_offset("7-8-9-10", &fp_info).unwrap());
@@ -2073,6 +2077,7 @@ mod tests {
             read_positions,
             read_bases: BTreeMap::new(),
             fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
         };
 
         assert!(!is_cis_dup_by_read_start_offset("7-8-9-10", &fp_info).unwrap());

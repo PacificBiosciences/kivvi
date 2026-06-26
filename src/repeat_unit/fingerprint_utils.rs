@@ -16,7 +16,7 @@ use std::collections::HashSet;
 /// * `region_coordinates` - region coordinates
 /// * `min_variant_support` - minimum variant support
 /// # Returns
-/// * `BTreeMap<String, Vec<u8>>` - cleaned up read segment raw fps
+/// * `(BTreeMap<String, Vec<u8>>, BTreeMap<i64, Vec<Variant>>)` - cleaned up read segment raw fps and retained variants grouped by position
 pub fn clean_up_segment_raw_fps(
     read_segment_raw_fp: &mut BTreeMap<String, Vec<u8>>,
     variant_calls: &Vec<Variant>,
@@ -24,7 +24,7 @@ pub fn clean_up_segment_raw_fps(
     clipped_reads: &ClippedReads,
     region_coordinates: &RegionCoordinates,
     min_variant_support: usize,
-) -> Result<BTreeMap<String, Vec<u8>>, DError> {
+) -> Result<(BTreeMap<String, Vec<u8>>, BTreeMap<i64, Vec<Variant>>), DError> {
     let variant_positions = variant_calls
         .iter()
         .map(|x| x.position())
@@ -122,11 +122,25 @@ pub fn clean_up_segment_raw_fps(
         }
     }
     debug!("new_variant_positions {new_variant_positions:?}");
+    let new_variant_position_set = new_variant_positions
+        .iter()
+        .copied()
+        .collect::<HashSet<i64>>();
+    let mut new_variants_by_position: BTreeMap<i64, Vec<Variant>> = BTreeMap::new();
+    for variant in variant_calls
+        .iter()
+        .filter(|variant| new_variant_position_set.contains(&variant.position()))
+    {
+        new_variants_by_position
+            .entry(variant.position())
+            .or_default()
+            .push(variant.clone());
+    }
     let mut new_read_segment_raw_fp = BTreeMap::new();
     for (read_segment, raw_fp) in read_segment_raw_fp {
         let mut new_raw_fp = Vec::new();
         for (i, base) in raw_fp.iter().enumerate() {
-            if new_variant_positions.contains(&variant_positions[i]) {
+            if new_variant_position_set.contains(&variant_positions[i]) {
                 new_raw_fp.push(*base);
             }
         }
@@ -137,7 +151,7 @@ pub fn clean_up_segment_raw_fps(
         );
         new_read_segment_raw_fp.insert(read_segment.clone(), new_raw_fp);
     }
-    Ok(new_read_segment_raw_fp)
+    Ok((new_read_segment_raw_fp, new_variants_by_position))
 }
 
 /// Get good variants from unfiltered sites
@@ -869,6 +883,7 @@ pub fn rm_redundant_finger_prints(
             read_positions: fp_info.read_positions,
             read_bases: fp_info.read_bases,
             fp_to_tid: fp_info.fp_to_tid,
+            variants_by_position: fp_info.variants_by_position,
         },
         true,
     ))
