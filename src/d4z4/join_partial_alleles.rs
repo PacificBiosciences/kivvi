@@ -109,7 +109,7 @@ pub(crate) fn classify_allele(this_allele_fps_classified: &Vec<String>) -> Strin
     return String::from("unknown");
 }
 
-fn is_cis_dup_by_read_start_offset(
+pub(crate) fn is_cis_dup_by_read_start_offset(
     allele: &str,
     fp_info: &FingerprintInfo,
 ) -> Result<bool, DError> {

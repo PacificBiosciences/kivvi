@@ -5,6 +5,7 @@ use crate::assembly::assembler_utils::{
     compare_two_haps_same_length, find_overlapping_alleles, redundant_haplotype_allowed,
 };
 use crate::caller::vec_to_string;
+use crate::d4z4::join_partial_alleles::is_cis_dup_by_read_start_offset;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
 use crate::util::DError;
 use crate::variant::get_read_position_in_allele;
@@ -887,6 +888,21 @@ pub fn find_cis_dup(
         all_haps.insert(hap.to_vec());
     }
     let all_haps: Vec<Vec<i32>> = all_haps.iter().map(|x| x.clone()).collect::<Vec<_>>();
+    let cis_dup_alleles = all_haps
+        .iter()
+        .filter_map(|hap| {
+            let allele_name = vec_to_string(&vec![hap.clone()], "-")
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            match is_cis_dup_by_read_start_offset(&allele_name, fp_info) {
+                Ok(true) => Some(Ok(hap.clone())),
+                Ok(false) => None,
+                Err(err) => Some(Err(err)),
+            }
+        })
+        .collect::<Result<HashSet<_>, _>>()?;
+    debug!("cis_dup_alleles identified by read start offset {cis_dup_alleles:?}");
     let all_haps_support = fp_graph
         .process_complete_haps(all_haps.clone(), Some(1), true, false)?
         .support_by_read;
