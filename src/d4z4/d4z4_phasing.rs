@@ -857,7 +857,7 @@ pub fn get_background_for_allele_ends(
     Ok((all_ends_hap_backgrounds, all_ends_reads_match_allele_index))
 }
 
-fn find_qal_alleles(all_haps: &[Vec<i32>], fp_info: &FingerprintInfo) -> HashSet<Vec<i32>> {
+pub fn find_qal_alleles(all_haps: &[Vec<i32>], fp_info: &FingerprintInfo) -> HashSet<Vec<i32>> {
     let d4z4_region_coordinates = d4z4_coordinates();
     let long_insertion_variants = d4z4_region_coordinates
         .variants_to_call

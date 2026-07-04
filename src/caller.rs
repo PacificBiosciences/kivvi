@@ -4,8 +4,8 @@ use crate::bam_operation::{
 };
 use crate::cli::Settings;
 use crate::d4z4::d4z4_phasing::{
-    find_cis_dup, get_background_for_allele_ends, get_background_for_allele_starts,
-    haplotype_background, phase_flanking,
+    find_cis_dup, find_qal_alleles, get_background_for_allele_ends,
+    get_background_for_allele_starts, haplotype_background, phase_flanking,
 };
 use crate::d4z4::join_partial_alleles::{join_partial_alleles, AlleleSummary};
 use crate::depth::median;
@@ -693,6 +693,33 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         find_cis_dup(&assembly_result, &fp_graph, &fp_info, &phasing_result)?;
     debug!("cis_dups_match_index {cis_dups_match_index:?}");
 
+    // find qal alleles
+    let mut all_ending_haps = HashSet::new();
+    for hap in &assembly_result.complete {
+        let hap_end = hap.last().unwrap();
+        if *hap_end <= -10 {
+            all_ending_haps.insert(hap.clone());
+        }
+    }
+    for hap in &assembly_result.incomplete {
+        let hap_end = hap.last().unwrap();
+        if *hap_end <= -10 {
+            all_ending_haps.insert(hap.clone());
+        }
+    }
+    let all_ending_haps: Vec<Vec<i32>> = all_ending_haps
+        .iter()
+        .map(|x| x.clone())
+        .collect::<Vec<_>>();
+    let qal = find_qal_alleles(&all_ending_haps, &fp_info);
+    let mut qal_alleles = Vec::new();
+    for allele in &qal {
+        let allele_name = vec_to_string(&vec![allele.clone()], "-");
+        let hap_string = &allele_name[0];
+        qal_alleles.push(hap_string.clone());
+    }
+    debug!("qal_alleles {qal_alleles:?}");
+
     // get all starting haps
     let (all_starts_hap_backgrounds, all_starts_upstream_haplotypes) =
         get_background_for_allele_starts(
@@ -798,6 +825,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         &fp_graph,
         &fp_info,
         &all_ends_allele_methyl,
+        &qal_alleles,
     )?;
 
     // write to json
