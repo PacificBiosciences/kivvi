@@ -651,7 +651,15 @@ impl FpGraph {
                     let extended_haps =
                         self.assemble_next(this_hap.clone(), strict_for_cyclic_nodes)?;
                     debug!("extended {:?} to {:?}", this_hap, extended_haps);
-                    if extended_haps.is_empty() {
+                    let first_unit = this_hap.first().ok_or("first not found")?;
+                    let last_unit = this_hap.last().ok_or("last not found")?;
+                    if *first_unit > -10
+                        && *first_unit < 0
+                        && *last_unit <= -10
+                        && !complete_haps_forward.contains(&this_hap)
+                    {
+                        complete_haps_forward.push(this_hap.to_vec());
+                    } else if extended_haps.is_empty() {
                         if !incomplete_haps_forward.contains(&this_hap) {
                             incomplete_haps_forward.push(this_hap);
                         }
@@ -728,7 +736,15 @@ impl FpGraph {
                     let extended_haps =
                         self.assemble_prev(this_hap.clone(), strict_for_cyclic_nodes)?;
                     debug!("extended {:?} to {:?}", this_hap, extended_haps);
-                    if extended_haps.is_empty() {
+                    let first_unit = this_hap.first().ok_or("first not found")?;
+                    let last_unit = this_hap.last().ok_or("last not found")?;
+                    if *first_unit > -10
+                        && *first_unit < 0
+                        && *last_unit <= -10
+                        && !complete_haps_backward.contains(&this_hap)
+                    {
+                        complete_haps_backward.push(this_hap.to_vec());
+                    } else if extended_haps.is_empty() {
                         if !incomplete_haps_backward.contains(&this_hap) {
                             incomplete_haps_backward.push(this_hap);
                         }

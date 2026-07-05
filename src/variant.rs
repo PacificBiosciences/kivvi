@@ -812,198 +812,201 @@ pub fn make_data_for_alleles(
         .ok_or("cannot find max of allele_lens")? as i64;
     // go through each allele
     for allele in alleles.clone() {
-        let this_allele_variants = complete_allele_variants
-            .get(allele)
-            .ok_or("key not found: allele in complete_allele_variants")?;
-        let mut out_vec_allele = Vec::new();
-        let allele_len = allele.len() - 2;
-        let allele2 = allele.to_vec();
-        // first the allele itself
-        let mut allele_line: Vec<usize> = Vec::new();
-        // add left flank
-        allele_line.push(4);
-        for repeat_index in 0..allele_len_max {
-            if repeat_index < allele_len as i64 {
-                let mut fp_var = &vec![];
-                let node_name = allele2[repeat_index as usize + 1];
-                let node_on_allele = (repeat_index as usize + 1, node_name);
-                if this_allele_variants.contains_key(&node_on_allele) {
-                    fp_var = this_allele_variants.get(&node_on_allele).unwrap();
-                } else {
-                    if fps_on_incomplete_alleles.contains_key(&node_name) {
-                        fp_var = fps_on_incomplete_alleles.get(&node_name).unwrap();
-                    }
-                }
-                for var in &all_var_sorted {
-                    let new_var_name = variant_name_old_format.get(var).unwrap();
-                    if fp_var.contains(new_var_name) {
-                        allele_line.push(1);
+        if complete_allele_variants.contains_key(allele) {
+            let this_allele_variants = complete_allele_variants
+                .get(allele)
+                .ok_or("key not found: allele in complete_allele_variants")?;
+            let mut out_vec_allele = Vec::new();
+            let allele_len = allele.len() - 2;
+            let allele2 = allele.to_vec();
+            // first the allele itself
+            let mut allele_line: Vec<usize> = Vec::new();
+            // add left flank
+            allele_line.push(4);
+            for repeat_index in 0..allele_len_max {
+                if repeat_index < allele_len as i64 {
+                    let mut fp_var = &vec![];
+                    let node_name = allele2[repeat_index as usize + 1];
+                    let node_on_allele = (repeat_index as usize + 1, node_name);
+                    if this_allele_variants.contains_key(&node_on_allele) {
+                        fp_var = this_allele_variants.get(&node_on_allele).unwrap();
                     } else {
-                        allele_line.push(0);
+                        if fps_on_incomplete_alleles.contains_key(&node_name) {
+                            fp_var = fps_on_incomplete_alleles.get(&node_name).unwrap();
+                        }
+                    }
+                    for var in &all_var_sorted {
+                        let new_var_name = variant_name_old_format.get(var).unwrap();
+                        if fp_var.contains(new_var_name) {
+                            allele_line.push(1);
+                        } else {
+                            allele_line.push(0);
+                        }
                     }
                 }
             }
-        }
-        // add right flank
-        allele_line.push(4);
-        out_vec_allele.push(ReadInfoForPlotting {
-            start_position: 0,
-            bases: allele_line,
-            is_nonuniq: false,
-        });
-        // go through each read to get bases at each position for this allele
-        let mut read_lines = Vec::new();
-        for (read, read_index_on_allele) in reads_match_allele_index[allele].iter() {
-            let mut read_line = Vec::new();
-            // before read start
-            let n_copy_before: i64 = if *read_index_on_allele < 1 {
-                0
-            } else {
-                *read_index_on_allele as i64 - 1
-            };
+            // add right flank
+            allele_line.push(4);
+            out_vec_allele.push(ReadInfoForPlotting {
+                start_position: 0,
+                bases: allele_line,
+                is_nonuniq: false,
+            });
+            // go through each read to get bases at each position for this allele
+            let mut read_lines = Vec::new();
+            for (read, read_index_on_allele) in reads_match_allele_index[allele].iter() {
+                let mut read_line = Vec::new();
+                // before read start
+                let n_copy_before: i64 = if *read_index_on_allele < 1 {
+                    0
+                } else {
+                    *read_index_on_allele as i64 - 1
+                };
 
-            let this_read_nodes = read_edges[read].clone();
-            let this_read_positions = read_positions[read].clone();
-            let mut read_map_index = 0;
-            for (read_node, read_position) in this_read_nodes.iter().zip(this_read_positions.iter())
-            {
-                read_map_index += 1;
-                if *read_index_on_allele + read_map_index - 1 > 0
-                    && *read_index_on_allele + read_map_index - 1 < allele_len as i32 + 1
-                    && *read_node >= 0
+                let this_read_nodes = read_edges[read].clone();
+                let this_read_positions = read_positions[read].clone();
+                let mut read_map_index = 0;
+                for (read_node, read_position) in
+                    this_read_nodes.iter().zip(this_read_positions.iter())
                 {
-                    let new_read_name = format!("{}:{}", read, *read_position);
-                    if read_info.contains_key(&new_read_name) {
-                        let this_read_bases = read_info
-                            .get(&new_read_name)
-                            .ok_or("key not found: new_read_name in read_info")?;
-                        for (variant_index, pos) in all_var_pos.iter().enumerate() {
-                            let expected_variant_old = &all_var_sorted[variant_index];
-                            let expected_variant = expected_variant_old
-                                .split_terminator('>')
-                                .collect::<Vec<_>>()
-                                .last()
-                                .ok_or("last not found in expected_variant_new")?
-                                .parse::<String>()?;
-                            let expected_ref = expected_variant_old
-                                .split_terminator(':')
-                                .collect::<Vec<_>>()
-                                .last()
-                                .unwrap()
-                                .split_terminator('>')
-                                .collect::<Vec<_>>()
-                                .first()
-                                .unwrap()
-                                .parse::<String>()?;
-                            let fields = expected_variant_old
-                                .split_terminator(':')
-                                .collect::<Vec<_>>();
-                            let variant_tid = fields
-                                .first()
-                                .unwrap()
-                                .split_terminator('-')
-                                .collect::<Vec<_>>()
-                                .first()
-                                .unwrap()
-                                .parse::<i32>()?;
-                            let tid = this_read_bases.first_key_value().unwrap().0 .0;
-                            let ref_name = ref_reader.seq_name(tid as i32)?;
-                            let ref_len = ref_reader.fetch_seq_len(&ref_name);
-                            if *pos >= ref_len as i64 {
-                                debug!("read {new_read_name:?} node {read_node} {expected_variant_old:?} pos {pos} is out of range for ref {ref_name}");
-                                read_line.push(0);
-                            } else if !this_read_bases.contains_key(&(tid, *pos)) {
-                                trace!("read {new_read_name:?} node {read_node} {expected_variant_old:?}, ({tid}, {pos}) not in this_read_bases");
-                                read_line.push(2);
-                            } else if variant_tid == tid {
-                                let this_read_base = this_read_bases
-                                    .get(&(tid, *pos))
-                                    .ok_or("index not found in this_read_bases")?;
-                                let this_read_base_string =
-                                    std::str::from_utf8(this_read_base)?.to_string();
-                                if this_read_base_string == expected_variant {
-                                    read_line.push(1);
-                                } else if this_read_base_string == expected_ref {
+                    read_map_index += 1;
+                    if *read_index_on_allele + read_map_index - 1 > 0
+                        && *read_index_on_allele + read_map_index - 1 < allele_len as i32 + 1
+                        && *read_node >= 0
+                    {
+                        let new_read_name = format!("{}:{}", read, *read_position);
+                        if read_info.contains_key(&new_read_name) {
+                            let this_read_bases = read_info
+                                .get(&new_read_name)
+                                .ok_or("key not found: new_read_name in read_info")?;
+                            for (variant_index, pos) in all_var_pos.iter().enumerate() {
+                                let expected_variant_old = &all_var_sorted[variant_index];
+                                let expected_variant = expected_variant_old
+                                    .split_terminator('>')
+                                    .collect::<Vec<_>>()
+                                    .last()
+                                    .ok_or("last not found in expected_variant_new")?
+                                    .parse::<String>()?;
+                                let expected_ref = expected_variant_old
+                                    .split_terminator(':')
+                                    .collect::<Vec<_>>()
+                                    .last()
+                                    .unwrap()
+                                    .split_terminator('>')
+                                    .collect::<Vec<_>>()
+                                    .first()
+                                    .unwrap()
+                                    .parse::<String>()?;
+                                let fields = expected_variant_old
+                                    .split_terminator(':')
+                                    .collect::<Vec<_>>();
+                                let variant_tid = fields
+                                    .first()
+                                    .unwrap()
+                                    .split_terminator('-')
+                                    .collect::<Vec<_>>()
+                                    .first()
+                                    .unwrap()
+                                    .parse::<i32>()?;
+                                let tid = this_read_bases.first_key_value().unwrap().0 .0;
+                                let ref_name = ref_reader.seq_name(tid as i32)?;
+                                let ref_len = ref_reader.fetch_seq_len(&ref_name);
+                                if *pos >= ref_len as i64 {
+                                    debug!("read {new_read_name:?} node {read_node} {expected_variant_old:?} pos {pos} is out of range for ref {ref_name}");
                                     read_line.push(0);
-                                } else {
-                                    trace!("read {new_read_name:?} node {read_node} pos {pos} {expected_variant_old:?} expected_variant {expected_variant:?} this_read_base_string {this_read_base_string:?}");
+                                } else if !this_read_bases.contains_key(&(tid, *pos)) {
+                                    trace!("read {new_read_name:?} node {read_node} {expected_variant_old:?}, ({tid}, {pos}) not in this_read_bases");
                                     read_line.push(2);
+                                } else if variant_tid == tid {
+                                    let this_read_base = this_read_bases
+                                        .get(&(tid, *pos))
+                                        .ok_or("index not found in this_read_bases")?;
+                                    let this_read_base_string =
+                                        std::str::from_utf8(this_read_base)?.to_string();
+                                    if this_read_base_string == expected_variant {
+                                        read_line.push(1);
+                                    } else if this_read_base_string == expected_ref {
+                                        read_line.push(0);
+                                    } else {
+                                        trace!("read {new_read_name:?} node {read_node} pos {pos} {expected_variant_old:?} expected_variant {expected_variant:?} this_read_base_string {this_read_base_string:?}");
+                                        read_line.push(2);
+                                    }
+                                } else {
+                                    // variant is on a different tid
+                                    read_line.push(0);
                                 }
-                            } else {
-                                // variant is on a different tid
-                                read_line.push(0);
+                            }
+                        } else if *read_node == 0 {
+                            debug!("read {new_read_name:?} node {read_node} not in read_info");
+                            for (_variant_index, _pos) in all_var_pos.iter().enumerate() {
+                                read_line.push(2);
                             }
                         }
-                    } else if *read_node == 0 {
-                        debug!("read {new_read_name:?} node {read_node} not in read_info");
-                        for (_variant_index, _pos) in all_var_pos.iter().enumerate() {
-                            read_line.push(2);
-                        }
                     }
                 }
-            }
-            assert_eq!(read_map_index, this_read_nodes.len() as i32);
-            let mut beginning_unknown: usize = 0;
-            for a in &read_line {
-                if *a == 2 {
-                    beginning_unknown += 1;
-                } else {
-                    break;
+                assert_eq!(read_map_index, this_read_nodes.len() as i32);
+                let mut beginning_unknown: usize = 0;
+                for a in &read_line {
+                    if *a == 2 {
+                        beginning_unknown += 1;
+                    } else {
+                        break;
+                    }
                 }
-            }
-            let start_position = nvar * n_copy_before + beginning_unknown as i64;
-            let mut read_line_new = read_line[beginning_unknown..].to_vec();
-            // add left and right flanks
-            if start_position == 0 {
-                let first_node = this_read_nodes
-                    .first()
-                    .ok_or("first not found in this_read_nodes")?;
-                if *first_node < 0 && *first_node > -10 {
-                    read_line_new.insert(0, 4);
+                let start_position = nvar * n_copy_before + beginning_unknown as i64;
+                let mut read_line_new = read_line[beginning_unknown..].to_vec();
+                // add left and right flanks
+                if start_position == 0 {
+                    let first_node = this_read_nodes
+                        .first()
+                        .ok_or("first not found in this_read_nodes")?;
+                    if *first_node < 0 && *first_node > -10 {
+                        read_line_new.insert(0, 4);
+                    }
                 }
-            }
-            let last_node = this_read_nodes
-                .last()
-                .ok_or("last not found in this_read_nodes")?;
-            if *last_node <= -10 {
-                read_line_new.push(4);
-            } else {
-                while *read_line_new
+                let last_node = this_read_nodes
                     .last()
-                    .ok_or("last not found in read_line_new")?
-                    == 2
-                {
-                    read_line_new.pop();
-                }
-                //let total_expect_len = nvar * (allele_len as i64);
-                //let read_end = nvar * n_copy_before + read_line_new.len() as i64;
-                //while read_end > total_expect_len {
-                //    read_line.pop();
-                //}
-            }
-            read_lines.push(ReadInfoForPlotting {
-                start_position,
-                bases: read_line_new,
-                is_nonuniq: nonunique_reads.contains(read),
-            });
-        }
-        read_lines.sort_by(|a, b| a.start_position.cmp(&b.start_position));
-        for a in read_lines {
-            if a.bases.contains(&4) || a.bases.len() > nvar as usize {
-                // other reads not overlapping left flank need to shift right by one
-                let new_start = if a.bases.starts_with(&[4]) {
-                    a.start_position
+                    .ok_or("last not found in this_read_nodes")?;
+                if *last_node <= -10 {
+                    read_line_new.push(4);
                 } else {
-                    a.start_position + 1
-                };
-                out_vec_allele.push(ReadInfoForPlotting {
-                    start_position: new_start,
-                    bases: a.bases,
-                    is_nonuniq: a.is_nonuniq,
+                    while *read_line_new
+                        .last()
+                        .ok_or("last not found in read_line_new")?
+                        == 2
+                    {
+                        read_line_new.pop();
+                    }
+                    //let total_expect_len = nvar * (allele_len as i64);
+                    //let read_end = nvar * n_copy_before + read_line_new.len() as i64;
+                    //while read_end > total_expect_len {
+                    //    read_line.pop();
+                    //}
+                }
+                read_lines.push(ReadInfoForPlotting {
+                    start_position,
+                    bases: read_line_new,
+                    is_nonuniq: nonunique_reads.contains(read),
                 });
             }
+            read_lines.sort_by(|a, b| a.start_position.cmp(&b.start_position));
+            for a in read_lines {
+                if a.bases.contains(&4) || a.bases.len() > nvar as usize {
+                    // other reads not overlapping left flank need to shift right by one
+                    let new_start = if a.bases.starts_with(&[4]) {
+                        a.start_position
+                    } else {
+                        a.start_position + 1
+                    };
+                    out_vec_allele.push(ReadInfoForPlotting {
+                        start_position: new_start,
+                        bases: a.bases,
+                        is_nonuniq: a.is_nonuniq,
+                    });
+                }
+            }
+            out_vec.push(out_vec_allele);
         }
-        out_vec.push(out_vec_allele);
     }
     Ok(AlleleInfoForPlotting {
         reads: out_vec,

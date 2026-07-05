@@ -246,8 +246,10 @@ pub fn filter_complete_alleles(
             debug!("repeat_pos_support {repeat_pos_support:?}");
             let highly_repetitive = repeat_pos_support.len() < repeat_pos.len();
             debug!("allele {allele:?} highly_repetitive {highly_repetitive:?}");
-            let good_support = sites_supported_by_three.len() == allele.len() - 2;
-            let better_support = sites_supported_by_four.len() == allele.len() - 3;
+            let good_support =
+                allele.len() >= 2 && sites_supported_by_three.len() == allele.len() - 2;
+            let better_support =
+                allele.len() >= 3 && sites_supported_by_four.len() == allele.len() - 3;
             debug!(
                 "allele {allele:?} good_support {good_support} sites_supported_by_three {sites_supported_by_three:?}"
             );
