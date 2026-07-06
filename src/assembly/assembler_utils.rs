@@ -181,7 +181,11 @@ pub fn filter_complete_alleles(
                         best_match.1, best_match.0
                     );
                     if best_match.1 == read_nodes_len {
-                        is_spanning = check_spanning(read_nodes);
+                        let this_read_spanning = check_spanning(read_nodes);
+                        // debug!("read {read_nodes:?} is spanning: {this_read_spanning}");
+                        if this_read_spanning && !is_spanning {
+                            is_spanning = true;
+                        }
                     }
                     if best_match.1 < read_nodes_len {
                         suspicious_reads.insert(read_nodes.clone());
@@ -232,7 +236,11 @@ pub fn filter_complete_alleles(
                         best_match.1, best_match.0
                     );
                     if best_match.1 == read_nodes_len {
-                        is_spanning = check_spanning(read_nodes);
+                        let this_read_spanning = check_spanning(read_nodes);
+                        // debug!("read {read_nodes:?} is spanning: {this_read_spanning}");
+                        if this_read_spanning && !is_spanning {
+                            is_spanning = true;
+                        }
                     }
                     if best_match.1 < read_nodes_len {
                         suspicious_reads.insert(read_nodes.clone());
@@ -243,6 +251,7 @@ pub fn filter_complete_alleles(
                     }
                 }
             }
+            debug!("is_spanning {is_spanning}");
             debug!("repeat_pos_support {repeat_pos_support:?}");
             let highly_repetitive = repeat_pos_support.len() < repeat_pos.len();
             debug!("allele {allele:?} highly_repetitive {highly_repetitive:?}");

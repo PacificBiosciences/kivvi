@@ -721,7 +721,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     debug!("qal_alleles {qal_alleles:?}");
 
     // get all starting haps
-    let (all_starts_hap_backgrounds, all_starts_upstream_haplotypes) =
+    let (mut all_starts_hap_backgrounds, all_starts_upstream_haplotypes) =
         get_background_for_allele_starts(
             &assembly_result,
             &fp_graph,
@@ -731,7 +731,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         )?;
 
     // get all ending haps
-    let (all_ends_hap_backgrounds, all_ends_reads_match_allele_index_renamed_to_string) =
+    let (mut all_ends_hap_backgrounds, all_ends_reads_match_allele_index_renamed_to_string) =
         get_background_for_allele_ends(
             &assembly_result,
             &fp_graph,
@@ -817,9 +817,9 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     // join partial alleles
     debug!("Join partial alleles...");
     let allele_summaries = join_partial_alleles(
-        &all_starts_hap_backgrounds,
-        &all_ends_hap_backgrounds,
-        &hap_backgrounds,
+        &mut all_starts_hap_backgrounds,
+        &mut all_ends_hap_backgrounds,
+        &mut hap_backgrounds,
         &variant_report,
         &region_coordinates,
         &fp_graph,

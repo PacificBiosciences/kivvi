@@ -863,7 +863,7 @@ pub fn find_qal_alleles(all_haps: &[Vec<i32>], fp_info: &FingerprintInfo) -> Has
         .variants_to_call
         .iter()
         .rev()
-        .take(2)
+        .take(3)
         .cloned()
         .collect::<Vec<_>>();
     let long_insertion_variant_codes = fp_info
