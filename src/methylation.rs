@@ -2,6 +2,7 @@ use crate::caller::vec_to_string;
 use crate::depth::median;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
 use crate::util::DError;
+use itertools::Itertools;
 use log::{debug, trace, warn};
 use rust_htslib::bam::record::Aux;
 use rust_htslib::bam::Record;
@@ -119,34 +120,55 @@ pub fn methyl_prob_by_position(
         }
     }
     for (pos, this_pos_meth) in &meth_per_pos {
-        let this_pos_meth_median =
-            (1000.0 * median(this_pos_meth).unwrap() / 255.0).round() / 1000.0;
+        let this_pos_meth_percent = (1000.0
+            * this_pos_meth.iter().filter(|x| **x >= 128).count() as f32
+            / this_pos_meth.len() as f32)
+            .round()
+            / 1000.0;
+        //let this_pos_meth_median =
+        //    (1000.0 * median(this_pos_meth).unwrap() / 255.0).round() / 1000.0;
         let this_pos_meth_len = this_pos_meth.len();
-        meth_per_pos_median.insert(*pos, this_pos_meth_median);
-        trace!("methyl positions {pos} nsize {this_pos_meth_len} median methyl value {this_pos_meth_median} methyl values {this_pos_meth:?} ");
+        //meth_per_pos_median.insert(*pos, this_pos_meth_median);
+        meth_per_pos_median.insert(*pos, this_pos_meth_percent);
+        trace!("methyl positions {pos} nsize {this_pos_meth_len} median methyl value {this_pos_meth_percent} methyl values {this_pos_meth:?} ");
     }
     for (fp, this_fp_meth) in &meth_per_fp {
         if *fp != 0 {
-            let this_fp_meth_median =
-                (1000.0 * median(this_fp_meth).unwrap() / 255.0).round() / 1000.0;
+            let this_fp_meth_percent = (1000.0
+                * this_fp_meth.iter().filter(|x| **x >= 128).count() as f32
+                / this_fp_meth.len() as f32)
+                .round()
+                / 1000.0;
+            //let this_fp_meth_median =
+            //    (1000.0 * median(this_fp_meth).unwrap() / 255.0).round() / 1000.0;
             let this_fp_meth_len = this_fp_meth.len();
-            meth_per_fp_median.insert(*fp, this_fp_meth_median);
-            trace!("fp {fp} nsize {this_fp_meth_len} median methyl value {this_fp_meth_median} methyl values {this_fp_meth:?} ");
+            meth_per_fp_median.insert(*fp, this_fp_meth_percent);
+            trace!("fp {fp} nsize {this_fp_meth_len} percent methylation {this_fp_meth_percent} methyl values {this_fp_meth:?} ");
         }
     }
-    // median methylation of the sample
-    let all_sites_methyl_median = median(&all_sites_methyl);
-    let all_sites_methyl_median = if all_sites_methyl_median.is_none() {
+    // percent methylation of the sample
+    let all_sites_methyl_percent = if all_sites_methyl.is_empty() {
         None
     } else {
-        Some((1000.0 * all_sites_methyl_median.unwrap() / 255.0).round() / 1000.0)
+        Some(
+            (1000.0 * all_sites_methyl.iter().filter(|x| **x >= 128).count() as f32
+                / all_sites_methyl.len() as f32)
+                .round()
+                / 1000.0,
+        )
     };
+    //let all_sites_methyl_median = median(&all_sites_methyl);
+    //let all_sites_methyl_median = if all_sites_methyl_median.is_none() {
+    //    None
+    //} else {
+    //    Some((1000.0 * all_sites_methyl_median.unwrap() / 255.0).round() / 1000.0)
+    //};
 
     Ok((
         MethSummary {
             meth_per_pos_median,
             meth_per_fp_median,
-            all_sites_methyl_median,
+            all_sites_methyl_median: all_sites_methyl_percent,
         },
         segment_methyl_prob,
     ))
@@ -168,7 +190,14 @@ pub fn get_methyl_info(
     cpg_sites_per_read: &BTreeMap<String, BTreeMap<usize, usize>>,
     reads_match_allele_index: &BTreeMap<Vec<i32>, Vec<(String, i32)>>,
     methyl_sites: &Vec<usize>,
-) -> Result<(MethOutput, Vec<BTreeMap<String, Vec<usize>>>), DError> {
+) -> Result<
+    (
+        MethOutput,
+        Vec<BTreeMap<String, Vec<usize>>>,
+        BTreeMap<String, Vec<Vec<i32>>>,
+    ),
+    DError,
+> {
     let read_edges = &fp_info.read_edges;
     let read_positions = &fp_info.read_positions;
     let nsite = methyl_sites.len();
@@ -179,6 +208,8 @@ pub fn get_methyl_info(
     let mut median_methylation_per_unit: BTreeMap<String, Vec<f32>> = BTreeMap::new();
     // allele name -> methylation value, one per site
     let mut methylation_per_site: BTreeMap<String, Vec<f32>> = BTreeMap::new();
+    // allele name -> ml values, one vector per fp
+    let mut ml_per_allele: BTreeMap<String, Vec<Vec<i32>>> = BTreeMap::new();
     // get probability on complete alleles
     let mut allele_index = 0;
     for allele in reads_match_allele_index.keys() {
@@ -212,7 +243,7 @@ pub fn get_methyl_info(
         };
         for i in range {
             let uniq_fp_name = format!("{allele_index}.{i}");
-            trace!("allele {allele:?} uniq_fp_name {uniq_fp_name}");
+            debug!("allele {allele:?} uniq_fp_name {uniq_fp_name}");
             if fp_supporting_reads.contains_key(&uniq_fp_name) {
                 trace!("allele {allele:?} uniq_fp_name {uniq_fp_name} in fp_supporting_reads");
                 let mut this_fp_methyl_probs = Vec::new();
@@ -288,43 +319,62 @@ pub fn get_methyl_info(
                             }
                         }
                         if !this_fp_this_pos_methyl_probs.is_empty() {
+                            let this_fp_this_pos_methy_perc = (1000.0
+                                * this_fp_this_pos_methyl_probs
+                                    .iter()
+                                    .filter(|x| **x >= 128)
+                                    .count() as f32
+                                / this_fp_this_pos_methyl_probs.len() as f32)
+                                .round()
+                                / 1000.0;
                             this_fp_methyl_probs
-                                .push(median(&this_fp_this_pos_methyl_probs).unwrap());
+                                .push((this_fp_this_pos_methy_perc, this_fp_this_pos_methyl_probs));
+                            //debug!(
+                            //    "at methyl site {this_methyl_site} this_fp_this_pos_methyl_probs {this_fp_this_pos_methyl_probs:?}, methylation percentage {this_fp_this_pos_methy_perc}"
+                            //);
+                            //this_fp_methyl_probs
+                            //    .push(median(&this_fp_this_pos_methyl_probs).unwrap());
                         } else {
                             trace!(
                                 "at methyl site {this_methyl_site} this_fp_this_pos_methyl_probs {this_fp_this_pos_methyl_probs:?} is empty, cannot get median"
                             );
-                            this_fp_methyl_probs.push(f32::NAN);
+                            this_fp_methyl_probs.push((f32::NAN, this_fp_this_pos_methyl_probs));
                         }
                     }
                 }
                 let allele_name = vec_to_string(&vec![allele.clone()], "-");
-                let mut this_fp_methyl_probs_f32 = this_fp_methyl_probs
-                    .iter()
-                    .map(|x| {
-                        if x.is_nan() {
-                            f32::NAN
-                        } else {
-                            (1000.0 * x / 255.0).round() / 1000.0
-                        }
-                    })
-                    .collect::<Vec<_>>();
+                let mut this_fp_methyl_probs_f32 =
+                    this_fp_methyl_probs.iter().map(|x| x.0).collect::<Vec<_>>();
+
                 methylation_per_site
                     .entry(allele_name[0].clone())
                     .or_default()
                     .append(&mut this_fp_methyl_probs_f32);
+
                 let this_fp_methyl_probs_i32 = this_fp_methyl_probs
                     .iter()
-                    .filter(|x| !x.is_nan())
-                    .map(|x| x.round() as i32)
+                    .map(|x| x.1.clone())
+                    .flatten()
                     .collect::<Vec<_>>();
+                //debug!("this_fp_methyl_probs_i32 {:?}", this_fp_methyl_probs_i32);
+                ml_per_allele
+                    .entry(allele_name[0].clone())
+                    .or_default()
+                    .push(this_fp_methyl_probs_i32.clone());
                 if !this_fp_methyl_probs_i32.is_empty() {
-                    let this_fp_methyl_probs_median =
-                        median(&this_fp_methyl_probs_i32).unwrap() / 255.0;
+                    let this_fp_methyl_percent = (1000.0
+                        * this_fp_methyl_probs_i32
+                            .iter()
+                            .filter(|x| **x >= 128)
+                            .count() as f32
+                        / this_fp_methyl_probs_i32.len() as f32)
+                        .round()
+                        / 1000.0;
+
                     median_methylation_per_unit
                         .entry(allele_name[0].clone())
                         .or_default()
-                        .push((this_fp_methyl_probs_median * 1000.0).round() / 1000.0);
+                        .push(this_fp_methyl_percent);
                 } else {
                     median_methylation_per_unit
                         .entry(allele_name[0].clone())
@@ -370,6 +420,7 @@ pub fn get_methyl_info(
             methylation_per_site: allele_fps_methyl_value_reformat,
         },
         alleles_reads_methyl_value,
+        ml_per_allele,
     ))
 }
 

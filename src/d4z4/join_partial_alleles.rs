@@ -473,7 +473,7 @@ fn get_allele_summary(
     proximal_alleles_handled: &mut Vec<String>,
     fp_graph: &FpGraph,
     fp_info: &FingerprintInfo,
-    methyl_values: &BTreeMap<String, String>,
+    methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
     qal_alleles: &Vec<String>,
 ) -> Result<AlleleSummary, DError> {
     let mut sorted_alleles = alleles.clone();
@@ -605,29 +605,27 @@ pub(crate) fn collect_partial_alleles_to_merge(
 /// * `f32` - methylation value
 fn get_methylation_value(
     allele: &String,
-    methyl_values: &BTreeMap<String, String>,
+    methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
     last_n_sites: Option<usize>,
 ) -> Result<f32, DError> {
     if !methyl_values.contains_key(allele) {
         return Ok(f32::NAN);
     }
-    let last_n_sites = last_n_sites.unwrap_or(505);
-    let methylation: Vec<f32> = methyl_values
+    let last_n_sites = 5;
+    let methylation: Vec<Vec<i32>> = methyl_values
         .get(allele)
         .ok_or("allele not in methyl_values")?
-        .split(",")
-        .map(|x| x.parse::<f32>().expect("methylation value not a float"))
-        .collect();
+        .clone();
     let start_site = methylation.len().saturating_sub(last_n_sites);
-    let last_n: Vec<i32> = methylation[start_site..]
-        .iter()
-        .filter(|x| !x.is_nan())
-        .map(|x| (x * 1000.0).round() as i32)
-        .collect();
-    let methylation_value = match median(&last_n) {
-        Some(m) => m / 1000.0,
-        None => f32::NAN,
-    };
+    let last_n = &methylation[start_site..].to_vec();
+    let last_n_i32 = last_n.iter().flatten().cloned().collect::<Vec<i32>>();
+    if last_n_i32.is_empty() {
+        return Ok(f32::NAN);
+    }
+    let methylation_value = (1000.0 * last_n_i32.iter().filter(|x| **x >= 128).count() as f32
+        / last_n_i32.len() as f32)
+        .round()
+        / 1000.0;
     Ok(methylation_value)
 }
 
@@ -704,16 +702,12 @@ pub fn join_partial_alleles(
     region_coordinates: &RegionCoordinates,
     fp_graph: &FpGraph,
     fp_info: &FingerprintInfo,
-    all_ends_allele_methyl: &Option<MethOutput>,
+    all_ends_ml_per_allele: &Option<BTreeMap<String, Vec<Vec<i32>>>>,
     qal_alleles: &Vec<String>,
 ) -> Result<Vec<AlleleSummary>, DError> {
-    let mut methyl_values = BTreeMap::new();
-    if all_ends_allele_methyl.is_some() {
-        methyl_values = all_ends_allele_methyl
-            .clone()
-            .unwrap()
-            .methylation_per_site
-            .clone();
+    let mut methyl_values: BTreeMap<String, Vec<Vec<i32>>> = BTreeMap::new();
+    if all_ends_ml_per_allele.is_some() {
+        methyl_values = all_ends_ml_per_allele.clone().unwrap().clone();
     }
     let mut merged_allele_summary = Vec::new();
     let mut distal_alleles_handled = Vec::new();
@@ -736,7 +730,8 @@ pub fn join_partial_alleles(
             1,
         )?;
         if proximal_to_remove.len() == 1
-            && !(all_ends_hap_backgrounds.len() == 4 && all_ends_hap_backgrounds.contains_key(&proximal_to_remove[0]))
+            && !(all_ends_hap_backgrounds.len() == 4
+                && all_ends_hap_backgrounds.contains_key(&proximal_to_remove[0]))
         {
             let all_starts_hap_backgrounds = all_starts_hap_backgrounds
                 .remove(&proximal_to_remove[0])
@@ -755,7 +750,8 @@ pub fn join_partial_alleles(
         if distal_no_cis_dup.len() == 5 {
             let distal_to_remove = remove_redundant_alleles(&distal_no_cis_dup, 1)?;
             if distal_to_remove.len() == 1
-                && !(all_starts_hap_backgrounds.len() == 4 && all_starts_hap_backgrounds.contains_key(&distal_to_remove[0]))
+                && !(all_starts_hap_backgrounds.len() == 4
+                    && all_starts_hap_backgrounds.contains_key(&distal_to_remove[0]))
             {
                 let _ = all_ends_hap_backgrounds
                     .remove(&distal_to_remove[0])

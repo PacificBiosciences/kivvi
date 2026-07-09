@@ -742,8 +742,9 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         )?;
     // all ends methylation
     let mut all_ends_allele_methyl: Option<MethOutput> = None;
+    let mut all_ends_ml_per_allele: Option<BTreeMap<String, Vec<Vec<i32>>>> = None;
     if !methyl_probs.is_empty() {
-        let (all_ends_meth_out, _all_ends_reads_methyl_value) = get_methyl_info(
+        let (all_ends_meth_out, _all_ends_reads_methyl_value, ml_per_allele) = get_methyl_info(
             &fp_info,
             &segment_methyl_prob,
             &cpg_sites_per_read,
@@ -751,6 +752,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
             &region_coordinates.methyl_sites,
         )?;
         all_ends_allele_methyl = Some(all_ends_meth_out);
+        all_ends_ml_per_allele = Some(ml_per_allele);
     }
 
     // call variants on fingerprints
@@ -768,7 +770,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     let mut allele_methyl: Option<MethOutput> = None;
     if !methyl_probs.is_empty() {
         if variant_report.fp_suppporting_reads.is_some() {
-            let (meth_out, _alleles_reads_methyl_value) = get_methyl_info(
+            let (meth_out, _alleles_reads_methyl_value, _ml_per_allele) = get_methyl_info(
                 &fp_info,
                 &segment_methyl_prob,
                 &cpg_sites_per_read,
@@ -824,7 +826,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         &region_coordinates,
         &fp_graph,
         &fp_info,
-        &all_ends_allele_methyl,
+        &all_ends_ml_per_allele,
         &qal_alleles,
     )?;
 
