@@ -655,6 +655,9 @@ fn remove_redundant_haps(
         let hap1_len = hap1.len();
         for (hap2, overlap_len) in hap1_overlaps.iter() {
             let hap2_len = hap2.len();
+            if hap1_len == hap2_len && redundant_haps.contains(hap1) {
+                continue;
+            }
             if complete.contains(hap1) {
                 if hap2_len == *overlap_len {
                     redundant_haps.push(hap2.clone());
@@ -675,6 +678,9 @@ fn remove_redundant_haps(
             if hap1 != hap2 {
                 let hap1_len = hap1.len();
                 let hap2_len = hap2.len();
+                if hap1_len == hap2_len && redundant_haps.contains(hap1) {
+                    continue;
+                }
                 if hap1_len >= hap2_len {
                     if hap2_len > 5 && hap1[1..hap2_len] == hap2[1..hap2_len] {
                         if !redundant_haps.contains(hap2) {

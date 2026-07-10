@@ -639,8 +639,14 @@ fn remove_redundant_alleles(
     alleles_to_check: &Vec<String>,
     num_turns: usize,
 ) -> Result<Vec<String>, DError> {
-    let mut alleles_to_remove = Vec::new();
-    for _ in 0..num_turns {
+    let mut alleles_to_remove: Vec<String> = Vec::new();
+    for turn_index in 0..num_turns {
+        debug!("Turn {turn_index}");
+        let alleles_to_check = alleles_to_check
+            .iter()
+            .filter(|x| !alleles_to_remove.contains(*x))
+            .map(|x| x.clone())
+            .collect::<Vec<String>>();
         let alleles_to_check_haps: BTreeMap<Vec<i32>, String> = alleles_to_check
             .iter()
             .map(|x| {
@@ -668,14 +674,17 @@ fn remove_redundant_alleles(
             for (matching_allele, overlap_len) in allele_match_info.iter() {
                 let matching_allele_name = alleles_to_check_haps.get(matching_allele).unwrap();
                 let matching_allele_size = matching_allele.len();
+                debug!("Checking if {allele_name} is redundant with {matching_allele_name}: overlap length {overlap_len}, allele size {allele_size}, matching allele size {matching_allele_size}");
                 if allele_size < matching_allele_size
-                    && *overlap_len >= 5
+                    && *overlap_len >= 4
                     && *overlap_len > allele_size / 2
                 {
-                    alleles_to_remove.push(allele_name.clone());
-                    debug!("remove redundant allele: {allele_name}, redundant with {matching_allele_name}");
-                    removed_one_redundant = true;
-                    break;
+                    if !alleles_to_remove.contains(allele_name) {
+                        alleles_to_remove.push(allele_name.clone());
+                        debug!("remove redundant allele: {allele_name}, redundant with {matching_allele_name}");
+                        removed_one_redundant = true;
+                        break;
+                    }
                 }
             }
             if removed_one_redundant {
@@ -741,27 +750,78 @@ pub fn join_partial_alleles(
             }
         }
     }
-    if all_starts_hap_backgrounds.len() == 4 && all_ends_hap_backgrounds.len() == 5 {
-        let distal_no_cis_dup = all_ends_hap_backgrounds
-            .keys()
-            .filter(|x| !is_cis_dup(x, fp_info).unwrap_or(false))
-            .cloned()
-            .collect::<Vec<String>>();
+    let distal_no_cis_dup = all_ends_hap_backgrounds
+        .keys()
+        .filter(|x| !is_cis_dup(x, fp_info).unwrap_or(false))
+        .cloned()
+        .collect::<Vec<String>>();
+    if all_starts_hap_backgrounds.len() == 4 {
         if distal_no_cis_dup.len() == 5 {
             let distal_to_remove = remove_redundant_alleles(&distal_no_cis_dup, 1)?;
             if distal_to_remove.len() == 1
                 && !(all_starts_hap_backgrounds.len() == 4
                     && all_starts_hap_backgrounds.contains_key(&distal_to_remove[0]))
             {
-                let _ = all_ends_hap_backgrounds
-                    .remove(&distal_to_remove[0])
-                    .unwrap();
+                if all_ends_hap_backgrounds.contains_key(&distal_to_remove[0]) {
+                    let _ = all_ends_hap_backgrounds
+                        .remove(&distal_to_remove[0])
+                        .unwrap();
+                }
                 if complete_hap_backgrounds.contains_key(&distal_to_remove[0]) {
                     let _ = complete_hap_backgrounds.remove(&distal_to_remove[0]);
                 }
             }
+        } else if distal_no_cis_dup.len() == 6 {
+            let distal_to_remove = remove_redundant_alleles(&distal_no_cis_dup, 2)?;
+            if distal_to_remove.len() <= 2 {
+                for distal_to_remove_allele in distal_to_remove {
+                    if !(all_starts_hap_backgrounds.len() == 4
+                        && all_starts_hap_backgrounds.contains_key(&distal_to_remove_allele))
+                    {
+                        if all_ends_hap_backgrounds.contains_key(&distal_to_remove_allele) {
+                            let _ = all_ends_hap_backgrounds
+                                .remove(&distal_to_remove_allele)
+                                .unwrap();
+                        }
+                        if complete_hap_backgrounds.contains_key(&distal_to_remove_allele) {
+                            let _ = complete_hap_backgrounds.remove(&distal_to_remove_allele);
+                        }
+                    }
+                }
+            }
+        } else if distal_no_cis_dup.len() == 7 {
+            let distal_to_remove = remove_redundant_alleles(&distal_no_cis_dup, 3)?;
+            if distal_to_remove.len() <= 3 {
+                for distal_to_remove_allele in distal_to_remove {
+                    if !(all_starts_hap_backgrounds.len() == 4
+                        && all_starts_hap_backgrounds.contains_key(&distal_to_remove_allele))
+                    {
+                        if all_ends_hap_backgrounds.contains_key(&distal_to_remove_allele) {
+                            let _ = all_ends_hap_backgrounds
+                                .remove(&distal_to_remove_allele)
+                                .unwrap();
+                        }
+                        if complete_hap_backgrounds.contains_key(&distal_to_remove_allele) {
+                            let _ = complete_hap_backgrounds.remove(&distal_to_remove_allele);
+                        }
+                    }
+                }
+            }
         }
     }
+    debug!("After removing redundant alleles:");
+    debug!(
+        "complete_hap_backgrounds: {:?}",
+        complete_hap_backgrounds.keys().collect::<Vec<&String>>()
+    );
+    debug!(
+        "all_starts_hap_backgrounds: {:?}",
+        all_starts_hap_backgrounds.keys().collect::<Vec<&String>>()
+    );
+    debug!(
+        "all_ends_hap_backgrounds: {:?}",
+        all_ends_hap_backgrounds.keys().collect::<Vec<&String>>()
+    );
 
     let mut assembled_chr4_allele = 0;
     let mut assembled_chr10_allele = 0;
@@ -946,7 +1006,7 @@ pub fn join_partial_alleles(
                                     .replace("chromosome_unknown", "unknown"),
                                 distal_haplotype: background,
                                 allele_type: String::from("merged"),
-                                allele_size: allele_size1,
+                                allele_size: allele_size1.clone(),
                                 methylation: methylation_value,
                                 ending_in_qAL: ending_in_qAL,
                             });
@@ -975,7 +1035,7 @@ pub fn join_partial_alleles(
                                     .replace("chromosome_unknown", "unknown"),
                                 distal_haplotype: background,
                                 allele_type: String::from("merged"),
-                                allele_size: allele_size2,
+                                allele_size: allele_size2.clone(),
                                 methylation: methylation_value,
                                 ending_in_qAL: ending_in_qAL,
                             });
@@ -1006,7 +1066,7 @@ pub fn join_partial_alleles(
                                     .replace("chromosome_unknown", "unknown"),
                                 distal_haplotype: background,
                                 allele_type: String::from("merged"),
-                                allele_size: allele_size3,
+                                allele_size: allele_size3.clone(),
                                 methylation: methylation_value,
                                 ending_in_qAL: ending_in_qAL,
                             });
@@ -1035,7 +1095,7 @@ pub fn join_partial_alleles(
                                     .replace("chromosome_unknown", "unknown"),
                                 distal_haplotype: background,
                                 allele_type: String::from("merged"),
-                                allele_size: allele_size4,
+                                allele_size: allele_size4.clone(),
                                 methylation: methylation_value,
                                 ending_in_qAL: ending_in_qAL,
                             });
@@ -1100,16 +1160,53 @@ pub fn join_partial_alleles(
 
                     for allele in &right_flanks {
                         if !distal_alleles_handled.contains(allele) {
-                            // we can add the shorter of the two left flanks
-                            let allele_size =
+                            let mut allele_size =
                                 allele.split("-").filter(|x| !x.contains("Flank")).count()
                                     + left_flank_size_short;
+                            // we can add the shorter of the two left flanks
+                            if allele == &right_flank1 {
+                                let allele_size1 = allele_size1
+                                    .split(">=")
+                                    .last()
+                                    .unwrap()
+                                    .parse::<usize>()
+                                    .unwrap();
+                                let allele_size4 = allele_size4
+                                    .split(">=")
+                                    .last()
+                                    .unwrap()
+                                    .parse::<usize>()
+                                    .unwrap();
+                                let min_size = allele_size1.min(allele_size4);
+                                if allele_size > min_size {
+                                    allele_size = min_size;
+                                }
+                            }
+                            if allele == &right_flank2 {
+                                let allele_size2 = allele_size2
+                                    .split(">=")
+                                    .last()
+                                    .unwrap()
+                                    .parse::<usize>()
+                                    .unwrap();
+                                let allele_size3 = allele_size3
+                                    .split(">=")
+                                    .last()
+                                    .unwrap()
+                                    .parse::<usize>()
+                                    .unwrap();
+                                let min_size = allele_size2.min(allele_size3);
+                                if allele_size > min_size {
+                                    allele_size = min_size;
+                                }
+                            }
                             let this_allele_first_node = allele.split("-").next().unwrap();
                             let background = all_ends_hap_backgrounds.get(allele).unwrap().clone();
                             let methylation_value =
                                 get_methylation_value(allele, &methyl_values, None)?;
                             let ending_in_qAL = qal_alleles.contains(allele);
-                            if left_flank_last_nodes.contains(&this_allele_first_node) {
+                            if !allele.starts_with("LeftFlank") && !allele.starts_with("RightFlank")
+                            {
                                 merged_allele_summary.push(AlleleSummary {
                                     allele_name: allele.clone(),
                                     chromosome: infered_chromosome.clone(),
@@ -1120,6 +1217,8 @@ pub fn join_partial_alleles(
                                     ending_in_qAL: ending_in_qAL,
                                 });
                             } else {
+                                let allele_size =
+                                    allele.split("-").filter(|x| !x.contains("Flank")).count();
                                 merged_allele_summary.push(AlleleSummary {
                                     allele_name: allele.clone(),
                                     chromosome: infered_chromosome.clone(),
@@ -1153,6 +1252,9 @@ pub fn join_partial_alleles(
         .filter(|(k, _v)| !proximal_alleles_handled.contains(k))
         .map(|(k, v)| k.clone())
         .collect::<Vec<String>>();
+    debug!("After handling pairs of allele types:");
+    debug!("remaining_distal_alleles: {remaining_distal_alleles:?}");
+    debug!("remaining_proximal_alleles: {remaining_proximal_alleles:?}");
     /*
     if remaining_proximal_alleles.len() > remaining_distal_alleles.len()
         && all_starts_hap_backgrounds.len() >= 4
@@ -1259,6 +1361,7 @@ pub fn join_partial_alleles(
     for (allele, background) in all_ends_hap_backgrounds.iter() {
         let ending_in_qAL = qal_alleles.contains(allele);
         if !distal_alleles_handled.contains(allele) {
+            debug!("Evaluating remaining distal alleles: {allele} {background}");
             let methylation_value = get_methylation_value(allele, &methyl_values, None)?;
             let allele_size = allele.split("-").filter(|x| !x.contains("Flank")).count();
             if is_cis_dup(allele, fp_info)? {
