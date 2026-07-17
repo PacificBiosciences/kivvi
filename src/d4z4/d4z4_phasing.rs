@@ -869,11 +869,13 @@ pub fn process_alleles(
         .collect::<Vec<Vec<i32>>>();
     if size1_allele.len() == 1 && distal_no_cis_dup.len() >= 5 {
         if let Some(size1_allele) = size1_allele.first() {
+            debug!("removing size1_allele {size1_allele:?}");
             kept_ending_haps.retain(|hap| hap != size1_allele);
             kept_complete_set.remove(size1_allele);
         }
     }
-    if kept_starting_haps.len() >= 5 && kept_ending_haps.len() >= 4 {
+    if kept_starting_haps.len() >= 5 {
+        // && kept_ending_haps.len() >= 4 {
         let num_turns = kept_starting_haps.len() - 4;
         let proximal_to_remove = remove_redundant_haplotypes(&kept_starting_haps, num_turns)?;
         if proximal_to_remove.len() <= num_turns {
@@ -897,7 +899,8 @@ pub fn process_alleles(
         .filter(|hap| !is_cis_dup_hap(hap, fp_info).unwrap_or(false))
         .cloned()
         .collect::<Vec<Vec<i32>>>();
-    if kept_starting_haps.len() == 4 && distal_no_cis_dup.len() >= 5 {
+    if distal_no_cis_dup.len() >= 5 {
+        // kept_starting_haps.len() == 4 &&
         let num_turns = distal_no_cis_dup.len() - 4;
         let distal_to_remove = remove_redundant_haplotypes(&distal_no_cis_dup, num_turns)?;
         if distal_to_remove.len() <= num_turns {
