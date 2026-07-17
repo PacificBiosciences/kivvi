@@ -40,6 +40,7 @@ pub struct Settings {
 
     /// sensitive mode
     #[clap(long, action)]
+    #[clap(hide = true)]
     #[clap(help = "If specified, paraphase will use lower cutoff for fingerprint")]
     pub sensitive: bool,
 

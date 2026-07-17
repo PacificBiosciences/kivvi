@@ -226,6 +226,22 @@ fn remove_if_exists(path: impl AsRef<Path>) -> DResult {
     Ok(())
 }
 
+fn ensure_reads_present(
+    sample_id: &str,
+    stage: &str,
+    region_coordinates: &crate::util::RegionCoordinates,
+    read_count: usize,
+) -> DResult {
+    if read_count == 0 {
+        let regions = region_coordinates.extract_regions.join(" ");
+        return Err(format!(
+            "No reads found for sample '{sample_id}' during {stage}. Checked region(s): {regions}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// Parse user-provided variant list
 /// # Arguments
 /// * `variant_file_path` - path to the variant file
@@ -291,11 +307,23 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
         realigned_bam.clone(),
         false,
     )?;
+    ensure_reads_present(
+        sample_id,
+        "read extraction/realignment",
+        &region_coordinates,
+        realn_records_unfiltered.len(),
+    )?;
     let repeat_records = filter_realignments_kiv2(
         realn_records_unfiltered,
         writer,
         &reference,
         realigned_bam.clone(),
+    )?;
+    ensure_reads_present(
+        sample_id,
+        "alignment filtering",
+        &region_coordinates,
+        repeat_records.len(),
     )?;
 
     // get flanking reads
@@ -569,6 +597,12 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         realigned_bam.clone(),
         true,
     )?;
+    ensure_reads_present(
+        sample_id,
+        "read extraction/realignment",
+        &region_coordinates,
+        realn_records_unfiltered.len(),
+    )?;
     let (repeat_records, mut white_list_read_segments, blacklist_segments) =
         filter_realignments_d4z4(
             realn_records_unfiltered,
@@ -576,6 +610,12 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
             &reference,
             realigned_bam.clone(),
         )?;
+    ensure_reads_present(
+        sample_id,
+        "alignment filtering",
+        &region_coordinates,
+        repeat_records.len(),
+    )?;
     //debug!("white_list_read_segments {:?}", white_list_read_segments);
 
     // get flanking reads
