@@ -884,6 +884,7 @@ pub fn process_alleles(
             for (proximal_to_remove_allele, redundant_allele) in &proximal_to_remove {
                 if !(kept_ending_haps.len() == 4
                     && kept_ending_haps.contains(proximal_to_remove_allele))
+                    && kept_starting_haps.contains(proximal_to_remove_allele)
                 {
                     kept_starting_haps.retain(|hap| hap != proximal_to_remove_allele);
                     kept_complete_set.remove(proximal_to_remove_allele);
