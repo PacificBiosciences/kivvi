@@ -874,7 +874,7 @@ pub fn process_alleles(
             kept_complete_set.remove(size1_allele);
         }
     }
-    if kept_starting_haps.len() >= 5 && kept_ending_haps.len() >= 4 {
+    if kept_starting_haps.len() >= 5 {
         // && kept_ending_haps.len() >= 4 {
         let num_turns = kept_starting_haps.len() - 4;
         debug!("removing redundant proximal alleles, num_turns {num_turns}");
@@ -902,7 +902,7 @@ pub fn process_alleles(
         .filter(|hap| !is_cis_dup_hap(hap, fp_info).unwrap_or(false))
         .cloned()
         .collect::<Vec<Vec<i32>>>();
-    if distal_no_cis_dup.len() >= 5 && kept_starting_haps.len() >= 4 {
+    if distal_no_cis_dup.len() >= 5 {
         // kept_starting_haps.len() == 4 &&
         let num_turns = distal_no_cis_dup.len() - 4;
         debug!("removing redundant distal alleles, num_turns {num_turns}");
