@@ -4,8 +4,8 @@ use crate::bam_operation::{
 };
 use crate::cli::Settings;
 use crate::d4z4::d4z4_phasing::{
-    find_cis_dup, find_qal_alleles, get_background_for_allele_ends,
-    get_background_for_allele_starts, haplotype_background, phase_flanking,
+    find_cis_dup, get_background_for_allele_ends, get_background_for_allele_starts,
+    haplotype_background, phase_flanking,
 };
 use crate::d4z4::join_partial_alleles::{join_partial_alleles, AlleleSummary};
 use crate::depth::median;
@@ -14,7 +14,7 @@ use crate::methylation::{get_methyl_info, methyl_prob_by_position, MethOutput};
 use crate::plot::plot_alleles::plot_alleles_and_reads;
 use crate::read_filtering::{filter_realignments_d4z4, filter_realignments_kiv2};
 use crate::repeat_unit::fingerprint::{get_fingerprint, FingerprintInfo, ReadParameters};
-use crate::repeat_unit::fingerprint_utils::rm_redundant_finger_prints;
+use crate::repeat_unit::fingerprint_utils::{handle_qal_units, rm_redundant_finger_prints};
 use crate::util::{d4z4_coordinates, kiv2_coordinates, DError, DResult};
 use crate::variant::report_variants;
 use crate::vcf::write_vcf;
@@ -644,6 +644,8 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     let blacklist_segments = blacklist_segments.into_iter().collect::<HashSet<_>>();
     mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
 
+    let (fp_info, qal_units) = handle_qal_units(fp_info)?;
+
     // qc metrics
     let all_read_length = read_length
         .iter()
@@ -689,8 +691,13 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
 
     // find in-cis duplications
     debug!("Find in-cis duplications...");
-    let (cis_dups, cis_dups_match_index) =
-        find_cis_dup(&assembly_result, &fp_graph, &fp_info, &phasing_result)?;
+    let (cis_dups, cis_dups_match_index) = find_cis_dup(
+        &assembly_result,
+        &fp_graph,
+        &fp_info,
+        &phasing_result,
+        qal_units.clone(),
+    )?;
     debug!("cis_dups_match_index {cis_dups_match_index:?}");
 
     // find qal alleles
@@ -711,14 +718,6 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         .iter()
         .map(|x| x.clone())
         .collect::<Vec<_>>();
-    let qal = find_qal_alleles(&all_ending_haps, &fp_info);
-    let mut qal_alleles = Vec::new();
-    for allele in &qal {
-        let allele_name = vec_to_string(&vec![allele.clone()], "-");
-        let hap_string = &allele_name[0];
-        qal_alleles.push(hap_string.clone());
-    }
-    debug!("qal_alleles {qal_alleles:?}");
 
     // get all starting haps
     let (mut all_starts_hap_backgrounds, all_starts_upstream_haplotypes) =
@@ -827,7 +826,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         &fp_graph,
         &fp_info,
         &all_ends_ml_per_allele,
-        &qal_alleles,
+        qal_units,
     )?;
 
     // write to json

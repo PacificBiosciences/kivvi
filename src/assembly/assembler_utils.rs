@@ -283,7 +283,14 @@ pub fn filter_complete_alleles(
                             suspicious_complete_alleles.push(allele.clone());
                         }
                     } else {
-                        if *reverse_pos <= *forward_pos - 2 {
+                        if *reverse_pos == *forward_pos - 2
+                            && (*reverse_pos > allele.len() - 4
+                                || sites_supported_by_four.contains(reverse_pos))
+                            && (*forward_pos > allele.len() - 4
+                                || sites_supported_by_four.contains(forward_pos))
+                        {
+                            continue;
+                        } else if *reverse_pos <= *forward_pos - 2 {
                             suspicious_complete_alleles.push(allele.clone());
                         }
                     }

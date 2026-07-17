@@ -863,43 +863,13 @@ pub fn get_background_for_allele_ends(
     Ok((all_ends_hap_backgrounds, all_ends_reads_match_allele_index))
 }
 
-pub fn find_qal_alleles(all_haps: &[Vec<i32>], fp_info: &FingerprintInfo) -> HashSet<Vec<i32>> {
-    let d4z4_region_coordinates = d4z4_coordinates();
-    let long_insertion_variants = d4z4_region_coordinates
-        .variants_to_call
-        .iter()
-        .rev()
-        .take(3)
-        .cloned()
-        .collect::<Vec<_>>();
-    let long_insertion_variant_codes = fp_info
-        .variants_by_position
-        .iter()
-        .enumerate()
-        .filter_map(|(index, (_pos, variants_at_pos))| {
-            for long_insertion_variant in &long_insertion_variants {
-                if let Some(alt_index) = variants_at_pos
-                    .iter()
-                    .position(|variant| variant == long_insertion_variant)
-                {
-                    if alt_index <= 8 {
-                        return Some((index, b'1' + alt_index as u8));
-                    }
-                }
-            }
-            None
-        })
-        .collect::<Vec<_>>();
+pub fn find_qal_alleles(all_haps: &[Vec<i32>], qal_units: Vec<i32>) -> HashSet<Vec<i32>> {
     all_haps
         .iter()
         .filter(|hap| hap.last() == Some(&-10) && hap.len() >= 2)
         .filter_map(|hap| {
             let second_to_last_unit = hap[hap.len() - 2];
-            let unit_fp = fp_info.good_name_to_seq.get(&second_to_last_unit)?;
-            if long_insertion_variant_codes
-                .iter()
-                .any(|&(index, expected_code)| unit_fp.get(index) == Some(&expected_code))
-            {
+            if qal_units.contains(&second_to_last_unit) {
                 Some(hap.clone())
             } else {
                 None
@@ -922,6 +892,7 @@ pub fn find_cis_dup(
     fp_graph: &FpGraph,
     fp_info: &FingerprintInfo,
     phasing_result: &BTreeMap<String, GeneCall>,
+    qal_units: Vec<i32>,
 ) -> Result<
     (
         Vec<Vec<Vec<i32>>>,
@@ -940,7 +911,7 @@ pub fn find_cis_dup(
         all_haps.insert(hap.to_vec());
     }
     let all_haps: Vec<Vec<i32>> = all_haps.iter().map(|x| x.clone()).collect::<Vec<_>>();
-    let qal_alleles = find_qal_alleles(&all_haps, fp_info);
+    let qal_alleles = find_qal_alleles(&all_haps, qal_units);
     debug!("qal_alleles identified by long insertion before -10 {qal_alleles:?}");
     let cis_dup_alleles = all_haps
         .iter()

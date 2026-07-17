@@ -1,7 +1,7 @@
 use crate::bam_operation::ClippedReads;
 use crate::realignment::utilities::{Variant, VariantType};
 use crate::repeat_unit::fingerprint::{FingerprintInfo, ReadParameters};
-use crate::util::{DError, FlankReads, RegionCoordinates};
+use crate::util::{d4z4_coordinates, DError, FlankReads, RegionCoordinates};
 use itertools::Itertools;
 use log::{debug, trace};
 use std::collections::BTreeMap;
@@ -731,6 +731,99 @@ pub fn get_start_end_fps(
         }
     }
     Ok(start_end_fps)
+}
+
+pub fn handle_qal_units(fp_info: FingerprintInfo) -> Result<(FingerprintInfo, Vec<i32>), DError> {
+    let mut new_read_edges = BTreeMap::new();
+    let mut new_replace = BTreeMap::<i32, i32>::new();
+    let mut qal_units = Vec::new();
+
+    let d4z4_region_coordinates = d4z4_coordinates();
+    let long_insertion_variants = d4z4_region_coordinates
+        .variants_to_call
+        .iter()
+        .rev()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let long_insertion_variant_codes = fp_info
+        .variants_by_position
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_pos, variants_at_pos))| {
+            for long_insertion_variant in &long_insertion_variants {
+                if let Some(alt_index) = variants_at_pos
+                    .iter()
+                    .position(|variant| variant == long_insertion_variant)
+                {
+                    if alt_index <= 8 {
+                        return Some((index, b'1' + alt_index as u8));
+                    }
+                }
+            }
+            None
+        })
+        .collect::<Vec<_>>();
+
+    for (unit_name, unit_fp) in fp_info.good_name_to_seq.iter() {
+        for (index, expected_code) in long_insertion_variant_codes.iter() {
+            if unit_fp.get(*index) == Some(expected_code) {
+                debug!(
+                    "unit {unit_name:?} has long insertion variant at index {index}, unit fp: {:?}",
+                    std::str::from_utf8(unit_fp)?
+                );
+                qal_units.push(*unit_name);
+                let mut unit_seq_without_insertion = unit_fp.clone();
+                unit_seq_without_insertion[*index] = b'0';
+                for (other_unit_name, other_unit_fp) in fp_info.good_name_to_seq.iter() {
+                    if other_unit_fp == &unit_seq_without_insertion {
+                        debug!("Found matching unit {other_unit_name:?} for {unit_name:?}, unit fp: {:?}", std::str::from_utf8(other_unit_fp)?);
+                        new_replace.entry(*unit_name).or_insert(*other_unit_name);
+                        qal_units.push(*other_unit_name);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    debug!("new_replace: {new_replace:?}");
+
+    if new_replace.is_empty() {
+        return Ok((fp_info.clone(), qal_units));
+    }
+
+    for (each_read, read_fps) in fp_info.read_edges.iter() {
+        let mut new_fps = Vec::new();
+        for fp in read_fps {
+            if new_replace.contains_key(fp) {
+                let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
+                new_fps.push(*to_replace);
+            } else {
+                new_fps.push(*fp);
+            }
+        }
+        if new_fps != read_fps.to_vec() {
+            debug!("updated edges {each_read}: from {read_fps:?} to {new_fps:?}");
+        }
+        new_read_edges
+            .entry(each_read.to_string())
+            .or_insert(new_fps);
+    }
+
+    Ok((
+        FingerprintInfo {
+            read_edges: new_read_edges,
+            grouped_reads: fp_info.grouped_reads,
+            fp_count: fp_info.fp_count,
+            good_name_to_seq: fp_info.good_name_to_seq,
+            read_positions: fp_info.read_positions,
+            read_bases: fp_info.read_bases,
+            fp_to_tid: fp_info.fp_to_tid,
+            variants_by_position: fp_info.variants_by_position,
+        },
+        qal_units,
+    ))
 }
 
 /// Compare fingerprints and remove redundant ones
