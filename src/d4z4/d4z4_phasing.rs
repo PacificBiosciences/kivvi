@@ -790,7 +790,7 @@ fn remove_redundant_haplotypes(
             let hap_size = hap.len();
             for (matching_hap, overlap_len) in hap_match_info {
                 let matching_hap_size = matching_hap.len();
-                if *overlap_len >= 4 && *overlap_len >= hap_size / 2 {
+                if *overlap_len >= 5 && (*overlap_len - 1) >= (hap_size - 1) / 2 {
                     if hap_size > matching_hap_size {
                         continue;
                     }
@@ -874,10 +874,12 @@ pub fn process_alleles(
             kept_complete_set.remove(size1_allele);
         }
     }
-    if kept_starting_haps.len() >= 5 {
+    if kept_starting_haps.len() >= 5 && kept_ending_haps.len() >= 4 {
         // && kept_ending_haps.len() >= 4 {
         let num_turns = kept_starting_haps.len() - 4;
+        debug!("removing redundant proximal alleles, num_turns {num_turns}");
         let proximal_to_remove = remove_redundant_haplotypes(&kept_starting_haps, num_turns)?;
+        debug!("proximal_to_remove {proximal_to_remove:?}");
         if proximal_to_remove.len() <= num_turns {
             for (proximal_to_remove_allele, redundant_allele) in &proximal_to_remove {
                 if !(kept_ending_haps.len() == 4
@@ -899,20 +901,24 @@ pub fn process_alleles(
         .filter(|hap| !is_cis_dup_hap(hap, fp_info).unwrap_or(false))
         .cloned()
         .collect::<Vec<Vec<i32>>>();
-    if distal_no_cis_dup.len() >= 5 {
+    if distal_no_cis_dup.len() >= 5 && kept_starting_haps.len() >= 4 {
         // kept_starting_haps.len() == 4 &&
         let num_turns = distal_no_cis_dup.len() - 4;
+        debug!("removing redundant distal alleles, num_turns {num_turns}");
         let distal_to_remove = remove_redundant_haplotypes(&distal_no_cis_dup, num_turns)?;
+        debug!("distal_to_remove {distal_to_remove:?}");
         if distal_to_remove.len() <= num_turns {
             for (distal_to_remove_allele, redundant_allele) in &distal_to_remove {
                 if !(kept_starting_haps.len() == 4
                     && kept_starting_haps.contains(distal_to_remove_allele))
                 {
+                    debug!("removing distal_to_remove_allele {distal_to_remove_allele:?}");
                     kept_ending_haps.retain(|hap| hap != distal_to_remove_allele);
                     kept_complete_set.remove(distal_to_remove_allele);
                 } else if !(kept_starting_haps.len() == 4
                     && kept_starting_haps.contains(redundant_allele))
                 {
+                    debug!("removing redundant_allele {redundant_allele:?}");
                     kept_ending_haps.retain(|hap| hap != redundant_allele);
                     kept_complete_set.remove(redundant_allele);
                 }

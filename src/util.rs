@@ -298,7 +298,7 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
 
     // 1-based
     let mut exclude_sites: Vec<i64> = (1136..1209)
-        .chain(1093..1098)
+        //.chain(1093..1098)
         .chain(127..173)
         .chain(3111..3116)
         .map(|x| x as i64)
