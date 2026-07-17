@@ -1,8 +1,6 @@
 use crate::caller::vec_to_string;
-use crate::depth::median;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
 use crate::util::DError;
-use itertools::Itertools;
 use log::{debug, trace, warn};
 use rust_htslib::bam::record::Aux;
 use rust_htslib::bam::Record;

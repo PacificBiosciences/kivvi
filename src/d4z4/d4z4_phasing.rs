@@ -7,7 +7,7 @@ use crate::assembly::assembler_utils::{
 use crate::caller::vec_to_string;
 use crate::d4z4::join_partial_alleles::is_cis_dup_by_read_start_offset;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
-use crate::util::{d4z4_coordinates, DError};
+use crate::util::DError;
 use crate::variant::get_read_position_in_allele;
 use itertools::Itertools;
 use log::{debug, trace};

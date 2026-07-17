@@ -1,7 +1,5 @@
 use crate::assembly::assembler::FpGraph;
 use crate::assembly::assembler_utils::find_overlapping_alleles;
-use crate::depth::median;
-use crate::methylation::MethOutput;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
 use crate::util::RegionCoordinates;
 use crate::util::{DError, DResult};
@@ -26,7 +24,7 @@ pub struct AlleleSummary {
     /// methylation level of the allele
     pub methylation: f32,
     /// whether the allele ends in a qAL unit
-    pub ending_in_qAL: bool,
+    pub ending_in_qal: bool,
 }
 
 /// Classify a fingerprint
@@ -503,7 +501,7 @@ fn get_allele_summary(
     debug!("sorted_alleles {:?}", sorted_alleles);
     distal_alleles_handled.push(sorted_alleles[1].clone());
     proximal_alleles_handled.push(sorted_alleles[0].clone());
-    let ending_in_qAL = is_qal_allele(&sorted_alleles[1], qal_units);
+    let ending_in_qal = is_qal_allele(&sorted_alleles[1], qal_units);
     let chr_info = if all_starts_hap_backgrounds.contains_key(&sorted_alleles[0]) {
         all_starts_hap_backgrounds.get(&sorted_alleles[0]).unwrap()
     } else {
@@ -525,7 +523,7 @@ fn get_allele_summary(
         allele_type: String::from("merged"),
         allele_size: allele_size,
         methylation: methylation_value,
-        ending_in_qAL: ending_in_qAL,
+        ending_in_qal,
     })
 }
 
@@ -633,7 +631,7 @@ fn get_methylation_value(
     if !methyl_values.contains_key(allele) {
         return Ok(f32::NAN);
     }
-    let last_n_sites = 5;
+    let last_n_sites = last_n_sites.unwrap_or(5);
     let methylation: Vec<Vec<i32>> = methyl_values
         .get(allele)
         .ok_or("allele not in methyl_values")?
@@ -865,7 +863,7 @@ pub fn join_partial_alleles(
             allele_type: String::from("assembled"),
             allele_size: allele_size.to_string(),
             methylation: methylation_value,
-            ending_in_qAL: is_qal_allele(allele, &qal_units),
+            ending_in_qal: is_qal_allele(allele, &qal_units),
         });
         distal_alleles_handled.push(allele.clone());
         proximal_alleles_handled.push(allele.clone());
@@ -1015,7 +1013,7 @@ pub fn join_partial_alleles(
                                 all_ends_hap_backgrounds.get(&right_flank1).unwrap().clone();
                             let methylation_value =
                                 get_methylation_value(&right_flank1, &methyl_values, None)?;
-                            let ending_in_qAL = is_qal_allele(&right_flank1, &qal_units);
+                            let ending_in_qal = is_qal_allele(&right_flank1, &qal_units);
                             debug!(
                                 "adding merged allele from checking 4-way overlaps: {allele_name1}"
                             );
@@ -1028,7 +1026,7 @@ pub fn join_partial_alleles(
                                 allele_type: String::from("merged"),
                                 allele_size: allele_size1.clone(),
                                 methylation: methylation_value,
-                                ending_in_qAL: ending_in_qAL,
+                                ending_in_qal,
                             });
                             distal_alleles_handled.push(right_flank1.clone());
                             proximal_alleles_handled.push(left_flank1.clone());
@@ -1044,7 +1042,7 @@ pub fn join_partial_alleles(
                                 all_ends_hap_backgrounds.get(&right_flank2).unwrap().clone();
                             let methylation_value =
                                 get_methylation_value(&right_flank2, &methyl_values, None)?;
-                            let ending_in_qAL = is_qal_allele(&right_flank2, &qal_units);
+                            let ending_in_qal = is_qal_allele(&right_flank2, &qal_units);
                             debug!(
                                 "adding merged allele from checking 4-way overlaps: {allele_name2}"
                             );
@@ -1057,7 +1055,7 @@ pub fn join_partial_alleles(
                                 allele_type: String::from("merged"),
                                 allele_size: allele_size2.clone(),
                                 methylation: methylation_value,
-                                ending_in_qAL: ending_in_qAL,
+                                ending_in_qal,
                             });
                             distal_alleles_handled.push(right_flank2.clone());
                             proximal_alleles_handled.push(left_flank2.clone());
@@ -1075,7 +1073,7 @@ pub fn join_partial_alleles(
                                 all_ends_hap_backgrounds.get(&right_flank2).unwrap().clone();
                             let methylation_value =
                                 get_methylation_value(&right_flank2, &methyl_values, None)?;
-                            let ending_in_qAL = is_qal_allele(&right_flank2, &qal_units);
+                            let ending_in_qal = is_qal_allele(&right_flank2, &qal_units);
                             debug!(
                                 "adding merged allele from checking 4-way overlaps: {allele_name3}"
                             );
@@ -1088,7 +1086,7 @@ pub fn join_partial_alleles(
                                 allele_type: String::from("merged"),
                                 allele_size: allele_size3.clone(),
                                 methylation: methylation_value,
-                                ending_in_qAL: ending_in_qAL,
+                                ending_in_qal,
                             });
                             distal_alleles_handled.push(right_flank2.clone());
                             proximal_alleles_handled.push(left_flank1.clone());
@@ -1104,7 +1102,7 @@ pub fn join_partial_alleles(
                                 all_ends_hap_backgrounds.get(&right_flank1).unwrap().clone();
                             let methylation_value =
                                 get_methylation_value(&right_flank1, &methyl_values, None)?;
-                            let ending_in_qAL = is_qal_allele(&right_flank1, &qal_units);
+                            let ending_in_qal = is_qal_allele(&right_flank1, &qal_units);
                             debug!(
                                 "adding merged allele from checking 4-way overlaps: {allele_name4}"
                             );
@@ -1117,7 +1115,7 @@ pub fn join_partial_alleles(
                                 allele_type: String::from("merged"),
                                 allele_size: allele_size4.clone(),
                                 methylation: methylation_value,
-                                ending_in_qAL: ending_in_qAL,
+                                ending_in_qal,
                             });
                             distal_alleles_handled.push(right_flank1.clone());
                             proximal_alleles_handled.push(left_flank2.clone());
@@ -1220,11 +1218,10 @@ pub fn join_partial_alleles(
                                     allele_size = min_size;
                                 }
                             }
-                            let this_allele_first_node = allele.split("-").next().unwrap();
                             let background = all_ends_hap_backgrounds.get(allele).unwrap().clone();
                             let methylation_value =
                                 get_methylation_value(allele, &methyl_values, None)?;
-                            let ending_in_qAL = is_qal_allele(allele, &qal_units);
+                            let ending_in_qal = is_qal_allele(allele, &qal_units);
                             if !allele.starts_with("LeftFlank") && !allele.starts_with("RightFlank")
                             {
                                 merged_allele_summary.push(AlleleSummary {
@@ -1234,7 +1231,7 @@ pub fn join_partial_alleles(
                                     allele_type: String::from("partial"),
                                     allele_size: format!(">={allele_size}"),
                                     methylation: methylation_value,
-                                    ending_in_qAL: ending_in_qAL,
+                                    ending_in_qal,
                                 });
                             } else {
                                 let allele_size =
@@ -1246,7 +1243,7 @@ pub fn join_partial_alleles(
                                     allele_type: String::from("partial"),
                                     allele_size: format!(">{allele_size}"),
                                     methylation: methylation_value,
-                                    ending_in_qAL: ending_in_qAL,
+                                    ending_in_qal,
                                 });
                             }
                             distal_alleles_handled.push(allele.clone());
@@ -1261,16 +1258,16 @@ pub fn join_partial_alleles(
     }
 
     // here we can do some cleanup to remove redundant alleles
-    let mut remaining_distal_alleles = all_ends_hap_backgrounds
+    let remaining_distal_alleles = all_ends_hap_backgrounds
         .iter()
         .filter(|(k, _v)| !distal_alleles_handled.contains(k))
-        .map(|(k, v)| k.clone())
+        .map(|(k, _)| k.clone())
         .filter(|x| !is_cis_dup(x, fp_info).unwrap_or(false))
         .collect::<Vec<String>>();
-    let mut remaining_proximal_alleles = all_starts_hap_backgrounds
+    let remaining_proximal_alleles = all_starts_hap_backgrounds
         .iter()
         .filter(|(k, _v)| !proximal_alleles_handled.contains(k))
-        .map(|(k, v)| k.clone())
+        .map(|(k, _)| k.clone())
         .collect::<Vec<String>>();
     debug!("After handling pairs of allele types:");
     debug!("remaining_distal_alleles: {remaining_distal_alleles:?}");
@@ -1333,7 +1330,7 @@ pub fn join_partial_alleles(
         let remaining_proximal_alleles_chromosomes = all_starts_hap_backgrounds
             .iter()
             .filter(|(k, _v)| remaining_proximal_alleles.contains(k))
-            .map(|(k, v)| v.clone())
+            .map(|(_, v)| v.clone())
             .collect::<Vec<String>>();
         debug!("remaining proximal alleles are on the following chromosomes: {remaining_proximal_alleles_chromosomes:?}");
         if remaining_proximal_alleles_chromosomes.len() == 1 {
@@ -1379,7 +1376,7 @@ pub fn join_partial_alleles(
 
     // add remaining distall alleles
     for (allele, background) in all_ends_hap_backgrounds.iter() {
-        let ending_in_qAL = is_qal_allele(allele, &qal_units);
+        let ending_in_qal = is_qal_allele(allele, &qal_units);
         if !distal_alleles_handled.contains(allele) {
             debug!("Evaluating remaining distal alleles: {allele} {background}");
             let methylation_value = get_methylation_value(allele, &methyl_values, None)?;
@@ -1392,7 +1389,7 @@ pub fn join_partial_alleles(
                     allele_type: String::from("assembled_cis_duplication"),
                     allele_size: format!("{allele_size}"),
                     methylation: methylation_value,
-                    ending_in_qAL: ending_in_qAL,
+                    ending_in_qal,
                 });
             } else {
                 if ((background == "qAIntactPolyA" && start_allele_chr4 >= 2)
@@ -1415,7 +1412,7 @@ pub fn join_partial_alleles(
                             allele_type: String::from("partial"),
                             allele_size: format!(">={allele_size}"),
                             methylation: methylation_value,
-                            ending_in_qAL: ending_in_qAL,
+                            ending_in_qal,
                         });
                     } else {
                         merged_allele_summary.push(AlleleSummary {
@@ -1425,7 +1422,7 @@ pub fn join_partial_alleles(
                             allele_type: String::from("partial"),
                             allele_size: format!(">{allele_size}"),
                             methylation: methylation_value,
-                            ending_in_qAL: ending_in_qAL,
+                            ending_in_qal,
                         });
                     }
                 } else if allele.starts_with("LeftFlank") {
@@ -1445,7 +1442,7 @@ pub fn join_partial_alleles(
                         allele_type: String::from("partial"),
                         allele_size: format!(">={allele_size}"),
                         methylation: methylation_value,
-                        ending_in_qAL: ending_in_qAL,
+                        ending_in_qal,
                     });
                 } else {
                     merged_allele_summary.push(AlleleSummary {
@@ -1455,7 +1452,7 @@ pub fn join_partial_alleles(
                         allele_type: String::from("partial"),
                         allele_size: format!(">{allele_size}"),
                         methylation: methylation_value,
-                        ending_in_qAL: ending_in_qAL,
+                        ending_in_qal,
                     });
                 }
             }
