@@ -700,25 +700,6 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     )?;
     debug!("cis_dups_match_index {cis_dups_match_index:?}");
 
-    // find qal alleles
-    let mut all_ending_haps = HashSet::new();
-    for hap in &assembly_result.complete {
-        let hap_end = hap.last().unwrap();
-        if *hap_end <= -10 {
-            all_ending_haps.insert(hap.clone());
-        }
-    }
-    for hap in &assembly_result.incomplete {
-        let hap_end = hap.last().unwrap();
-        if *hap_end <= -10 {
-            all_ending_haps.insert(hap.clone());
-        }
-    }
-    let all_ending_haps: Vec<Vec<i32>> = all_ending_haps
-        .iter()
-        .map(|x| x.clone())
-        .collect::<Vec<_>>();
-
     // get all starting haps
     let (mut all_starts_hap_backgrounds, all_starts_upstream_haplotypes) =
         get_background_for_allele_starts(
