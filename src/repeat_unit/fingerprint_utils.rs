@@ -743,7 +743,8 @@ pub fn handle_qal_units(fp_info: FingerprintInfo) -> Result<(FingerprintInfo, Ve
         .variants_to_call
         .iter()
         .rev()
-        .take(3)
+        .skip(1)
+        .take(2)
         .cloned()
         .collect::<Vec<_>>();
 
