@@ -790,7 +790,26 @@ fn remove_redundant_haplotypes(
             let hap_size = hap.len();
             for (matching_hap, overlap_len) in hap_match_info {
                 let matching_hap_size = matching_hap.len();
+                let mut is_overlap = false;
                 if *overlap_len >= 5 && (*overlap_len - 1) >= (hap_size - 1) / 2 {
+                    is_overlap = true;
+                } else if *overlap_len >= 4 {
+                    let hap_unique_units = hap
+                        .iter()
+                        .filter(|x| !matching_hap.contains(x))
+                        .collect::<HashSet<_>>();
+                    let matching_hap_unique_units = matching_hap
+                        .iter()
+                        .filter(|x| !hap.contains(x))
+                        .collect::<HashSet<_>>();
+                    if hap_unique_units.len() <= (hap_size as f64 * 0.2).floor() as usize
+                        || matching_hap_unique_units.len()
+                            <= (matching_hap_size as f64 * 0.2).floor() as usize
+                    {
+                        is_overlap = true;
+                    }
+                }
+                if is_overlap {
                     if hap_size > matching_hap_size {
                         continue;
                     }
