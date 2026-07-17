@@ -173,7 +173,7 @@ pub(crate) fn is_cis_dup_by_read_start_offset(
         && delayed_start_reads >= (supporting_reads - 1).min(delayed_start_threshold))
 }
 
-fn is_cis_dup(allele: &str, fp_info: &FingerprintInfo) -> Result<bool, DError> {
+pub(crate) fn is_cis_dup(allele: &str, fp_info: &FingerprintInfo) -> Result<bool, DError> {
     let first_node = allele.split("-").next().unwrap_or("");
     if first_node == "LeftFlank" {
         return Ok(false);
@@ -655,7 +655,8 @@ fn get_methylation_value(
 /// * `num_turns` - number of turns to remove redundant alleles
 /// # Returns
 /// * `Vec<String>` - remaining alleles
-fn remove_redundant_alleles(
+#[allow(dead_code)]
+pub(crate) fn remove_redundant_alleles(
     alleles_to_check: &Vec<String>,
     num_turns: usize,
 ) -> Result<BTreeMap<String, String>, DError> {
@@ -749,97 +750,6 @@ pub fn join_partial_alleles(
             variants.insert(fp_id.1, variant.clone());
         }
     }
-
-    // first remove some redundant alleles
-    let distal_no_cis_dup = all_ends_hap_backgrounds
-        .keys()
-        .filter(|x| !is_cis_dup(x, fp_info).unwrap_or(false))
-        .cloned()
-        .collect::<Vec<String>>();
-    let size1_allele = distal_no_cis_dup
-        .iter()
-        .filter(|x| x.split("-").count() == 2)
-        .map(|x| x.to_string())
-        .collect::<Vec<String>>();
-    // remove an allele that is only size one if there exist many alleles
-    if size1_allele.len() == 1 && distal_no_cis_dup.len() >= 5 {
-        if let Some(size1_allele) = size1_allele.first() {
-            if all_ends_hap_backgrounds.contains_key(size1_allele) {
-                let _ = all_ends_hap_backgrounds.remove(size1_allele).unwrap();
-            }
-        }
-    }
-    if all_starts_hap_backgrounds.len() >= 5 && all_ends_hap_backgrounds.len() >= 4 {
-        let num_turns = all_starts_hap_backgrounds.len() - 4;
-        let proximal_to_remove = remove_redundant_alleles(
-            &all_starts_hap_backgrounds
-                .keys()
-                .cloned()
-                .collect::<Vec<String>>(),
-            num_turns,
-        )?;
-        if proximal_to_remove.len() <= num_turns {
-            for (proximal_to_remove_allele, redundant_allele) in proximal_to_remove.iter() {
-                if !(all_ends_hap_backgrounds.len() == 4
-                    && all_ends_hap_backgrounds.contains_key(proximal_to_remove_allele))
-                {
-                    let _ = all_starts_hap_backgrounds.remove(proximal_to_remove_allele);
-                    if complete_hap_backgrounds.contains_key(proximal_to_remove_allele) {
-                        let _ = complete_hap_backgrounds.remove(proximal_to_remove_allele);
-                    }
-                } else if !(all_ends_hap_backgrounds.len() == 4
-                    && all_ends_hap_backgrounds.contains_key(redundant_allele))
-                {
-                    let _ = all_starts_hap_backgrounds.remove(redundant_allele);
-                    if complete_hap_backgrounds.contains_key(redundant_allele) {
-                        let _ = complete_hap_backgrounds.remove(redundant_allele);
-                    }
-                }
-            }
-        }
-    }
-    let distal_no_cis_dup = all_ends_hap_backgrounds
-        .keys()
-        .filter(|x| !is_cis_dup(x, fp_info).unwrap_or(false))
-        .cloned()
-        .collect::<Vec<String>>();
-    if all_starts_hap_backgrounds.len() == 4 && distal_no_cis_dup.len() >= 5 {
-        let num_turns = distal_no_cis_dup.len() - 4;
-        let distal_to_remove = remove_redundant_alleles(&distal_no_cis_dup, num_turns)?;
-        if distal_to_remove.len() <= num_turns {
-            for (distal_to_remove_allele, redundant_allele) in distal_to_remove.iter() {
-                if !(all_starts_hap_backgrounds.len() == 4
-                    && all_starts_hap_backgrounds.contains_key(distal_to_remove_allele))
-                {
-                    let _ = all_ends_hap_backgrounds.remove(distal_to_remove_allele);
-                    if complete_hap_backgrounds.contains_key(distal_to_remove_allele) {
-                        let _ = complete_hap_backgrounds.remove(distal_to_remove_allele);
-                    }
-                } else if !(all_starts_hap_backgrounds.len() == 4
-                    && all_starts_hap_backgrounds.contains_key(redundant_allele))
-                {
-                    let _ = all_ends_hap_backgrounds.remove(redundant_allele);
-                    if complete_hap_backgrounds.contains_key(redundant_allele) {
-                        let _ = complete_hap_backgrounds.remove(redundant_allele);
-                    }
-                }
-            }
-        }
-    }
-
-    debug!("After removing redundant alleles:");
-    debug!(
-        "complete_hap_backgrounds: {:?}",
-        complete_hap_backgrounds.keys().collect::<Vec<&String>>()
-    );
-    debug!(
-        "all_starts_hap_backgrounds: {:?}",
-        all_starts_hap_backgrounds.keys().collect::<Vec<&String>>()
-    );
-    debug!(
-        "all_ends_hap_backgrounds: {:?}",
-        all_ends_hap_backgrounds.keys().collect::<Vec<&String>>()
-    );
 
     let mut assembled_chr4_allele = 0;
     let mut assembled_chr10_allele = 0;

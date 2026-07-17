@@ -640,6 +640,7 @@ fn assign_paraphase_haplotypes_to_chromsome(
 /// * `assembly_result` - assembly result
 /// # Returns
 /// * `Vec<Vec<i32>>` - list of haps after removing redundant ones
+#[allow(dead_code)]
 fn remove_redundant_haps(
     haps_to_assess: &Vec<Vec<i32>>,
     assembly_result: &AssemblyResult,
@@ -695,7 +696,7 @@ fn remove_redundant_haps(
     let redundant_haps = redundant_haps
         .iter()
         .filter(|x| !complete.contains(x))
-        .map(|x| x.clone())
+        .cloned()
         .collect::<Vec<_>>();
     debug!("redundant_haps {redundant_haps:?}");
     let haps_to_return: Vec<Vec<i32>> = haps_to_assess
@@ -709,6 +710,222 @@ fn remove_redundant_haps(
     Ok(haps_to_return)
 }
 
+fn is_cis_dup_hap(hap: &[i32], fp_info: &FingerprintInfo) -> Result<bool, DError> {
+    let Some(&first_node) = hap.first() else {
+        return Ok(false);
+    };
+    if first_node < 0 && first_node > -10 {
+        return Ok(false);
+    }
+    if first_node <= -10 {
+        return Ok(true);
+    }
+    if let Some(first_node_seq) = fp_info.good_name_to_seq.get(&first_node) {
+        if first_node_seq[0] == b'S' {
+            return Ok(true);
+        }
+    }
+
+    let mut supporting_reads = 0;
+    let mut delayed_start_reads = 0;
+    for (read, read_nodes) in &fp_info.read_edges {
+        let Some(read_positions) = fp_info.read_positions.get(read) else {
+            continue;
+        };
+        if read_nodes.len() != read_positions.len() {
+            continue;
+        }
+
+        let start_idx = 0;
+        if read_nodes[start_idx] == first_node {
+            let overlap_len = cmp::min(read_nodes.len() - start_idx, hap.len());
+            if overlap_len < 2 {
+                continue;
+            }
+
+            let nodes_in_read = &read_nodes[start_idx..(start_idx + overlap_len)];
+            let nodes_in_hap = &hap[..overlap_len];
+            let mut match_count = 0;
+            let mut has_mismatch = false;
+            for (read_node, hap_node) in nodes_in_read.iter().zip(nodes_in_hap.iter()) {
+                if *read_node == 0 {
+                    continue;
+                }
+                if read_node == hap_node {
+                    match_count += 1;
+                } else {
+                    has_mismatch = true;
+                    break;
+                }
+            }
+
+            if !has_mismatch && match_count > 1 {
+                supporting_reads += 1;
+                if read_positions[start_idx] > 300 {
+                    delayed_start_reads += 1;
+                }
+            }
+        }
+    }
+    let delayed_start_threshold = (supporting_reads as f64 * 0.8).floor() as i32;
+    Ok(supporting_reads >= 3
+        && delayed_start_reads >= (supporting_reads - 1).min(delayed_start_threshold))
+}
+
+fn remove_redundant_haplotypes(
+    haps_to_check: &[Vec<i32>],
+    num_turns: usize,
+) -> Result<BTreeMap<Vec<i32>, Vec<i32>>, DError> {
+    let mut haps_to_remove = BTreeMap::<Vec<i32>, Vec<i32>>::new();
+    for _turn_index in 0..num_turns {
+        let haps_to_check = haps_to_check
+            .iter()
+            .filter(|hap| !haps_to_remove.contains_key(*hap))
+            .cloned()
+            .collect::<Vec<_>>();
+        let (_overlapping_haps, overlapping_haps_match) =
+            find_overlapping_alleles(haps_to_check.clone(), None)?;
+        let mut removed_one_redundant = false;
+        for (hap, hap_match_info) in &overlapping_haps_match {
+            let hap_size = hap.len();
+            for (matching_hap, overlap_len) in hap_match_info {
+                let matching_hap_size = matching_hap.len();
+                if *overlap_len >= 4 && *overlap_len >= hap_size / 2 {
+                    if hap_size > matching_hap_size {
+                        continue;
+                    }
+                    if hap_size == matching_hap_size {
+                        let mut haps = vec![hap.clone(), matching_hap.clone()];
+                        haps.sort();
+                        let hap1 = haps[0].clone();
+                        let hap2 = haps[1].clone();
+                        if !haps_to_remove.contains_key(&hap1) {
+                            haps_to_remove.insert(hap1, hap2);
+                            removed_one_redundant = true;
+                            break;
+                        }
+                    }
+                    if hap_size < matching_hap_size {
+                        if !haps_to_remove.contains_key(hap) {
+                            haps_to_remove.insert(hap.clone(), matching_hap.clone());
+                            removed_one_redundant = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if removed_one_redundant {
+                break;
+            }
+        }
+    }
+    Ok(haps_to_remove)
+}
+
+pub fn process_alleles(
+    assembly_result: &AssemblyResult,
+    fp_info: &FingerprintInfo,
+) -> Result<(Vec<Vec<i32>>, Vec<Vec<i32>>, Vec<Vec<i32>>), DError> {
+    let mut all_starting_haps = HashSet::new();
+    let mut all_ending_haps = HashSet::new();
+    for hap in &assembly_result.complete {
+        let hap_first = hap.first().unwrap();
+        if *hap_first < 0 && *hap_first > -10 {
+            all_starting_haps.insert(hap.clone());
+        }
+        let hap_end = hap.last().unwrap();
+        if *hap_end <= -10 {
+            all_ending_haps.insert(hap.clone());
+        }
+    }
+    for hap in &assembly_result.incomplete {
+        let hap_first = hap.first().unwrap();
+        if *hap_first < 0 && *hap_first > -10 {
+            all_starting_haps.insert(hap.clone());
+        }
+        let hap_end = hap.last().unwrap();
+        if *hap_end <= -10 {
+            all_ending_haps.insert(hap.clone());
+        }
+    }
+    debug!("all_starting_haps before removing redundant {all_starting_haps:?}");
+    debug!("all_ending_haps before removing redundant {all_ending_haps:?}");
+    let mut kept_starting_haps: Vec<Vec<i32>> = all_starting_haps.into_iter().collect();
+    let mut kept_ending_haps: Vec<Vec<i32>> = all_ending_haps.into_iter().collect();
+    let mut kept_complete = assembly_result.complete.clone();
+    // let kept_starting_haps = remove_redundant_haps(&kept_starting_haps, assembly_result)?;
+    // let kept_ending_haps = remove_redundant_haps(&kept_ending_haps, assembly_result)?;
+    let mut kept_complete_set = kept_complete.iter().cloned().collect::<HashSet<_>>();
+
+    let distal_no_cis_dup = kept_ending_haps
+        .iter()
+        .filter(|hap| !is_cis_dup_hap(hap, fp_info).unwrap_or(false))
+        .cloned()
+        .collect::<Vec<Vec<i32>>>();
+    let size1_allele = distal_no_cis_dup
+        .iter()
+        .filter(|hap| hap.len() == 2)
+        .cloned()
+        .collect::<Vec<Vec<i32>>>();
+    if size1_allele.len() == 1 && distal_no_cis_dup.len() >= 5 {
+        if let Some(size1_allele) = size1_allele.first() {
+            kept_ending_haps.retain(|hap| hap != size1_allele);
+            kept_complete_set.remove(size1_allele);
+        }
+    }
+    if kept_starting_haps.len() >= 5 && kept_ending_haps.len() >= 4 {
+        let num_turns = kept_starting_haps.len() - 4;
+        let proximal_to_remove = remove_redundant_haplotypes(&kept_starting_haps, num_turns)?;
+        if proximal_to_remove.len() <= num_turns {
+            for (proximal_to_remove_allele, redundant_allele) in &proximal_to_remove {
+                if !(kept_ending_haps.len() == 4
+                    && kept_ending_haps.contains(proximal_to_remove_allele))
+                {
+                    kept_starting_haps.retain(|hap| hap != proximal_to_remove_allele);
+                    kept_complete_set.remove(proximal_to_remove_allele);
+                } else if !(kept_ending_haps.len() == 4
+                    && kept_ending_haps.contains(redundant_allele))
+                {
+                    kept_starting_haps.retain(|hap| hap != redundant_allele);
+                    kept_complete_set.remove(redundant_allele);
+                }
+            }
+        }
+    }
+    let distal_no_cis_dup = kept_ending_haps
+        .iter()
+        .filter(|hap| !is_cis_dup_hap(hap, fp_info).unwrap_or(false))
+        .cloned()
+        .collect::<Vec<Vec<i32>>>();
+    if kept_starting_haps.len() == 4 && distal_no_cis_dup.len() >= 5 {
+        let num_turns = distal_no_cis_dup.len() - 4;
+        let distal_to_remove = remove_redundant_haplotypes(&distal_no_cis_dup, num_turns)?;
+        if distal_to_remove.len() <= num_turns {
+            for (distal_to_remove_allele, redundant_allele) in &distal_to_remove {
+                if !(kept_starting_haps.len() == 4
+                    && kept_starting_haps.contains(distal_to_remove_allele))
+                {
+                    kept_ending_haps.retain(|hap| hap != distal_to_remove_allele);
+                    kept_complete_set.remove(distal_to_remove_allele);
+                } else if !(kept_starting_haps.len() == 4
+                    && kept_starting_haps.contains(redundant_allele))
+                {
+                    kept_ending_haps.retain(|hap| hap != redundant_allele);
+                    kept_complete_set.remove(redundant_allele);
+                }
+            }
+        }
+    }
+
+    kept_complete.retain(|hap| kept_complete_set.contains(hap));
+
+    debug!("all_starting_haps after removing redundant {kept_starting_haps:?}");
+    debug!("all_ending_haps after removing redundant {kept_ending_haps:?}");
+    debug!("complete_haps after removing redundant {kept_complete:?}");
+
+    Ok((kept_starting_haps, kept_ending_haps, kept_complete))
+}
+
 /// get the background of all starting haps
 /// # Arguments
 /// * `assembly_result` - assembly result
@@ -720,40 +937,20 @@ fn remove_redundant_haps(
 /// * `BTreeMap<String, String>` - allele -> background
 /// * `BTreeMap<String, Vec<String>>` - map an allele to its upstream paraphase haplotypes
 pub fn get_background_for_allele_starts(
-    assembly_result: &AssemblyResult,
+    kept_starting_haps: &[Vec<i32>],
     fp_graph: &FpGraph,
     phasing_result: &BTreeMap<String, GeneCall>,
     bases_at_pivot_site: &BTreeMap<String, String>,
     fp_info: &FingerprintInfo,
 ) -> Result<(BTreeMap<String, String>, BTreeMap<String, Vec<String>>), DError> {
-    let mut all_starting_haps = HashSet::new();
-    for hap in &assembly_result.complete {
-        let hap_first = hap.first().unwrap();
-        if *hap_first < 0 && *hap_first > -10 {
-            all_starting_haps.insert(hap.clone());
-        }
-    }
-    for hap in &assembly_result.incomplete {
-        let hap_first = hap.first().unwrap();
-        if *hap_first < 0 && *hap_first > -10 {
-            all_starting_haps.insert(hap.clone());
-        }
-    }
-    debug!("all_starting_haps before removing redundant {all_starting_haps:?}");
-    let all_starting_haps_vec: Vec<Vec<i32>> = all_starting_haps
-        .iter()
-        .map(|x| x.clone())
-        .collect::<Vec<_>>();
-    let all_starting_haps_vec = remove_redundant_haps(&all_starting_haps_vec, assembly_result)?;
-    debug!("all_starting_haps after removing redundant {all_starting_haps_vec:?}");
     let all_starting_read_support = fp_graph
-        .process_complete_haps(all_starting_haps_vec.clone(), Some(1), true, false)?
+        .process_complete_haps(kept_starting_haps.to_vec(), Some(1), true, false)?
         .supporting_reads;
     debug!("all_starting_read_support {:?}", all_starting_read_support);
 
     // haplotype backgrounds
     let (all_starts_hap_backgrounds, upstream_haplotypes) = haplotype_background(
-        &all_starting_haps_vec,
+        &kept_starting_haps.to_vec(),
         phasing_result,
         &all_starting_read_support,
         Some(fp_info),
@@ -781,7 +978,7 @@ pub fn get_background_for_allele_starts(
 /// * `BTreeMap<String, String>` - allele -> background
 /// * `BTreeMap<Vec<i32>, Vec<(String, i32)>>` - all_ends_reads_match_allele_index
 pub fn get_background_for_allele_ends(
-    assembly_result: &AssemblyResult,
+    kept_ending_haps: &[Vec<i32>],
     fp_graph: &FpGraph,
     phasing_result: &BTreeMap<String, GeneCall>,
     bases_at_pivot_site: &BTreeMap<String, String>,
@@ -794,34 +991,14 @@ pub fn get_background_for_allele_ends(
     ),
     DError,
 > {
-    let mut all_ending_haps = HashSet::new();
-    for hap in &assembly_result.complete {
-        let hap_end = hap.last().unwrap();
-        if *hap_end <= -10 {
-            all_ending_haps.insert(hap.clone());
-        }
-    }
-    for hap in &assembly_result.incomplete {
-        let hap_end = hap.last().unwrap();
-        if *hap_end <= -10 {
-            all_ending_haps.insert(hap.clone());
-        }
-    }
-    debug!("all_ending_haps before removing redundant {all_ending_haps:?}");
-    let all_ending_haps_vec: Vec<Vec<i32>> = all_ending_haps
-        .iter()
-        .map(|x| x.clone())
-        .collect::<Vec<_>>();
-    let all_ending_haps_vec = remove_redundant_haps(&all_ending_haps_vec, assembly_result)?;
-    debug!("all_ending_haps after removing redundant {all_ending_haps_vec:?}");
     let all_ending_read_support = fp_graph
-        .process_complete_haps(all_ending_haps_vec.clone(), Some(1), true, false)?
+        .process_complete_haps(kept_ending_haps.to_vec(), Some(1), true, false)?
         .supporting_reads;
     debug!("all_ending_read_support {:?}", all_ending_read_support);
     // find index on reads
     let mut all_ends_reads_match_allele_index = get_read_position_in_allele(
         fp_info.read_edges.clone(),
-        all_ending_haps_vec.clone(),
+        kept_ending_haps.to_vec(),
         all_ending_read_support.clone(),
         true,
     )?;
@@ -850,7 +1027,7 @@ pub fn get_background_for_allele_ends(
 
     // haplotype backgrounds
     let (all_ends_hap_backgrounds, _upstream_haplotypes) = haplotype_background(
-        &all_ending_haps_vec,
+        &kept_ending_haps.to_vec(),
         phasing_result,
         &all_ending_read_support,
         Some(fp_info),
@@ -888,11 +1065,12 @@ pub fn find_qal_alleles(all_haps: &[Vec<i32>], qal_units: Vec<i32>) -> HashSet<V
 /// * `Vec<Vec<Vec<i32>>>` - cis duplications identified (allele of alleles)
 /// * `BTreeMap<Vec<i32>, HashSet<(String, i32)>>` - allele -> (read, match_index_on_allele)
 pub fn find_cis_dup(
-    assembly_result: &AssemblyResult,
+    all_haps: &Vec<Vec<i32>>,
     fp_graph: &FpGraph,
     fp_info: &FingerprintInfo,
     phasing_result: &BTreeMap<String, GeneCall>,
     qal_units: Vec<i32>,
+    special_incomplete_haps: &Vec<Vec<i32>>,
 ) -> Result<
     (
         Vec<Vec<Vec<i32>>>,
@@ -903,14 +1081,7 @@ pub fn find_cis_dup(
     let mut haps_to_node_names: BTreeMap<Vec<i32>, i32> = BTreeMap::new();
     let mut read_edges_for_haps: BTreeMap<String, Vec<i32>> = BTreeMap::new();
     let mut node_name = 1;
-    let mut all_haps = HashSet::new();
-    for hap in &assembly_result.complete {
-        all_haps.insert(hap.to_vec());
-    }
-    for hap in &assembly_result.incomplete {
-        all_haps.insert(hap.to_vec());
-    }
-    let all_haps: Vec<Vec<i32>> = all_haps.iter().map(|x| x.clone()).collect::<Vec<_>>();
+
     let qal_alleles = find_qal_alleles(&all_haps, qal_units);
     debug!("qal_alleles identified by long insertion before -10 {qal_alleles:?}");
     let cis_dup_alleles = all_haps
@@ -1267,7 +1438,7 @@ pub fn find_cis_dup(
                     } else {
                         match_reads_and_haplotypes(
                             dummy_read,
-                            assembly_result.special_incomplete.clone(),
+                            special_incomplete_haps.clone(),
                             None,
                             false,
                         )
@@ -1279,10 +1450,7 @@ pub fn find_cis_dup(
                             let mut qualifying_matches = Vec::new();
                             for dummy_read_match in dummy_read_matches {
                                 // only match against regular incomplete haps when the first position on read is small enough
-                                if !assembly_result
-                                    .special_incomplete
-                                    .contains(dummy_read_match)
-                                {
+                                if !special_incomplete_haps.contains(dummy_read_match) {
                                     qualifying_matches.push(dummy_read_match.to_vec());
                                 } else {
                                     let node_index = match_read_allele_first_node_index(
@@ -1423,10 +1591,7 @@ pub fn find_cis_dup(
     for (a, b) in &haps_to_node_names {
         node_names_to_haps.insert(*b, a.to_vec());
     }
-    debug!(
-        "special_incomplete {:?}",
-        assembly_result.special_incomplete
-    );
+    debug!("special_incomplete {:?}", special_incomplete_haps);
     // simpler graph assembler
     debug!("For cis-dups, assemble haplotypes into alleles...");
     let mut fp_graph = build_graph(read_edges_for_haps, 2);

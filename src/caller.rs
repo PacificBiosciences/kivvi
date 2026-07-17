@@ -5,7 +5,7 @@ use crate::bam_operation::{
 use crate::cli::Settings;
 use crate::d4z4::d4z4_phasing::{
     find_cis_dup, get_background_for_allele_ends, get_background_for_allele_starts,
-    haplotype_background, phase_flanking,
+    haplotype_background, phase_flanking, process_alleles,
 };
 use crate::d4z4::join_partial_alleles::{join_partial_alleles, AlleleSummary};
 use crate::depth::median;
@@ -689,21 +689,33 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     let (meth_summary, segment_methyl_prob) =
         methyl_prob_by_position(&methyl_probs, &cpg_sites_per_read, &fp_info)?;
 
+    let (kept_starting_haps, kept_ending_haps, kept_complete) =
+        process_alleles(&assembly_result, &fp_info)?;
+
     // find in-cis duplications
     debug!("Find in-cis duplications...");
+    let all_haps = kept_starting_haps
+        .iter()
+        .chain(kept_ending_haps.iter())
+        .chain(kept_complete.iter())
+        .cloned()
+        .collect::<HashSet<Vec<i32>>>()
+        .into_iter()
+        .collect::<Vec<Vec<i32>>>();
     let (cis_dups, cis_dups_match_index) = find_cis_dup(
-        &assembly_result,
+        &all_haps,
         &fp_graph,
         &fp_info,
         &phasing_result,
         qal_units.clone(),
+        &assembly_result.special_incomplete,
     )?;
     debug!("cis_dups_match_index {cis_dups_match_index:?}");
 
     // get all starting haps
     let (mut all_starts_hap_backgrounds, all_starts_upstream_haplotypes) =
         get_background_for_allele_starts(
-            &assembly_result,
+            &kept_starting_haps,
             &fp_graph,
             &phasing_result,
             &bases_at_pivot_site,
@@ -713,7 +725,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     // get all ending haps
     let (mut all_ends_hap_backgrounds, all_ends_reads_match_allele_index_renamed_to_string) =
         get_background_for_allele_ends(
-            &assembly_result,
+            &kept_ending_haps,
             &fp_graph,
             &phasing_result,
             &bases_at_pivot_site,
@@ -763,12 +775,12 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     }
 
     // haplotype backgrounds
-    let complete_haps = assembly_result.complete.clone();
+    let complete_haps = kept_complete.clone();
     let complete_read_support = fp_graph
         .process_complete_haps(complete_haps, None, false, false)?
         .supporting_reads;
     let (mut hap_backgrounds, _upstream_haplotypes) = haplotype_background(
-        &assembly_result.complete,
+        &kept_complete,
         &phasing_result,
         &complete_read_support,
         Some(&fp_info),
