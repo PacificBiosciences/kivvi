@@ -911,7 +911,8 @@ pub fn process_alleles(
         if distal_to_remove.len() <= num_turns {
             for (distal_to_remove_allele, redundant_allele) in &distal_to_remove {
                 if !(kept_starting_haps.len() == 4
-                    && kept_ending_haps.contains(distal_to_remove_allele))
+                    && kept_starting_haps.contains(distal_to_remove_allele))
+                    && kept_ending_haps.contains(distal_to_remove_allele)
                 {
                     debug!("removing distal_to_remove_allele {distal_to_remove_allele:?}");
                     kept_ending_haps.retain(|hap| hap != distal_to_remove_allele);
