@@ -266,10 +266,12 @@ pub fn filter_complete_alleles(
                 "allele {allele:?} better_support {better_support} sites_supported_by_four {sites_supported_by_four:?}"
             );
             if !is_spanning {
+                debug!("num_suspicious_reads {num_suspicious_reads}");
                 debug!("suspicious_forward {suspicious_forward:?}");
                 debug!("suspicious_reverse {suspicious_reverse:?}");
                 let num_suspicious_reads = suspicious_reads.len();
                 if highly_repetitive {
+                    debug!("allele {allele:?} is suspicious because it is highly repetitive");
                     suspicious_complete_alleles.push(allele.clone());
                 } else if suspicious_forward.len() == 1
                     && suspicious_reverse.len() == 1
@@ -280,6 +282,7 @@ pub fn filter_complete_alleles(
                     let reverse_pos = suspicious_reverse.first_key_value().unwrap().0;
                     if !good_support {
                         if *reverse_pos <= *forward_pos - 1 {
+                            debug!("allele {allele:?} is suspicious because not every site is supported by reads linking the next two sites, and it has two suspicious sites, one with forward-matching suspicous reads and one with reverse-matching suspicious reads.");
                             suspicious_complete_alleles.push(allele.clone());
                         }
                     } else {
@@ -291,6 +294,7 @@ pub fn filter_complete_alleles(
                         {
                             continue;
                         } else if *reverse_pos <= *forward_pos - 2 {
+                            debug!("allele {allele:?} is suspicious because it has two suspicious sites, one with forward-matching suspicous reads and one with reverse-matching suspicious reads. And suspicious sites are not supported by reads linking the next three sites.");
                             suspicious_complete_alleles.push(allele.clone());
                         }
                     }
@@ -299,18 +303,25 @@ pub fn filter_complete_alleles(
                     && num_suspicious_reads >= 3
                 {
                     let suspicious_site = suspicious_reverse.keys().next().unwrap();
-                    if !sites_supported_by_three.contains(suspicious_site) {
+                    debug!("only one suspicious_site at index {suspicious_site:?}");
+                    if !sites_supported_by_three.contains(suspicious_site)
+                        && !sites_supported_by_four.contains(suspicious_site)
+                    {
+                        debug!("allele {allele:?} is suspicious because the suspicious site is not supported by reads linking the next two or three sites.");
                         suspicious_complete_alleles.push(allele.clone());
                     }
                 } else if num_suspicious_reads >= 5 && !good_support {
+                    debug!("allele {allele:?} is suspicious because it has at least 5 suspicious reads, and not every site is supported by reads linking the next two sites.");
                     suspicious_complete_alleles.push(allele.clone());
                 } else if !sites_supported_by_three.contains(&0)
                     || !sites_supported_by_three.contains(&(allele_len - 3))
                 {
                     // we want good support at both ends
+                    debug!("allele {allele:?} is suspicious because the left side or the right side is not supported by reads linking the next two sites.");
                     suspicious_complete_alleles.push(allele.clone());
                 } else if allele_len <= 4 && sites_supported_by_four.is_empty() {
                     // if only two units, should have spanning reads
+                    debug!("allele {allele:?} is suspicious because it is two units or shorter, and has no spanning reads.");
                     suspicious_complete_alleles.push(allele.clone());
                 }
             }
