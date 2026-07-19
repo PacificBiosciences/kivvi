@@ -298,14 +298,14 @@ pub fn filter_complete_alleles(
                             suspicious_complete_alleles.push(allele.clone());
                         }
                     }
-                } else if suspicious_forward.is_empty()
-                    && suspicious_reverse.len() == 1
-                    && num_suspicious_reads >= 3
-                {
+                } else if suspicious_forward.is_empty() && suspicious_reverse.len() == 1 {
                     let suspicious_site = suspicious_reverse.keys().next().unwrap();
-                    debug!("only one suspicious_site at index {suspicious_site:?}");
+                    let suspicious_site_num_reads =
+                        suspicious_reverse.get(suspicious_site).unwrap().len();
+                    debug!("only one suspicious_site at index {suspicious_site:?} with {suspicious_site_num_reads} suspicious reads");
                     if !sites_supported_by_three.contains(suspicious_site)
                         && !sites_supported_by_four.contains(suspicious_site)
+                        && suspicious_site_num_reads >= 3
                     {
                         debug!("allele {allele:?} is suspicious because the suspicious site is not supported by reads linking the next two or three sites.");
                         suspicious_complete_alleles.push(allele.clone());
