@@ -294,6 +294,14 @@ pub fn filter_complete_alleles(
                             suspicious_complete_alleles.push(allele.clone());
                         }
                     }
+                } else if suspicious_forward.is_empty()
+                    && suspicious_reverse.len() == 1
+                    && num_suspicious_reads >= 3
+                {
+                    let suspicious_site = suspicious_reverse.keys().next().unwrap();
+                    if !sites_supported_by_three.contains(suspicious_site) {
+                        suspicious_complete_alleles.push(allele.clone());
+                    }
                 } else if num_suspicious_reads >= 5 && !good_support {
                     suspicious_complete_alleles.push(allele.clone());
                 } else if !sites_supported_by_three.contains(&0)
