@@ -266,10 +266,10 @@ pub fn filter_complete_alleles(
                 "allele {allele:?} better_support {better_support} sites_supported_by_four {sites_supported_by_four:?}"
             );
             if !is_spanning {
+                let num_suspicious_reads = suspicious_reads.len();
                 debug!("num_suspicious_reads {num_suspicious_reads}");
                 debug!("suspicious_forward {suspicious_forward:?}");
                 debug!("suspicious_reverse {suspicious_reverse:?}");
-                let num_suspicious_reads = suspicious_reads.len();
                 if highly_repetitive {
                     debug!("allele {allele:?} is suspicious because it is highly repetitive");
                     suspicious_complete_alleles.push(allele.clone());
