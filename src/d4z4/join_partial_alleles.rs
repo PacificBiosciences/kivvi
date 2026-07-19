@@ -642,10 +642,10 @@ fn get_methylation_value(
     if last_n_i32.is_empty() {
         return Ok(f32::NAN);
     }
-    let methylation_value = (1000.0 * last_n_i32.iter().filter(|x| **x >= 128).count() as f32
-        / last_n_i32.len() as f32)
-        .round()
-        / 1000.0;
+    let n_methylated = last_n_i32.iter().filter(|x| **x >= 128).count();
+    let n_total = last_n_i32.len();
+    debug!("n_methylated {n_methylated} n_total {n_total}");
+    let methylation_value = (1000.0 * n_methylated as f32 / n_total as f32).round() / 1000.0;
     Ok(methylation_value)
 }
 
