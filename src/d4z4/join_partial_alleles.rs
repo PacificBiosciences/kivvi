@@ -631,7 +631,7 @@ fn get_methylation_value(
     if !methyl_values.contains_key(allele) {
         return Ok(f32::NAN);
     }
-    let last_n_sites = last_n_sites.unwrap_or(5);
+    let last_n_sites = last_n_sites.unwrap_or(3);
     let methylation: Vec<Vec<i32>> = methyl_values
         .get(allele)
         .ok_or("allele not in methyl_values")?
