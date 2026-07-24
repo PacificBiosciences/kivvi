@@ -816,8 +816,15 @@ pub fn join_partial_alleles(
                 .push(allele.clone());
         }
     }
+    let mut number_no_cis_dup = 0;
+    let mut cis_dup_alleles = Vec::new();
     for (allele, background) in all_ends_hap_backgrounds.iter() {
         let is_cis_dup = is_cis_dup(allele, fp_info)?;
+        if !is_cis_dup {
+            number_no_cis_dup += 1;
+        } else {
+            cis_dup_alleles.push(allele.clone());
+        }
         if !complete_hap_backgrounds.contains_key(allele) && !is_cis_dup {
             partial_allele_ends += 1;
             let mut this_allele_fps_classified = Vec::new();
@@ -903,25 +910,29 @@ pub fn join_partial_alleles(
                         fp_graph,
                         fp_info,
                     );
+                    debug!("checking {left_flank1} against {right_flank1}: ovl_len1 {ovl_len1} allele_name1 {allele_name1} allele_size1 {allele_size1}");
                     let (ovl_len2, allele_name2, allele_size2) = merge_two_partial_alleles(
                         &vec![left_flank2.clone(), right_flank2.clone()],
                         fp_graph,
                         fp_info,
                     );
+                    debug!("checking {left_flank2} against {right_flank2}: ovl_len2 {ovl_len2} allele_name2 {allele_name2} allele_size2 {allele_size2}");
                     let (ovl_len3, allele_name3, allele_size3) = merge_two_partial_alleles(
                         &vec![left_flank1.clone(), right_flank2.clone()],
                         fp_graph,
                         fp_info,
                     );
+                    debug!("checking {left_flank1} against {right_flank2}: ovl_len3 {ovl_len3} allele_name3 {allele_name3} allele_size3 {allele_size3}");
                     let (ovl_len4, allele_name4, allele_size4) = merge_two_partial_alleles(
                         &vec![left_flank2.clone(), right_flank1.clone()],
                         fp_graph,
                         fp_info,
                     );
+                    debug!("checking {left_flank2} against {right_flank1}: ovl_len4 {ovl_len4} allele_name4 {allele_name4} allele_size4 {allele_size4}");
 
                     if ovl_len1 >= 2 && ovl_len2 >= 2 && ovl_len3 == 0 && ovl_len4 == 0 {
                         // merge left_flank1 and right_flank1, merge left_flank2 and right_flank2
-                        if !right_flank1.contains("RightFlank")
+                        if !right_flank1.starts_with("RightFlank")
                             && !right_flank1.contains("LeftFlank")
                         {
                             let chr_info = all_starts_hap_backgrounds
@@ -950,7 +961,7 @@ pub fn join_partial_alleles(
                             distal_alleles_handled.push(right_flank1.clone());
                             proximal_alleles_handled.push(left_flank1.clone());
                         }
-                        if !right_flank2.contains("RightFlank")
+                        if !right_flank2.starts_with("RightFlank")
                             && !right_flank2.contains("LeftFlank")
                         {
                             let chr_info = all_starts_hap_backgrounds
@@ -981,7 +992,7 @@ pub fn join_partial_alleles(
                         }
                     } else if ovl_len1 == 0 && ovl_len2 == 0 && ovl_len3 >= 2 && ovl_len4 >= 2 {
                         // merge left_flank1 and right_flank2, merge left_flank2 and right_flank1
-                        if !right_flank2.contains("RightFlank")
+                        if !right_flank2.starts_with("RightFlank")
                             && !right_flank2.contains("LeftFlank")
                         {
                             let chr_info = all_starts_hap_backgrounds
@@ -1010,7 +1021,7 @@ pub fn join_partial_alleles(
                             distal_alleles_handled.push(right_flank2.clone());
                             proximal_alleles_handled.push(left_flank1.clone());
                         }
-                        if !right_flank1.contains("RightFlank")
+                        if !right_flank1.starts_with("RightFlank")
                             && !right_flank1.contains("LeftFlank")
                         {
                             let chr_info = all_starts_hap_backgrounds
@@ -1141,6 +1152,7 @@ pub fn join_partial_alleles(
                             let methylation_value =
                                 get_methylation_value(allele, &methyl_values, None)?;
                             let ending_in_qal = is_qal_allele(allele, &qal_units);
+                            debug!("adding partial allele {allele} with a minimum size estimate based on two possible proximal ends");
                             if !allele.starts_with("LeftFlank") && !allele.starts_with("RightFlank")
                             {
                                 merged_allele_summary.push(AlleleSummary {
@@ -1181,7 +1193,7 @@ pub fn join_partial_alleles(
         .iter()
         .filter(|(k, _v)| !distal_alleles_handled.contains(k))
         .map(|(k, _)| k.clone())
-        .filter(|x| !is_cis_dup(x, fp_info).unwrap_or(false))
+        .filter(|x| !cis_dup_alleles.contains(x))
         .collect::<Vec<String>>();
     let remaining_proximal_alleles = all_starts_hap_backgrounds
         .iter()
@@ -1239,11 +1251,11 @@ pub fn join_partial_alleles(
     }
     // check if the remaining proximal alleles are on the same chromosome
     let mut remaining_proximal_allele_chromosome = String::from("unknown");
-    if all_starts_hap_backgrounds.len() == 4
-        && all_ends_hap_backgrounds.len() == 4
-        && start_allele_chr4 == 2
-        && start_allele_chr10 == 2
-        && remaining_proximal_alleles.len() == remaining_distal_alleles.len()
+    //if all_starts_hap_backgrounds.len() == 4
+    // && all_ends_hap_backgrounds.len() == 4
+    // && start_allele_chr4 == 2
+    // && start_allele_chr10 == 2
+    if remaining_proximal_alleles.len() >= remaining_distal_alleles.len()
         && remaining_distal_alleles.len() <= 2
     {
         let remaining_proximal_alleles_chromosomes = all_starts_hap_backgrounds
@@ -1300,7 +1312,7 @@ pub fn join_partial_alleles(
             debug!("Evaluating remaining distal alleles: {allele} {background}");
             let methylation_value = get_methylation_value(allele, &methyl_values, None)?;
             let allele_size = allele.split("-").filter(|x| !x.contains("Flank")).count();
-            if is_cis_dup(allele, fp_info)? {
+            if cis_dup_alleles.contains(allele) {
                 merged_allele_summary.push(AlleleSummary {
                     allele_name: allele.clone(),
                     chromosome: String::from("unknown"),
@@ -1316,7 +1328,7 @@ pub fn join_partial_alleles(
                         || (background == "qADisruptedPolyA" && start_allele_chr10 >= 2))
                         // && allele_size <= 10   // TODO: evaluate if we want to do this for all partial alleles
                         && all_start_min_size > 0
-                        && all_ends_hap_backgrounds.len() <= 4 // we could have cis dup alleles and size shouldn't be added
+                        && number_no_cis_dup <= 4 // we could have cis dup alleles and size shouldn't be added
                         && !allele.starts_with("LeftFlank")
                         && !allele.starts_with("RightFlank")
                 {

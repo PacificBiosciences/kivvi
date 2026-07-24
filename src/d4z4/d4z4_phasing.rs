@@ -775,6 +775,7 @@ fn is_cis_dup_hap(hap: &[i32], fp_info: &FingerprintInfo) -> Result<bool, DError
 fn remove_redundant_haplotypes(
     haps_to_check: &[Vec<i32>],
     num_turns: usize,
+    sensitive: bool,
 ) -> Result<BTreeMap<Vec<i32>, Vec<i32>>, DError> {
     let mut haps_to_remove = BTreeMap::<Vec<i32>, Vec<i32>>::new();
     for _turn_index in 0..num_turns {
@@ -784,7 +785,7 @@ fn remove_redundant_haplotypes(
             .cloned()
             .collect::<Vec<_>>();
         let (_overlapping_haps, overlapping_haps_match) =
-            find_overlapping_alleles(haps_to_check.clone(), None)?;
+            find_overlapping_alleles(haps_to_check.clone(), Some(2))?;
         let mut removed_one_redundant = false;
         for (hap, hap_match_info) in &overlapping_haps_match {
             let hap_size = hap.len();
@@ -793,7 +794,7 @@ fn remove_redundant_haplotypes(
                 let mut is_overlap = false;
                 if *overlap_len >= 5 && (*overlap_len - 1) >= (hap_size - 1) / 2 {
                     is_overlap = true;
-                } else if *overlap_len >= 4 {
+                } else if *overlap_len >= 2 {
                     let hap_unique_units = hap
                         .iter()
                         .filter(|x| !matching_hap.contains(x))
@@ -802,9 +803,16 @@ fn remove_redundant_haplotypes(
                         .iter()
                         .filter(|x| !hap.contains(x))
                         .collect::<HashSet<_>>();
-                    if hap_unique_units.len() <= (hap_size as f64 * 0.2).floor() as usize
-                        || matching_hap_unique_units.len()
-                            <= (matching_hap_size as f64 * 0.2).floor() as usize
+                    if *overlap_len >= 4
+                        && (hap_unique_units.len() <= (hap_size as f64 * 0.2).floor() as usize
+                            || matching_hap_unique_units.len()
+                                <= (matching_hap_size as f64 * 0.2).floor() as usize)
+                    {
+                        is_overlap = true;
+                    }
+                    if sensitive
+                        && (*overlap_len == 2 || *overlap_len == 3)
+                        && (hap_size == *overlap_len + 1 || matching_hap_size == *overlap_len + 1)
                     {
                         is_overlap = true;
                     }
@@ -897,7 +905,32 @@ pub fn process_alleles(
         // && kept_ending_haps.len() >= 4 {
         let num_turns = kept_starting_haps.len() - 4;
         debug!("removing redundant proximal alleles, num_turns {num_turns}");
-        let proximal_to_remove = remove_redundant_haplotypes(&kept_starting_haps, num_turns)?;
+        let proximal_to_remove =
+            remove_redundant_haplotypes(&kept_starting_haps, num_turns, false)?;
+        debug!("proximal_to_remove {proximal_to_remove:?}");
+        if proximal_to_remove.len() <= num_turns {
+            for (proximal_to_remove_allele, redundant_allele) in &proximal_to_remove {
+                if !(kept_ending_haps.len() == 4
+                    && kept_ending_haps.contains(proximal_to_remove_allele))
+                    && kept_starting_haps.contains(proximal_to_remove_allele)
+                {
+                    kept_starting_haps.retain(|hap| hap != proximal_to_remove_allele);
+                    kept_complete_set.remove(proximal_to_remove_allele);
+                } else if !(kept_ending_haps.len() == 4
+                    && kept_ending_haps.contains(redundant_allele))
+                {
+                    kept_starting_haps.retain(|hap| hap != redundant_allele);
+                    kept_complete_set.remove(redundant_allele);
+                }
+            }
+        }
+    }
+    // sensitive
+    if kept_starting_haps.len() >= 5 {
+        // && kept_ending_haps.len() >= 4 {
+        let num_turns = kept_starting_haps.len() - 4;
+        debug!("removing redundant proximal alleles, num_turns {num_turns}");
+        let proximal_to_remove = remove_redundant_haplotypes(&kept_starting_haps, num_turns, true)?;
         debug!("proximal_to_remove {proximal_to_remove:?}");
         if proximal_to_remove.len() <= num_turns {
             for (proximal_to_remove_allele, redundant_allele) in &proximal_to_remove {
@@ -925,7 +958,33 @@ pub fn process_alleles(
         // kept_starting_haps.len() == 4 &&
         let num_turns = distal_no_cis_dup.len() - 4;
         debug!("removing redundant distal alleles, num_turns {num_turns}");
-        let distal_to_remove = remove_redundant_haplotypes(&distal_no_cis_dup, num_turns)?;
+        let distal_to_remove = remove_redundant_haplotypes(&distal_no_cis_dup, num_turns, false)?;
+        debug!("distal_to_remove {distal_to_remove:?}");
+        if distal_to_remove.len() <= num_turns {
+            for (distal_to_remove_allele, redundant_allele) in &distal_to_remove {
+                if !(kept_starting_haps.len() == 4
+                    && kept_starting_haps.contains(distal_to_remove_allele))
+                    && kept_ending_haps.contains(distal_to_remove_allele)
+                {
+                    debug!("removing distal_to_remove_allele {distal_to_remove_allele:?}");
+                    kept_ending_haps.retain(|hap| hap != distal_to_remove_allele);
+                    kept_complete_set.remove(distal_to_remove_allele);
+                } else if !(kept_starting_haps.len() == 4
+                    && kept_starting_haps.contains(redundant_allele))
+                {
+                    debug!("removing redundant_allele {redundant_allele:?}");
+                    kept_ending_haps.retain(|hap| hap != redundant_allele);
+                    kept_complete_set.remove(redundant_allele);
+                }
+            }
+        }
+    }
+    // sensitive
+    if distal_no_cis_dup.len() >= 5 {
+        // kept_starting_haps.len() == 4 &&
+        let num_turns = distal_no_cis_dup.len() - 4;
+        debug!("removing redundant distal alleles, num_turns {num_turns}");
+        let distal_to_remove = remove_redundant_haplotypes(&distal_no_cis_dup, num_turns, true)?;
         debug!("distal_to_remove {distal_to_remove:?}");
         if distal_to_remove.len() <= num_turns {
             for (distal_to_remove_allele, redundant_allele) in &distal_to_remove {
