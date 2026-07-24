@@ -211,6 +211,70 @@ fn check_flank_presence(alleles: &Vec<String>) -> bool {
     has_left && has_right
 }
 
+fn collect_same_type_unique_overlap_pairs(
+    allele_match: &BTreeMap<String, Vec<String>>,
+    allele_overlaps: &BTreeMap<String, Vec<(String, usize)>>,
+    pairs_of_alleles_to_merge: &mut Vec<Vec<String>>,
+) {
+    let allele_type_by_allele = allele_match
+        .iter()
+        .flat_map(|(allele_type, alleles)| {
+            alleles
+                .iter()
+                .map(|allele| (allele.clone(), allele_type.clone()))
+                .collect::<Vec<(String, String)>>()
+        })
+        .collect::<BTreeMap<String, String>>();
+
+    for (proximal_allele, overlaps) in allele_overlaps.iter() {
+        let matching_distal_alleles = overlaps
+            .iter()
+            .filter(|(_, overlap_len)| *overlap_len >= 2)
+            .map(|(distal_allele, _)| distal_allele.clone())
+            .collect::<Vec<String>>();
+        if matching_distal_alleles.len() != 1 {
+            continue;
+        }
+
+        let distal_allele = matching_distal_alleles[0].clone();
+        let matching_proximal_alleles = allele_overlaps
+            .iter()
+            .filter(|(_, other_overlaps)| {
+                other_overlaps.iter().any(|(other_distal_allele, overlap_len)| {
+                    other_distal_allele == &distal_allele && *overlap_len >= 2
+                })
+            })
+            .map(|(other_proximal_allele, _)| other_proximal_allele.clone())
+            .collect::<Vec<String>>();
+        if matching_proximal_alleles.len() != 1 {
+            continue;
+        }
+
+        let Some(proximal_allele_type) = allele_type_by_allele.get(proximal_allele) else {
+            continue;
+        };
+        let Some(distal_allele_type) = allele_type_by_allele.get(&distal_allele) else {
+            continue;
+        };
+        if proximal_allele_type != distal_allele_type {
+            continue;
+        }
+        if !["qB", "qADisruptedPolyA", "qAIntactPolyA"]
+            .contains(&proximal_allele_type.as_str())
+        {
+            continue;
+        }
+
+        let merged_alleles = vec![proximal_allele.clone(), distal_allele.clone()];
+        if !pairs_of_alleles_to_merge.contains(&merged_alleles) {
+            debug!(
+                "merge {proximal_allele_type} unique overlapping partial alleles {merged_alleles:?}"
+            );
+            pairs_of_alleles_to_merge.push(merged_alleles);
+        }
+    }
+}
+
 /// Try to merge an unknown distal allele with a matching proximal allele
 /// # Arguments
 /// * `unknown_allele` - the unknown allele in the distal side
@@ -534,6 +598,7 @@ fn get_allele_summary(
 /// * `partial_allele_number_match` - whether the number of left and right partial alleles match
 /// * `all_starts_hap_backgrounds` - background of all starts haplotypes
 /// * `all_ends_hap_backgrounds` - background of all ends haplotypes
+/// * `allele_overlaps` - overlap lengths between proximal and distal partial alleles
 /// * `pairs_of_alleles_to_merge` - mutable vector to collect pairs of alleles to merge
 /// # Returns
 /// * `DResult` - result indicating success or failure
@@ -544,6 +609,7 @@ pub(crate) fn collect_partial_alleles_to_merge(
     partial_allele_number_match: bool,
     all_starts_hap_backgrounds: &BTreeMap<String, String>,
     all_ends_hap_backgrounds: &BTreeMap<String, String>,
+    allele_overlaps: &BTreeMap<String, Vec<(String, usize)>>,
     pairs_of_alleles_to_merge: &mut Vec<Vec<String>>,
 ) -> DResult {
     // no unknown partial alleles
@@ -580,6 +646,11 @@ pub(crate) fn collect_partial_alleles_to_merge(
             }
         }
     }
+    collect_same_type_unique_overlap_pairs(
+        allele_match,
+        allele_overlaps,
+        pairs_of_alleles_to_merge,
+    );
     if partial_allele_number_match {
         // the number of left and right partial alleles are the same and less than 4
         // there is an unknown partial allele that can find a match in the other end
@@ -853,6 +924,27 @@ pub fn join_partial_alleles(
     let partial_allele_number_match =
         (partial_allele_starts == partial_allele_ends) && (partial_allele_starts <= 4);
 
+    // get overlaps
+    let mut allele_overlaps: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
+    for proximal_allele in all_starts_hap_backgrounds.keys() {
+        for distal_allele in all_ends_hap_backgrounds.keys() {
+            if !proximal_allele.ends_with("RightFlank")
+                && !distal_allele.starts_with("LeftFlank")
+                && !distal_allele.starts_with("RightFlank")
+            {
+                let (ovl_len, _allele_name, _allele_size) = merge_two_partial_alleles(
+                    &vec![proximal_allele.clone(), distal_allele.clone()],
+                    fp_graph,
+                    fp_info,
+                );
+                allele_overlaps
+                    .entry(proximal_allele.clone())
+                    .or_default()
+                    .push((distal_allele.clone(), ovl_len));
+            }
+        }
+    }
+
     // merge partial alleles
     let mut pairs_of_alleles_to_merge = Vec::new();
     collect_partial_alleles_to_merge(
@@ -862,6 +954,7 @@ pub fn join_partial_alleles(
         partial_allele_number_match,
         all_starts_hap_backgrounds,
         all_ends_hap_backgrounds,
+        &allele_overlaps,
         &mut pairs_of_alleles_to_merge,
     )?;
 
@@ -1400,59 +1493,77 @@ mod tests {
         (BTreeMap::new(), BTreeMap::new())
     }
 
+    fn create_empty_overlaps() -> BTreeMap<String, Vec<(String, usize)>> {
+        BTreeMap::new()
+    }
+
     #[test]
     fn test_get_methylation_value_numeric_values() {
-        // Function uses last 505 sites; need at least 505 to avoid underflow. Use 600 values.
-        let values: Vec<String> = (0..600).map(|_| "0.5".to_string()).collect();
+        let values: Vec<Vec<i32>> = (0..600).map(|_| vec![255]).collect();
         let mut methyl_values = BTreeMap::new();
-        methyl_values.insert("allele-1".to_string(), values.join(","));
+        methyl_values.insert("allele-1".to_string(), values);
         let allele = "allele-1".to_string();
         let result = get_methylation_value(&allele, &methyl_values, None).unwrap();
         assert!(!result.is_nan());
         assert!(
-            (result - 0.5).abs() < 0.001,
-            "expected ~0.5, got {}",
+            (result - 1.0).abs() < 0.001,
+            "expected ~1.0, got {}",
             result
         );
     }
 
     #[test]
     fn test_get_methylation_value_all_nan_returns_nan() {
-        // NaN is parsed as nan and excluded from median; no values remain -> return NaN.
-        let values: Vec<String> = (0..505).map(|_| "NaN".to_string()).collect();
+        let values: Vec<Vec<i32>> = (0..505).map(|_| Vec::new()).collect();
         let mut methyl_values = BTreeMap::new();
-        methyl_values.insert("allele-nan".to_string(), values.join(","));
+        methyl_values.insert("allele-nan".to_string(), values);
         let allele = "allele-nan".to_string();
         let result = get_methylation_value(&allele, &methyl_values, None).unwrap();
         assert!(
             result.is_nan(),
-            "all NaN with no numeric values should return NaN"
+            "empty methylation values should return NaN"
         );
     }
 
     #[test]
     fn test_get_methylation_value_mixed_nan_and_numeric() {
-        let parts = String::from("0.5,0.5,0.1,0.2,0.3,0.4,0.5");
+        let parts = vec![
+            vec![0],
+            vec![255],
+            vec![127],
+            vec![128],
+            vec![255],
+            vec![0],
+            vec![255],
+        ];
         let mut methyl_values = BTreeMap::new();
         methyl_values.insert("allele-mixed".to_string(), parts);
         let allele = "allele-mixed".to_string();
         let result = get_methylation_value(&allele, &methyl_values, Some(5)).unwrap();
         assert!(!result.is_nan());
         assert!(
-            (result - 0.3).abs() < 0.001,
-            "expected ~0.3, got {}",
+            (result - 0.6).abs() < 0.001,
+            "expected ~0.6, got {}",
             result
         );
 
-        let parts = String::from("0.5,0.5,0.1,0.2,0.3,NaN,0.4,0.5");
+        let parts = vec![
+            vec![0],
+            vec![255],
+            vec![127],
+            vec![128],
+            Vec::new(),
+            vec![0],
+            vec![255],
+        ];
         let mut methyl_values = BTreeMap::new();
         methyl_values.insert("allele-mixed".to_string(), parts);
         let allele = "allele-mixed".to_string();
         let result = get_methylation_value(&allele, &methyl_values, Some(5)).unwrap();
         assert!(!result.is_nan());
         assert!(
-            (result - 0.35).abs() < 0.001,
-            "expected ~0.35, got {}",
+            (result - 0.5).abs() < 0.001,
+            "expected ~0.5, got {}",
             result
         );
     }
@@ -1473,6 +1584,7 @@ mod tests {
         );
 
         let (starts, ends) = create_empty_backgrounds();
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1482,6 +1594,7 @@ mod tests {
             false,
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1506,6 +1619,7 @@ mod tests {
         );
 
         let (starts, ends) = create_empty_backgrounds();
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1515,6 +1629,7 @@ mod tests {
             false,
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1531,6 +1646,7 @@ mod tests {
         );
 
         let (starts, ends) = create_empty_backgrounds();
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1540,11 +1656,105 @@ mod tests {
             false,
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
 
         assert_eq!(pairs_to_merge.len(), 0);
+    }
+
+    #[test]
+    fn test_collect_partial_alleles_unique_overlap_same_type() {
+        let mut allele_match = BTreeMap::new();
+        allele_match.insert(
+            "qB".to_string(),
+            vec![
+                "LeftFlank-1-2".to_string(),
+                "LeftFlank-3-4".to_string(),
+                "5-6-RightFlank".to_string(),
+                "7-8-RightFlank".to_string(),
+            ],
+        );
+
+        let (starts, ends) = create_empty_backgrounds();
+        let mut overlaps = create_empty_overlaps();
+        overlaps.insert(
+            "LeftFlank-1-2".to_string(),
+            vec![
+                ("5-6-RightFlank".to_string(), 3),
+                ("7-8-RightFlank".to_string(), 1),
+            ],
+        );
+        overlaps.insert(
+            "LeftFlank-3-4".to_string(),
+            vec![
+                ("5-6-RightFlank".to_string(), 1),
+                ("7-8-RightFlank".to_string(), 3),
+            ],
+        );
+        let mut pairs_to_merge = Vec::new();
+
+        collect_partial_alleles_to_merge(
+            &allele_match,
+            0,
+            0,
+            false,
+            &starts,
+            &ends,
+            &overlaps,
+            &mut pairs_to_merge,
+        )
+        .unwrap();
+
+        assert_eq!(pairs_to_merge.len(), 2);
+        assert!(pairs_to_merge.contains(&vec![
+            "LeftFlank-1-2".to_string(),
+            "5-6-RightFlank".to_string(),
+        ]));
+        assert!(pairs_to_merge.contains(&vec![
+            "LeftFlank-3-4".to_string(),
+            "7-8-RightFlank".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn test_collect_partial_alleles_unique_overlap_requires_mutual_only_match() {
+        let mut allele_match = BTreeMap::new();
+        allele_match.insert(
+            "qAIntactPolyA".to_string(),
+            vec![
+                "LeftFlank-1-2".to_string(),
+                "LeftFlank-3-4".to_string(),
+                "5-6-RightFlank".to_string(),
+            ],
+        );
+
+        let (starts, ends) = create_empty_backgrounds();
+        let mut overlaps = create_empty_overlaps();
+        overlaps.insert(
+            "LeftFlank-1-2".to_string(),
+            vec![("5-6-RightFlank".to_string(), 3)],
+        );
+        overlaps.insert(
+            "LeftFlank-3-4".to_string(),
+            vec![("5-6-RightFlank".to_string(), 2)],
+        );
+        let mut pairs_to_merge = Vec::new();
+
+        collect_partial_alleles_to_merge(
+            &allele_match,
+            0,
+            0,
+            false,
+            &starts,
+            &ends,
+            &overlaps,
+            &mut pairs_to_merge,
+        )
+        .unwrap();
+
+        assert!(pairs_to_merge.is_empty());
     }
 
     #[test]
@@ -1561,6 +1771,7 @@ mod tests {
         allele_match.insert("unknown".to_string(), vec!["unknown-allele".to_string()]);
 
         let (starts, ends) = create_empty_backgrounds();
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1570,6 +1781,7 @@ mod tests {
             false,
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1596,6 +1808,7 @@ mod tests {
         allele_match.insert("unknown".to_string(), vec!["unknown-allele".to_string()]);
 
         let (starts, ends) = create_empty_backgrounds();
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1605,6 +1818,7 @@ mod tests {
             false,
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1630,6 +1844,7 @@ mod tests {
         let mut ends = BTreeMap::new();
         ends.insert(unknown_allele.clone(), "qAIntactPolyA".to_string());
 
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1639,6 +1854,7 @@ mod tests {
             true, // partial_allele_number_match
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1661,6 +1877,7 @@ mod tests {
         let mut ends = BTreeMap::new();
         ends.insert(unknown_allele.clone(), "qB".to_string());
 
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1670,6 +1887,7 @@ mod tests {
             true, // partial_allele_number_match
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1695,6 +1913,7 @@ mod tests {
         let mut ends = BTreeMap::new();
         ends.insert(unknown_allele, "other".to_string());
 
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1704,6 +1923,7 @@ mod tests {
             true, // partial_allele_number_match
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1725,6 +1945,7 @@ mod tests {
         let ends = BTreeMap::new();
         starts.insert(unknown_allele.clone(), "chr4".to_string());
 
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1734,6 +1955,7 @@ mod tests {
             true, // partial_allele_number_match
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1756,6 +1978,7 @@ mod tests {
         let ends = BTreeMap::new();
         starts.insert(unknown_allele.clone(), "chr4".to_string());
 
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1765,6 +1988,7 @@ mod tests {
             true, // partial_allele_number_match
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1790,6 +2014,7 @@ mod tests {
         let ends = BTreeMap::new();
         starts.insert(unknown_allele, "not-chr4".to_string());
 
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1799,6 +2024,7 @@ mod tests {
             true, // partial_allele_number_match
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1824,6 +2050,7 @@ mod tests {
         let ends = BTreeMap::new();
         starts.insert(unknown_allele.clone(), "chr4".to_string());
 
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1833,6 +2060,7 @@ mod tests {
             true, // partial_allele_number_match
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1855,6 +2083,7 @@ mod tests {
         );
 
         let (starts, ends) = create_empty_backgrounds();
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1864,6 +2093,7 @@ mod tests {
             true, // partial_allele_number_match
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1884,6 +2114,7 @@ mod tests {
         let mut ends = BTreeMap::new();
         ends.insert(unknown_allele, "qAIntactPolyA".to_string());
 
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1893,6 +2124,7 @@ mod tests {
             true, // partial_allele_number_match
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1913,6 +2145,7 @@ mod tests {
         let ends = BTreeMap::new();
         starts.insert(unknown_allele, "chr4".to_string());
 
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1922,6 +2155,7 @@ mod tests {
             true, // partial_allele_number_match
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1948,6 +2182,7 @@ mod tests {
         let ends = BTreeMap::new();
         starts.insert(unknown_allele, "chr4".to_string());
 
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1957,6 +2192,7 @@ mod tests {
             true, // partial_allele_number_match
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
@@ -1969,6 +2205,7 @@ mod tests {
     fn test_collect_partial_alleles_empty_allele_match() {
         let allele_match = BTreeMap::new();
         let (starts, ends) = create_empty_backgrounds();
+        let overlaps = create_empty_overlaps();
         let mut pairs_to_merge = Vec::new();
 
         collect_partial_alleles_to_merge(
@@ -1978,6 +2215,7 @@ mod tests {
             false,
             &starts,
             &ends,
+            &overlaps,
             &mut pairs_to_merge,
         )
         .unwrap();
