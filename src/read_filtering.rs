@@ -6,6 +6,9 @@ use rust_htslib::faidx;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+// deletion start position, position padding, deletion length, length padding
+type DeletionFilter = (i64, i64, i64, i64);
+
 /// Filter alignments for KIV2
 /// # Arguments
 /// * `realn_records` - realigned records
@@ -170,10 +173,7 @@ pub fn filter_realignments_d4z4(
     _reference: &PathBuf,
     realigned_bam: PathBuf,
 ) -> Result<(Vec<bam::Record>, Vec<String>, Vec<String>), DError> {
-    const D4Z4_FILTER_DEL_POS: i64 = 1574;
-    const D4Z4_FILTER_DEL_POS_PADDING: i64 = 5;
-    const D4Z4_FILTER_DEL_LEN: i64 = 1685;
-    const D4Z4_FILTER_DEL_LEN_PADDING: i64 = 20;
+    const D4Z4_BLACKLIST_DELETIONS: [DeletionFilter; 2] = [(1574, 5, 1685, 20), (2822, 5, 324, 10)];
 
     let mut white_list_read_segments = Vec::new();
     let mut blacklist_segments = Vec::new();
@@ -216,13 +216,7 @@ pub fn filter_realignments_d4z4(
                 }
             }
             if keep_record
-                && has_deletion_near_position(
-                    realn_record,
-                    D4Z4_FILTER_DEL_POS,
-                    D4Z4_FILTER_DEL_POS_PADDING,
-                    D4Z4_FILTER_DEL_LEN,
-                    D4Z4_FILTER_DEL_LEN_PADDING,
-                )
+                && has_deletion_near_any_position(realn_record, &D4Z4_BLACKLIST_DELETIONS)
             {
                 let cigar_string = realn_record.cigar().to_string();
                 debug!(
@@ -251,6 +245,17 @@ pub fn filter_realignments_d4z4(
     drop(writer);
     bam::index::build(&realigned_bam, None, bam::index::Type::Bai, 1)?;
     Ok((repeat_records, white_list_read_segments, blacklist_segments))
+}
+
+fn has_deletion_near_any_position(
+    record: &bam::Record,
+    deletion_filters: &[DeletionFilter],
+) -> bool {
+    deletion_filters
+        .iter()
+        .any(|&(target_pos, pos_padding, target_len, len_padding)| {
+            has_deletion_near_position(record, target_pos, pos_padding, target_len, len_padding)
+        })
 }
 
 fn has_deletion_near_position(

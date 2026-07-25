@@ -65,9 +65,14 @@ pub fn update_read_with_special_calls(
         new_variants_by_position_updated.entry(0).or_insert(vec![]);
     }
     if success_homopolymer {
-        new_variants_by_position_updated.entry(5000).or_insert(vec![]);
+        new_variants_by_position_updated
+            .entry(5000)
+            .or_insert(vec![]);
     }
-    Ok((read_segment_raw_fp_updated, new_variants_by_position_updated))
+    Ok((
+        read_segment_raw_fp_updated,
+        new_variants_by_position_updated,
+    ))
 }
 
 /// Genotype the homopolymer region
