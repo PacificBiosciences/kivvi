@@ -140,6 +140,8 @@ fn mark_segments_as_unknown(
                     position_index += 1;
                 }
             }
+            debug!("new positions: {:?}", new_positions);
+            debug!("new edges: {:?}", new_edges);
             fp_info
                 .read_positions
                 .insert(read_name.clone(), new_positions);
