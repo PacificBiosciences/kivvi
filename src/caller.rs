@@ -14,7 +14,9 @@ use crate::methylation::{get_methyl_info, methyl_prob_by_position, MethOutput};
 use crate::plot::plot_alleles::plot_alleles_and_reads;
 use crate::read_filtering::{filter_realignments_d4z4, filter_realignments_kiv2};
 use crate::repeat_unit::fingerprint::{get_fingerprint, FingerprintInfo, ReadParameters};
-use crate::repeat_unit::fingerprint_utils::{handle_qal_units, rm_redundant_finger_prints};
+use crate::repeat_unit::fingerprint_utils::{
+    handle_last_d4z4_long_insertion, handle_qal_units, rm_redundant_finger_prints,
+};
 use crate::util::{d4z4_coordinates, kiv2_coordinates, DError, DResult};
 use crate::variant::report_variants;
 use crate::vcf::write_vcf;
@@ -105,51 +107,24 @@ fn mark_segments_as_unknown(
         fp_info.grouped_reads.insert(segment_name.clone(), 0);
     }
 
-    let read_positions = fp_info.read_positions.clone();
-    for (read_name, positions) in read_positions {
-        if let Some(read_edges) = fp_info.read_edges.get_mut(&read_name) {
-            for (segment_index, read_position) in positions.iter().enumerate() {
-                let segment_name = format!("{read_name}:{read_position}");
-                if segment_names_to_zero_short.contains(&segment_name) {
-                    if let Some(read_edge) = read_edges.get_mut(segment_index) {
-                        *read_edge = 0;
-                    }
-                }
-            }
-        }
-    }
-
     for read_name in affected_reads {
         let read_positions = fp_info.read_positions.get(&read_name).cloned();
-        let read_edges = fp_info.read_edges.get_mut(&read_name);
+        let read_edges = fp_info.read_edges.get(&read_name).cloned();
         debug!("read {read_name} read edges to update: {:?}", read_edges);
         if let (Some(read_positions), Some(read_edges)) = (read_positions, read_edges) {
-            let mut start_index = read_edges.len();
-            if let Some(last_read_edge) = read_edges.last_mut() {
-                if *last_read_edge == -10 {
-                    *last_read_edge = 0;
-                    if let Some(last_position) = read_positions.last() {
-                        let segment_name = format!("{read_name}:{last_position}");
-                        fp_info.grouped_reads.insert(segment_name, 0);
-                        debug!("marked last read segment as unknown");
-                    }
-                    start_index = start_index.saturating_sub(1);
-                }
-            }
-
-            for (segment_index, read_edge) in
-                read_edges.iter_mut().enumerate().take(start_index).rev()
-            {
-                if *read_edge != 0 {
-                    debug!("marked read segment {read_name}:{segment_index} as unknown");
-                    *read_edge = 0;
-                    if let Some(read_position) = read_positions.get(segment_index) {
-                        let segment_name = format!("{read_name}:{read_position}");
-                        fp_info.grouped_reads.insert(segment_name, 0);
-                    }
-                    break;
-                }
-            }
+            let kept_segments = read_positions
+                .into_iter()
+                .zip(read_edges.into_iter())
+                .filter(|(read_position, _read_edge)| {
+                    let segment_name = format!("{read_name}:{read_position}");
+                    !segment_names_to_zero_short.contains(&segment_name)
+                })
+                .collect::<Vec<_>>();
+            let (new_positions, new_edges): (Vec<_>, Vec<_>) = kept_segments.into_iter().unzip();
+            fp_info
+                .read_positions
+                .insert(read_name.clone(), new_positions);
+            fp_info.read_edges.insert(read_name.clone(), new_edges);
         }
     }
 
@@ -180,6 +155,38 @@ fn mark_segments_as_unknown(
         }
     }
     */
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mark_segments_as_unknown;
+    use crate::repeat_unit::fingerprint::FingerprintInfo;
+    use std::collections::{BTreeMap, HashSet};
+
+    #[test]
+    fn mark_segments_as_unknown_removes_blacklisted_internal_segment() {
+        let mut fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![4, 5, -10])]),
+            grouped_reads: BTreeMap::from([
+                ("read1:100".to_string(), 4),
+                ("read1:200".to_string(), 5),
+                ("read1:300".to_string(), -10),
+            ]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::from([("read1".to_string(), vec![100, 200, 300])]),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+        let blacklist_segments = HashSet::from(["read1:200:50".to_string()]);
+
+        mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
+
+        assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![4, -10]));
+        assert_eq!(fp_info.read_positions.get("read1"), Some(&vec![100, 300]));
+        assert_eq!(fp_info.grouped_reads.get("read1:200"), Some(&0));
+    }
 }
 
 /// Convert alleles from vectors to strings
@@ -685,6 +692,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
 
     let (fp_info, qal_units) = handle_qal_units(fp_info)?;
+    let fp_info = handle_last_d4z4_long_insertion(fp_info)?;
 
     // qc metrics
     let all_read_length = read_length

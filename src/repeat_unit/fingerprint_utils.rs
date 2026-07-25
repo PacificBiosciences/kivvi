@@ -827,6 +827,95 @@ pub fn handle_qal_units(fp_info: FingerprintInfo) -> Result<(FingerprintInfo, Ve
     ))
 }
 
+pub fn handle_last_d4z4_long_insertion(
+    fp_info: FingerprintInfo,
+) -> Result<FingerprintInfo, DError> {
+    let mut new_read_edges = BTreeMap::new();
+    let mut new_replace = BTreeMap::<i32, i32>::new();
+
+    let d4z4_region_coordinates = d4z4_coordinates();
+    let long_insertion_variant = d4z4_region_coordinates
+        .variants_to_call
+        .last()
+        .cloned()
+        .ok_or("missing d4z4 forced-call variant")?;
+
+    let long_insertion_variant_codes = fp_info
+        .variants_by_position
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_pos, variants_at_pos))| {
+            variants_at_pos
+                .iter()
+                .position(|variant| variant == &long_insertion_variant)
+                .and_then(|alt_index| {
+                    if alt_index <= 8 {
+                        Some((index, b'1' + alt_index as u8))
+                    } else {
+                        None
+                    }
+                })
+        })
+        .collect::<Vec<_>>();
+
+    for (unit_name, unit_fp) in fp_info.good_name_to_seq.iter() {
+        for (index, expected_code) in long_insertion_variant_codes.iter() {
+            if unit_fp.get(*index) == Some(expected_code) {
+                debug!(
+                    "unit {unit_name:?} has final d4z4 long insertion at index {index}, unit fp: {:?}",
+                    std::str::from_utf8(unit_fp)?
+                );
+                let mut unit_seq_without_insertion = unit_fp.clone();
+                unit_seq_without_insertion[*index] = b'0';
+                for (other_unit_name, other_unit_fp) in fp_info.good_name_to_seq.iter() {
+                    if other_unit_fp == &unit_seq_without_insertion {
+                        debug!(
+                            "Found matching unit {other_unit_name:?} for {unit_name:?}, unit fp: {:?}",
+                            std::str::from_utf8(other_unit_fp)?
+                        );
+                        new_replace.entry(*unit_name).or_insert(*other_unit_name);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    debug!("new_replace for final d4z4 long insertion: {new_replace:?}");
+
+    if new_replace.is_empty() {
+        return Ok(fp_info);
+    }
+
+    for (each_read, read_fps) in fp_info.read_edges.iter() {
+        let mut new_fps = Vec::new();
+        for fp in read_fps {
+            if new_replace.contains_key(fp) {
+                let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
+                new_fps.push(*to_replace);
+            } else {
+                new_fps.push(*fp);
+            }
+        }
+        if new_fps != read_fps.to_vec() {
+            debug!("updated edges {each_read}: from {read_fps:?} to {new_fps:?}");
+        }
+        new_read_edges
+            .entry(each_read.to_string())
+            .or_insert(new_fps);
+    }
+
+    Ok(FingerprintInfo {
+        read_edges: new_read_edges,
+        grouped_reads: fp_info.grouped_reads,
+        fp_count: fp_info.fp_count,
+        good_name_to_seq: fp_info.good_name_to_seq,
+        read_positions: fp_info.read_positions,
+        read_bases: fp_info.read_bases,
+        fp_to_tid: fp_info.fp_to_tid,
+        variants_by_position: fp_info.variants_by_position,
+    })
+}
+
 /// Compare fingerprints and remove redundant ones
 /// # Arguments
 /// * `fp_info` - fingerprint information
@@ -1472,5 +1561,24 @@ mod tests {
             .or_insert(vec![1, 5]);
         let new_reads = infer_unknown_fingerprints(read_edges);
         assert_eq!(*new_reads.get("read1").unwrap(), vec![1, 0, 3]);
+    }
+
+    #[test]
+    fn test_handle_last_d4z4_long_insertion() {
+        let last_variant = d4z4_coordinates().variants_to_call.last().cloned().unwrap();
+        let fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![7, -10])]),
+            grouped_reads: BTreeMap::new(),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::from([(7, vec![b'1']), (8, vec![b'0'])]),
+            read_positions: BTreeMap::new(),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::from([(last_variant.position(), vec![last_variant])]),
+        };
+
+        let updated = handle_last_d4z4_long_insertion(fp_info).unwrap();
+
+        assert_eq!(updated.read_edges.get("read1"), Some(&vec![8, -10]));
     }
 }
