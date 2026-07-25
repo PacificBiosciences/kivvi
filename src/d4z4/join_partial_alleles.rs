@@ -216,6 +216,8 @@ fn collect_same_type_unique_overlap_pairs(
     allele_overlaps: &BTreeMap<String, Vec<(String, usize)>>,
     pairs_of_alleles_to_merge: &mut Vec<Vec<String>>,
 ) {
+    debug!("collecting same type unique overlap pairs");
+    debug!("allele_overlaps {allele_overlaps:?}");
     let allele_type_by_allele = allele_match
         .iter()
         .flat_map(|(allele_type, alleles)| {
@@ -225,8 +227,9 @@ fn collect_same_type_unique_overlap_pairs(
                 .collect::<Vec<(String, String)>>()
         })
         .collect::<BTreeMap<String, String>>();
-
+    debug!("allele_type_by_allele {allele_type_by_allele:?}");
     for (proximal_allele, overlaps) in allele_overlaps.iter() {
+        debug!("proximal_allele {proximal_allele} overlaps {overlaps:?}");
         let matching_distal_alleles = overlaps
             .iter()
             .filter(|(_, overlap_len)| *overlap_len >= 2)
@@ -235,40 +238,49 @@ fn collect_same_type_unique_overlap_pairs(
         if matching_distal_alleles.len() != 1 {
             continue;
         }
-
+        debug!("matching_distal_alleles {matching_distal_alleles:?}");
         let distal_allele = matching_distal_alleles[0].clone();
         let matching_proximal_alleles = allele_overlaps
             .iter()
             .filter(|(_, other_overlaps)| {
-                other_overlaps.iter().any(|(other_distal_allele, overlap_len)| {
-                    other_distal_allele == &distal_allele && *overlap_len >= 2
-                })
+                other_overlaps
+                    .iter()
+                    .any(|(other_distal_allele, overlap_len)| {
+                        other_distal_allele == &distal_allele && *overlap_len >= 2
+                    })
             })
             .map(|(other_proximal_allele, _)| other_proximal_allele.clone())
             .collect::<Vec<String>>();
         if matching_proximal_alleles.len() != 1 {
             continue;
         }
-
+        debug!("matching_proximal_alleles {matching_proximal_alleles:?}");
         let Some(proximal_allele_type) = allele_type_by_allele.get(proximal_allele) else {
             continue;
         };
         let Some(distal_allele_type) = allele_type_by_allele.get(&distal_allele) else {
             continue;
         };
-        if proximal_allele_type != distal_allele_type {
-            continue;
-        }
-        if !["qB", "qADisruptedPolyA", "qAIntactPolyA"]
-            .contains(&proximal_allele_type.as_str())
+        debug!(
+            "proximal_allele_type {proximal_allele_type} distal_allele_type {distal_allele_type}"
+        );
+        if proximal_allele_type != distal_allele_type
+            && proximal_allele_type != "unknown"
+            && distal_allele_type != "unknown"
         {
             continue;
         }
 
         let merged_alleles = vec![proximal_allele.clone(), distal_allele.clone()];
+        if pairs_of_alleles_to_merge
+            .iter()
+            .any(|pair| pair.contains(&proximal_allele) || pair.contains(&distal_allele))
+        {
+            continue;
+        }
         if !pairs_of_alleles_to_merge.contains(&merged_alleles) {
             debug!(
-                "merge {proximal_allele_type} unique overlapping partial alleles {merged_alleles:?}"
+                "merge {proximal_allele_type} and {distal_allele_type} unique overlapping partial alleles {merged_alleles:?}"
             );
             pairs_of_alleles_to_merge.push(merged_alleles);
         }
