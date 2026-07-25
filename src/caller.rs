@@ -102,6 +102,10 @@ fn mark_segments_as_unknown(
         .filter(|fingerprint| *fingerprint != 0)
         .collect::<HashSet<_>>();
     debug!("blacklist fingerprints: {:?}", blacklist_fingerprints);
+    debug!(
+        "segment_names_to_zero_short: {:?}",
+        segment_names_to_zero_short
+    );
 
     for segment_name in &segment_names_to_zero_short {
         fp_info.grouped_reads.insert(segment_name.clone(), 0);
@@ -112,6 +116,8 @@ fn mark_segments_as_unknown(
         let read_edges = fp_info.read_edges.get(&read_name).cloned();
         debug!("read {read_name} read edges to update: {:?}", read_edges);
         if let (Some(read_positions), Some(read_edges)) = (read_positions, read_edges) {
+            debug!("read positions: {:?}", read_positions);
+            debug!("read edges: {:?}", read_edges);
             let kept_segments = read_positions
                 .into_iter()
                 .zip(read_edges.into_iter())
@@ -120,7 +126,10 @@ fn mark_segments_as_unknown(
                     !segment_names_to_zero_short.contains(&segment_name)
                 })
                 .collect::<Vec<_>>();
+            debug!("kept segments: {:?}", kept_segments);
             let (new_positions, new_edges): (Vec<_>, Vec<_>) = kept_segments.into_iter().unzip();
+            debug!("new positions: {:?}", new_positions);
+            debug!("new edges: {:?}", new_edges);
             fp_info
                 .read_positions
                 .insert(read_name.clone(), new_positions);
