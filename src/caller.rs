@@ -116,20 +116,30 @@ fn mark_segments_as_unknown(
         let read_edges = fp_info.read_edges.get(&read_name).cloned();
         debug!("read {read_name} read edges to update: {:?}", read_edges);
         if let (Some(read_positions), Some(read_edges)) = (read_positions, read_edges) {
-            debug!("read positions: {:?}", read_positions);
-            debug!("read edges: {:?}", read_edges);
-            let kept_segments = read_positions
-                .into_iter()
-                .zip(read_edges.into_iter())
-                .filter(|(read_position, _read_edge)| {
+            let mut new_positions = Vec::new();
+            let mut new_edges = Vec::new();
+            let mut position_index = 0usize;
+
+            for (edge_index, read_edge) in read_edges.iter().enumerate() {
+                let remaining_edges = read_edges.len() - edge_index;
+                let remaining_positions = read_positions.len().saturating_sub(position_index);
+                let edge_has_no_position =
+                    *read_edge == -10 && remaining_edges > remaining_positions;
+
+                if edge_has_no_position {
+                    new_edges.push(*read_edge);
+                    continue;
+                }
+
+                if let Some(read_position) = read_positions.get(position_index) {
                     let segment_name = format!("{read_name}:{read_position}");
-                    !segment_names_to_zero_short.contains(&segment_name)
-                })
-                .collect::<Vec<_>>();
-            debug!("kept segments: {:?}", kept_segments);
-            let (new_positions, new_edges): (Vec<_>, Vec<_>) = kept_segments.into_iter().unzip();
-            debug!("new positions: {:?}", new_positions);
-            debug!("new edges: {:?}", new_edges);
+                    if !segment_names_to_zero_short.contains(&segment_name) {
+                        new_positions.push(*read_position);
+                        new_edges.push(*read_edge);
+                    }
+                    position_index += 1;
+                }
+            }
             fp_info
                 .read_positions
                 .insert(read_name.clone(), new_positions);
@@ -194,6 +204,54 @@ mod tests {
 
         assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![4, -10]));
         assert_eq!(fp_info.read_positions.get("read1"), Some(&vec![100, 300]));
+        assert_eq!(fp_info.grouped_reads.get("read1:200"), Some(&0));
+    }
+
+    #[test]
+    fn mark_segments_as_unknown_preserves_trailing_edge_without_position() {
+        let mut fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![4, 5, -10])]),
+            grouped_reads: BTreeMap::from([
+                ("read1:100".to_string(), 4),
+                ("read1:200".to_string(), 5),
+            ]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::from([("read1".to_string(), vec![100, 200])]),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+        let blacklist_segments = HashSet::from(["read1:200:50".to_string()]);
+
+        mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
+
+        assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![4, -10]));
+        assert_eq!(fp_info.read_positions.get("read1"), Some(&vec![100]));
+        assert_eq!(fp_info.grouped_reads.get("read1:200"), Some(&0));
+    }
+
+    #[test]
+    fn mark_segments_as_unknown_preserves_unpositioned_middle_negative_ten() {
+        let mut fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![4, -10, 5])]),
+            grouped_reads: BTreeMap::from([
+                ("read1:100".to_string(), 4),
+                ("read1:200".to_string(), 5),
+            ]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::from([("read1".to_string(), vec![100, 200])]),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+        let blacklist_segments = HashSet::from(["read1:200:50".to_string()]);
+
+        mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
+
+        assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![4, -10]));
+        assert_eq!(fp_info.read_positions.get("read1"), Some(&vec![100]));
         assert_eq!(fp_info.grouped_reads.get("read1:200"), Some(&0));
     }
 }
