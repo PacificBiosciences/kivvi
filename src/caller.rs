@@ -116,40 +116,54 @@ fn mark_segments_as_unknown(
         let read_edges = fp_info.read_edges.get(&read_name).cloned();
         debug!("read {read_name} read edges to update: {:?}", read_edges);
         if let (Some(read_positions), Some(read_edges)) = (read_positions, read_edges) {
-            let extra_edge_count = read_edges.len().saturating_sub(read_positions.len());
-            let unpositioned_negative_ten_indices = read_edges
+            let mut position_index = 0usize;
+            let edge_positions = read_edges
                 .iter()
                 .enumerate()
-                .rev()
-                .filter(|(_, read_edge)| **read_edge == -10)
-                .take(extra_edge_count)
-                .map(|(edge_index, _)| edge_index)
-                .collect::<HashSet<_>>();
-            let mut preserved_unpositioned_negative_ten_indices = HashSet::new();
+                .map(|(edge_index, read_edge)| {
+                    let remaining_edges = read_edges.len() - edge_index;
+                    let remaining_positions = read_positions.len().saturating_sub(position_index);
+                    let edge_position =
+                        if *read_edge == -10 && remaining_edges > remaining_positions {
+                            None
+                        } else {
+                            let read_position = read_positions.get(position_index).copied();
+                            if read_position.is_some() {
+                                position_index += 1;
+                            }
+                            read_position
+                        };
+                    (*read_edge, edge_position)
+                })
+                .collect::<Vec<_>>();
             let mut new_positions = Vec::new();
             let mut new_edges = Vec::new();
-            let mut position_index = 0usize;
+            let mut skip_next = false;
 
-            for (edge_index, read_edge) in read_edges.iter().enumerate() {
-                if unpositioned_negative_ten_indices.contains(&edge_index) {
-                    if !preserved_unpositioned_negative_ten_indices.contains(&edge_index) {
-                        new_edges.push(*read_edge);
-                    }
+            for (edge_index, (read_edge, read_position)) in edge_positions.iter().enumerate() {
+                if skip_next {
+                    skip_next = false;
                     continue;
                 }
 
-                if let Some(read_position) = read_positions.get(position_index) {
+                if let Some(read_position) = read_position {
                     let segment_name = format!("{read_name}:{read_position}");
                     if !segment_names_to_zero_short.contains(&segment_name) {
                         new_positions.push(*read_position);
                         new_edges.push(*read_edge);
-                    } else if read_edges.get(edge_index + 1) == Some(&-10)
-                        && unpositioned_negative_ten_indices.contains(&(edge_index + 1))
+                    } else if let Some((next_edge, next_position)) =
+                        edge_positions.get(edge_index + 1)
                     {
-                        new_edges.push(-10);
-                        preserved_unpositioned_negative_ten_indices.insert(edge_index + 1);
+                        if *next_edge == -10 {
+                            new_edges.push(*next_edge);
+                            if let Some(next_position) = next_position {
+                                new_positions.push(*next_position);
+                            }
+                            skip_next = true;
+                        }
                     }
-                    position_index += 1;
+                } else {
+                    new_edges.push(*read_edge);
                 }
             }
             debug!("new positions: {:?}", new_positions);
@@ -296,6 +310,35 @@ mod tests {
             Some(&vec![100, 200, 300])
         );
         assert_eq!(fp_info.grouped_reads.get("read1:400"), Some(&0));
+    }
+
+    #[test]
+    fn mark_segments_as_unknown_preserves_positioned_negative_ten_after_blacklisted_segment() {
+        let mut fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![0, 23, 23, -10])]),
+            grouped_reads: BTreeMap::from([
+                ("read1:100".to_string(), 0),
+                ("read1:200".to_string(), 23),
+                ("read1:300".to_string(), 23),
+                ("read1:400".to_string(), -10),
+            ]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::from([("read1".to_string(), vec![100, 200, 300, 400])]),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+        let blacklist_segments = HashSet::from(["read1:300:50".to_string()]);
+
+        mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
+
+        assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![0, 23, -10]));
+        assert_eq!(
+            fp_info.read_positions.get("read1"),
+            Some(&vec![100, 200, 400])
+        );
+        assert_eq!(fp_info.grouped_reads.get("read1:300"), Some(&0));
     }
 }
 
