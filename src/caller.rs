@@ -45,8 +45,6 @@ pub struct SampleCall {
     pub partial_alleles: Vec<String>,
     /// supporting reads for complete alleles
     pub supporting_reads: BTreeMap<String, Vec<String>>,
-    /// read name -> edge path string
-    pub read_info: BTreeMap<String, String>,
     /// reporting summary information for D4Z4 alleles
     pub allele_info: Vec<AlleleSummary>,
     /// variants on fingerprints on complete alleles
@@ -55,6 +53,8 @@ pub struct SampleCall {
     pub other_unit_variants: Vec<String>,
     /// summary of methylation information, including complete alleles and all allele ends
     pub methylation: BTreeMap<String, Option<MethOutput>>,
+    /// read name -> edge path string
+    pub read_info: BTreeMap<String, String>,
     /// additional key-value metadata
     pub additional: BTreeMap<String, serde_json::Value>,
 }
