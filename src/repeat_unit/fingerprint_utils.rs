@@ -735,6 +735,7 @@ pub fn get_start_end_fps(
 
 pub fn handle_qal_units(fp_info: FingerprintInfo) -> Result<(FingerprintInfo, Vec<i32>), DError> {
     let mut new_read_edges = BTreeMap::new();
+    let mut new_grouped_reads = BTreeMap::new();
     let mut new_replace = BTreeMap::<i32, i32>::new();
     let mut qal_units = Vec::new();
 
@@ -812,10 +813,23 @@ pub fn handle_qal_units(fp_info: FingerprintInfo) -> Result<(FingerprintInfo, Ve
             .or_insert(new_fps);
     }
 
+    for (each_segment, fp) in fp_info.grouped_reads.iter() {
+        if new_replace.contains_key(fp) {
+            let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
+            new_grouped_reads
+                .entry(each_segment.to_string())
+                .or_insert(*to_replace);
+        } else {
+            new_grouped_reads
+                .entry(each_segment.to_string())
+                .or_insert(*fp);
+        }
+    }
+
     Ok((
         FingerprintInfo {
             read_edges: new_read_edges,
-            grouped_reads: fp_info.grouped_reads,
+            grouped_reads: new_grouped_reads,
             fp_count: fp_info.fp_count,
             good_name_to_seq: fp_info.good_name_to_seq,
             read_positions: fp_info.read_positions,
@@ -831,6 +845,7 @@ pub fn handle_last_d4z4_long_insertion(
     fp_info: FingerprintInfo,
 ) -> Result<FingerprintInfo, DError> {
     let mut new_read_edges = BTreeMap::new();
+    let mut new_grouped_reads = BTreeMap::new();
     let mut new_replace = BTreeMap::<i32, i32>::new();
 
     let d4z4_region_coordinates = d4z4_coordinates();
@@ -914,9 +929,22 @@ pub fn handle_last_d4z4_long_insertion(
             .or_insert(new_fps);
     }
 
+    for (each_segment, fp) in fp_info.grouped_reads.iter() {
+        if new_replace.contains_key(fp) {
+            let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
+            new_grouped_reads
+                .entry(each_segment.to_string())
+                .or_insert(*to_replace);
+        } else {
+            new_grouped_reads
+                .entry(each_segment.to_string())
+                .or_insert(*fp);
+        }
+    }
+
     Ok(FingerprintInfo {
         read_edges: new_read_edges,
-        grouped_reads: fp_info.grouped_reads,
+        grouped_reads: new_grouped_reads,
         fp_count: fp_info.fp_count,
         good_name_to_seq: fp_info.good_name_to_seq,
         read_positions: fp_info.read_positions,
@@ -1578,7 +1606,7 @@ mod tests {
         let last_variant = d4z4_coordinates().variants_to_call.last().cloned().unwrap();
         let fp_info = FingerprintInfo {
             read_edges: BTreeMap::from([("read1".to_string(), vec![7, -10])]),
-            grouped_reads: BTreeMap::new(),
+            grouped_reads: BTreeMap::from([("read1:0".to_string(), 7)]),
             fp_count: BTreeMap::new(),
             good_name_to_seq: BTreeMap::from([(7, vec![b'1']), (8, vec![b'0'])]),
             read_positions: BTreeMap::new(),
@@ -1590,5 +1618,37 @@ mod tests {
         let updated = handle_last_d4z4_long_insertion(fp_info).unwrap();
 
         assert_eq!(updated.read_edges.get("read1"), Some(&vec![8, -10]));
+        assert_eq!(updated.grouped_reads.get("read1:0"), Some(&8));
+    }
+
+    #[test]
+    fn test_handle_qal_units_updates_grouped_reads() {
+        let d4z4_region_coordinates = d4z4_coordinates();
+        let long_insertion_variants = d4z4_region_coordinates
+            .variants_to_call
+            .iter()
+            .rev()
+            .skip(1)
+            .take(2)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let target_variant = long_insertion_variants.first().cloned().unwrap();
+        let fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![7, -10])]),
+            grouped_reads: BTreeMap::from([("read1:0".to_string(), 7)]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::from([(7, vec![b'1']), (8, vec![b'0'])]),
+            read_positions: BTreeMap::new(),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::from([(target_variant.position(), vec![target_variant])]),
+        };
+
+        let (updated, qal_units) = handle_qal_units(fp_info).unwrap();
+
+        assert_eq!(updated.read_edges.get("read1"), Some(&vec![8, -10]));
+        assert_eq!(updated.grouped_reads.get("read1:0"), Some(&8));
+        assert_eq!(qal_units, vec![7, 8]);
     }
 }
