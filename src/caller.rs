@@ -45,6 +45,8 @@ pub struct SampleCall {
     pub partial_alleles: Vec<String>,
     /// supporting reads for complete alleles
     pub supporting_reads: BTreeMap<String, Vec<String>>,
+    /// read name -> edge path string
+    pub read_info: BTreeMap<String, String>,
     /// reporting summary information for D4Z4 alleles
     pub allele_info: Vec<AlleleSummary>,
     /// variants on fingerprints on complete alleles
@@ -206,7 +208,7 @@ fn mark_segments_as_unknown(
 
 #[cfg(test)]
 mod tests {
-    use super::mark_segments_as_unknown;
+    use super::{mark_segments_as_unknown, read_info_to_string};
     use crate::repeat_unit::fingerprint::FingerprintInfo;
     use std::collections::{BTreeMap, HashSet};
 
@@ -340,6 +342,19 @@ mod tests {
         );
         assert_eq!(fp_info.grouped_reads.get("read1:300"), Some(&0));
     }
+
+    #[test]
+    fn read_info_to_string_joins_edges_per_read() {
+        let read_edges = BTreeMap::from([
+            ("read1".to_string(), vec![1, 3, 9]),
+            ("read2".to_string(), vec![0, -10]),
+        ]);
+
+        let result = read_info_to_string(&read_edges);
+
+        assert_eq!(result.get("read1"), Some(&"1-3-9".to_string()));
+        assert_eq!(result.get("read2"), Some(&"0--10".to_string()));
+    }
 }
 
 /// Convert alleles from vectors to strings
@@ -373,6 +388,20 @@ pub fn vec_to_string<T: Display>(haps: &Vec<Vec<T>>, separater: &str) -> Vec<Str
         haps_string.push(hap_string);
     }
     haps_string
+}
+
+/// Convert read edge vectors to joined strings for JSON output
+pub fn read_info_to_string(read_edges: &BTreeMap<String, Vec<i32>>) -> BTreeMap<String, String> {
+    let mut read_edges_string = BTreeMap::new();
+    for (read_name, edges) in read_edges {
+        let edge_string = edges
+            .iter()
+            .map(|edge| edge.to_string())
+            .collect::<Vec<_>>()
+            .join("-");
+        read_edges_string.insert(read_name.clone(), edge_string);
+    }
+    read_edges_string
 }
 
 /// Remove a file if it exists
@@ -625,6 +654,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
         complete_alleles: final_complete,
         partial_alleles: vec_to_string(&assembly_result.incomplete, "-"),
         supporting_reads: support,
+        read_info: read_info_to_string(&fp_info.read_edges),
         complete_allele_variants,
         methylation: BTreeMap::new(),
         other_unit_variants: variant_report
@@ -1131,6 +1161,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         complete_alleles: final_complete,
         partial_alleles: vec_to_string(&assembly_result.incomplete, "-"),
         supporting_reads: support,
+        read_info: read_info_to_string(&fp_info.read_edges),
         complete_allele_variants,
         methylation: allele_methyl_info,
         other_unit_variants: variant_report
