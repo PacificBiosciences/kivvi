@@ -867,15 +867,25 @@ pub fn handle_last_d4z4_long_insertion(
                 );
                 let mut unit_seq_without_insertion = unit_fp.clone();
                 unit_seq_without_insertion[*index] = b'0';
-                for (other_unit_name, other_unit_fp) in fp_info.good_name_to_seq.iter() {
-                    if other_unit_fp == &unit_seq_without_insertion {
-                        debug!(
-                            "Found matching unit {other_unit_name:?} for {unit_name:?}, unit fp: {:?}",
-                            std::str::from_utf8(other_unit_fp)?
-                        );
-                        new_replace.entry(*unit_name).or_insert(*other_unit_name);
-                        break;
+                let mut unit_seq_without_insertion_replace_unknown =
+                    unit_seq_without_insertion.clone();
+                for x in &mut unit_seq_without_insertion_replace_unknown {
+                    if *x == b'-' {
+                        *x = b'0';
                     }
+                }
+                let mut matching_unit_fps = Vec::new();
+                for (other_unit_name, other_unit_fp) in fp_info.good_name_to_seq.iter() {
+                    if other_unit_fp == &unit_seq_without_insertion
+                        || other_unit_fp == &unit_seq_without_insertion_replace_unknown
+                    {
+                        matching_unit_fps.push(*other_unit_name);
+                    }
+                }
+                if matching_unit_fps.len() == 1 {
+                    let matching_unit_fp = matching_unit_fps.first().unwrap();
+                    debug!("Found matching unit {matching_unit_fp:?} for {unit_name:?}");
+                    new_replace.entry(*unit_name).or_insert(*matching_unit_fp);
                 }
             }
         }
