@@ -187,7 +187,7 @@ pub fn filter_complete_alleles(
                             is_spanning = true;
                         }
                     }
-                    if best_match.1 < read_nodes_len {
+                    if best_match.1 < read_nodes_len && best_match.0 + best_match.1 < allele_len {
                         suspicious_reads.insert(read_nodes.clone());
                         suspicious_forward
                             .entry(best_match.0 + best_match.1)
@@ -242,7 +242,7 @@ pub fn filter_complete_alleles(
                             is_spanning = true;
                         }
                     }
-                    if best_match.1 < read_nodes_len {
+                    if best_match.1 < read_nodes_len && best_match.0 + best_match.1 < allele_len {
                         suspicious_reads.insert(read_nodes.clone());
                         suspicious_reverse
                             .entry(allele_len - best_match.0 - best_match.1)
