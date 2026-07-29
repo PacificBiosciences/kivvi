@@ -55,9 +55,7 @@ fn strip_chr_in_region_config_yaml(input: &[u8]) -> Result<Vec<u8>, DError> {
     Ok(out.join("\n").into_bytes())
 }
 
-fn load_region_config_for_bam(
-    wgs_bam: &PathBuf,
-) -> Result<paraphase::config::Region, DError> {
+fn load_region_config_for_bam(wgs_bam: &PathBuf) -> Result<paraphase::config::Region, DError> {
     let reader = bam::Reader::from_path(wgs_bam)?;
     let bam_uses_chr = reader
         .header()
@@ -192,10 +190,22 @@ pub fn phase_flanking(
     write_bam: bool,
 ) -> Result<BTreeMap<String, GeneCall>, DError> {
     debug!("Running Paraphase for flanking region");
-    let (dux4p5, dux4p5_bam) =
-        phase_flanking_gene(sample, output_path, wgs_bam, genome_reference, "DUX4p5", write_bam)?;
-    let (dux4, dux4_bam) =
-        phase_flanking_gene(sample, output_path, wgs_bam, genome_reference, "DUX4", write_bam)?;
+    let (dux4p5, dux4p5_bam) = phase_flanking_gene(
+        sample,
+        output_path,
+        wgs_bam,
+        genome_reference,
+        "DUX4p5",
+        write_bam,
+    )?;
+    let (dux4, dux4_bam) = phase_flanking_gene(
+        sample,
+        output_path,
+        wgs_bam,
+        genome_reference,
+        "DUX4",
+        write_bam,
+    )?;
     let mut ret = BTreeMap::<String, _>::new();
     ret.insert(String::from("DUX4p5"), dux4p5);
     ret.insert(String::from("DUX4"), dux4);
@@ -1047,6 +1057,11 @@ pub fn process_alleles(
         }
     }
     // sensitive
+    let distal_no_cis_dup = kept_ending_haps
+        .iter()
+        .filter(|hap| !is_cis_dup_hap(hap, fp_info).unwrap_or(false))
+        .cloned()
+        .collect::<Vec<Vec<i32>>>();
     if distal_no_cis_dup.len() >= 5 {
         // kept_starting_haps.len() == 4 &&
         let num_turns = distal_no_cis_dup.len() - 4;
