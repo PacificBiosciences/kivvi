@@ -50,12 +50,6 @@ pub struct Settings {
     #[clap(hide = true)]
     pub variant_list: Option<PathBuf>,
 
-    /// do not run paraphase
-    #[clap(long, action)]
-    #[clap(hide = true)]
-    #[clap(help = "If specified, will not run paraphase to phase up/downstream regions")]
-    pub nopp: bool,
-
     /// Enable verbose output
     #[clap(short = 'v')]
     #[clap(long = "verbose")]
@@ -79,7 +73,19 @@ pub struct KivArgs {}
 #[derive(Parser, Debug)]
 #[command(group(ArgGroup::new("d4z4")))]
 #[command(arg_required_else_help(false))]
-pub struct D4z4Args {}
+pub struct D4z4Args {
+    /// Number of threads to use for D4Z4 (1 or 2)
+    #[clap(long = "threads")]
+    #[clap(value_name = "INT")]
+    #[clap(default_value_t = 1)]
+    pub threads: u8,
+
+    /// do not run paraphase
+    #[clap(long, action)]
+    #[clap(hide = true)]
+    #[clap(help = "If specified, will not run paraphase to phase up/downstream regions")]
+    pub nopp: bool,
+}
 
 /// Parse settings
 pub fn get_raw_settings() -> Settings {
@@ -96,6 +102,12 @@ pub fn check_settings(settings: Settings) -> Settings {
         std::process::exit(1);
     } else {
         info!("Alignment file: \"{}\"", &settings.bam_filename.display());
+    }
+    if let Command::D4z4(args) = &settings.command {
+        if !(1..=2).contains(&args.threads) {
+            error!("D4Z4 flanking thread count must be 1 or 2");
+            std::process::exit(1);
+        }
     }
     settings
 }

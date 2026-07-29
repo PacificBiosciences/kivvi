@@ -20,6 +20,11 @@ use std::cmp;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
+const PARAPHASE_D4Z4_CONFIG: &[u8] = std::include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/d4z4/paraphase_d4z4_config.yaml"
+));
+
 fn strip_chr_region_token(token: &str) -> String {
     if let Some((chr, rest)) = token.split_once(':') {
         format!("{}:{rest}", chr.strip_prefix("chr").unwrap_or(chr))
@@ -50,6 +55,126 @@ fn strip_chr_in_region_config_yaml(input: &[u8]) -> Result<Vec<u8>, DError> {
     Ok(out.join("\n").into_bytes())
 }
 
+fn load_region_config_for_bam(
+    wgs_bam: &PathBuf,
+) -> Result<paraphase::config::Region, DError> {
+    let reader = bam::Reader::from_path(wgs_bam)?;
+    let bam_uses_chr = reader
+        .header()
+        .target_names()
+        .into_iter()
+        .any(|name| name.starts_with(b"chr"));
+    let loaded_config_bytes = if bam_uses_chr {
+        PARAPHASE_D4Z4_CONFIG.to_vec()
+    } else {
+        strip_chr_in_region_config_yaml(PARAPHASE_D4Z4_CONFIG)?
+    };
+    let region_config = try_load(Some(&loaded_config_bytes))?;
+    debug!("paraphase region config {:?}", region_config);
+    Ok(region_config)
+}
+
+fn paraphase_gene_bam_path(sample: &str, output_path: &Path, gene: &str) -> PathBuf {
+    output_path.join(format!("{sample}.kivvi.paraphase.{gene}.bam"))
+}
+
+fn combined_paraphase_bam_path(sample: &str, output_path: &Path) -> PathBuf {
+    output_path.join(format!("{sample}.kivvi.paraphase.bam"))
+}
+
+pub fn phase_flanking_gene(
+    sample: &str,
+    output_path: &Path,
+    wgs_bam: &PathBuf,
+    genome_reference: &PathBuf,
+    gene: &str,
+    write_bam: bool,
+) -> Result<(GeneCall, Option<PathBuf>), DError> {
+    debug!("Running Paraphase for flanking region {gene}");
+    let region_config = load_region_config_for_bam(wgs_bam)?;
+    let tmp_dir = tempfile::TempDir::new()?;
+    let reader = bam::Reader::from_path(wgs_bam)?;
+    let settings = phaser::Settings::new(
+        sample,
+        (genome_reference, wgs_bam),
+        tmp_dir.path(),
+        gene.to_string(),
+        &region_config,
+        /* genome depth= */ None,
+        /* sex = */ None,
+        String::from("38"),
+        None,
+        0.03,
+        false,
+    );
+
+    let mut phaser = phaser::Phaser::new(
+        settings,
+        Some(config::Gene::default()),
+        None, // Option<SiteSelectionSettings>
+        None, // Option<RealignSettings>
+    );
+    let res = phaser.run()?;
+
+    let bam_path = if write_bam {
+        let output_bam = paraphase_gene_bam_path(sample, output_path, gene);
+        let mut writer = bam::Writer::from_path(
+            &output_bam,
+            &bam::Header::from_template(reader.header()),
+            bam::Format::Bam,
+        )?;
+        let bam_writer = BamWriter::new(&phaser, &res);
+        for item in bam_writer.write_bams()? {
+            writer.write(&item)?;
+        }
+        Some(output_bam)
+    } else {
+        None
+    };
+    tmp_dir.close()?;
+    Ok((res, bam_path))
+}
+
+pub fn merge_phasing_bams(
+    sample: &str,
+    output_path: &Path,
+    wgs_bam: &PathBuf,
+    bam_paths: &[PathBuf],
+) -> Result<(), DError> {
+    let output_bam = combined_paraphase_bam_path(sample, output_path);
+    let header_reader = bam::Reader::from_path(wgs_bam)?;
+    let mut writer = bam::Writer::from_path(
+        &output_bam,
+        &bam::Header::from_template(header_reader.header()),
+        bam::Format::Bam,
+    )?;
+    let mut records = Vec::<Record>::new();
+    for bam_path in bam_paths {
+        let mut reader = bam::Reader::from_path(bam_path)?;
+        for record in reader.records() {
+            records.push(record?);
+        }
+    }
+    records.sort_by(|a, b| a.tid().cmp(&b.tid()).then(a.pos().cmp(&b.pos())));
+    for record in &records {
+        writer.write(record)?;
+    }
+    for bam_path in bam_paths {
+        if bam_path.exists() {
+            std::fs::remove_file(bam_path)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn remove_phasing_bam(sample: &str, output_path: &Path) -> Result<(), DError> {
+    let output_bam = combined_paraphase_bam_path(sample, output_path);
+    if output_bam.exists() {
+        std::fs::remove_file(output_bam)?;
+    }
+    Ok(())
+}
+
 /// Use paraphase to phase upstream regions
 /// # Arguments
 /// * `sample` - sample name
@@ -67,83 +192,25 @@ pub fn phase_flanking(
     write_bam: bool,
 ) -> Result<BTreeMap<String, GeneCall>, DError> {
     debug!("Running Paraphase for flanking region");
-    const DATA: &[u8] = std::include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/data/d4z4/paraphase_d4z4_config.yaml"
-    ));
+    let (dux4p5, dux4p5_bam) =
+        phase_flanking_gene(sample, output_path, wgs_bam, genome_reference, "DUX4p5", write_bam)?;
+    let (dux4, dux4_bam) =
+        phase_flanking_gene(sample, output_path, wgs_bam, genome_reference, "DUX4", write_bam)?;
     let mut ret = BTreeMap::<String, _>::new();
-    let mut bam_ret = std::collections::BTreeMap::<u64, Vec<bam::Record>>::new();
-
-    // temp dir
-    let tmp_dir = tempfile::TempDir::new()?;
-    let reader = bam::Reader::from_path(wgs_bam)?;
-    let bam_uses_chr = reader
-        .header()
-        .target_names()
-        .into_iter()
-        .any(|name| name.starts_with(b"chr"));
-    let loaded_config_bytes = if bam_uses_chr {
-        DATA.to_vec()
-    } else {
-        strip_chr_in_region_config_yaml(DATA)?
-    };
-    let region_config = try_load(Some(&loaded_config_bytes))?;
-    let genes = region_config.keys().cloned().rev().collect::<Vec<_>>();
-    debug!("paraphase region config {:?}", region_config);
-    let output_bam = output_path.join(format!("{sample}.kivvi.paraphase.bam"));
-    let mut writer = bam::Writer::from_path(
-        &output_bam,
-        &bam::Header::from_template(reader.header()),
-        bam::Format::Bam,
-    )?;
-
-    // Compute for each gene
-    for gene in genes {
-        let settings = phaser::Settings::new(
+    ret.insert(String::from("DUX4p5"), dux4p5);
+    ret.insert(String::from("DUX4"), dux4);
+    if write_bam {
+        merge_phasing_bams(
             sample,
-            (genome_reference, wgs_bam),
-            //&args.outdir,
-            tmp_dir.path(),
-            gene.clone(),
-            &region_config,
-            /* genome depth= */ None,
-            /* sex = */ None,
-            String::from("38"),
-            None,
-            0.03,
-            false,
-        );
-
-        let mut phaser = phaser::Phaser::new(
-            settings,
-            Some(config::Gene::default()),
-            None, // Option<SiteSelectionSettings>
-            None, // Option<RealignSettings>
-        );
-        let res = phaser.run()?;
-
-        // write to bam
-        if write_bam {
-            let bam_writer = BamWriter::new(&phaser, &res);
-            let bam_records_out: Vec<Record> = bam_writer.write_bams()?;
-            for item in bam_records_out {
-                let tid_pos = ((item.tid() as u64) << 32) | item.pos() as u64;
-                bam_ret.entry(tid_pos).or_default().push(item);
-            }
-        }
-        ret.insert(gene, res);
-    }
-    let alignments = bam_ret
-        .into_values()
-        .flat_map(std::iter::IntoIterator::into_iter)
-        .collect::<Vec<_>>();
-    for align in &alignments {
-        writer.write(align)?;
-    }
-    //bam::index::build(&output_bam, None, bam::index::Type::Bai, 1)?;
-    tmp_dir.close()?;
-    if !write_bam && output_bam.exists() {
-        std::fs::remove_file(output_bam)?;
+            output_path,
+            wgs_bam,
+            &[
+                dux4p5_bam.expect("DUX4p5 bam missing"),
+                dux4_bam.expect("DUX4 bam missing"),
+            ],
+        )?;
+    } else {
+        remove_phasing_bam(sample, output_path)?;
     }
     Ok(ret)
 }
