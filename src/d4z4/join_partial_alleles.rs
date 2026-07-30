@@ -211,6 +211,52 @@ fn check_flank_presence(alleles: &Vec<String>) -> bool {
     has_left && has_right
 }
 
+fn get_original_distal_allele(alleles: &[String]) -> String {
+    let mut sorted_alleles = alleles.to_vec();
+    sorted_alleles.sort_by(|a, b| b.contains("LeftFlank").cmp(&a.contains("LeftFlank")));
+    sorted_alleles[1].clone()
+}
+
+fn infer_cis_dup_chromosomes(
+    cis_dups: &[Vec<Vec<i32>>],
+    cis_dup_alleles: &[String],
+    distal_allele_chrom_map: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut cis_dup_chromosomes = BTreeMap::new();
+    for cis_dup_group in cis_dups {
+        let alleles = crate::caller::vec_to_string(cis_dup_group, "-");
+        for linked_pair in alleles.windows(2) {
+            let allele_a = &linked_pair[0];
+            let allele_b = &linked_pair[1];
+            let a_is_cis_dup = cis_dup_alleles.contains(allele_a);
+            let b_is_cis_dup = cis_dup_alleles.contains(allele_b);
+            if a_is_cis_dup == b_is_cis_dup {
+                continue;
+            }
+            let (cis_dup_allele, normal_allele) = if a_is_cis_dup {
+                (allele_a, allele_b)
+            } else {
+                (allele_b, allele_a)
+            };
+            if cis_dup_chromosomes.contains_key(cis_dup_allele) {
+                continue;
+            }
+            if let Some(chromosome) = distal_allele_chrom_map.get(normal_allele) {
+                cis_dup_chromosomes.insert(cis_dup_allele.clone(), chromosome.clone());
+            }
+        }
+    }
+    cis_dup_chromosomes
+}
+
+fn record_distal_allele_chromosome(
+    distal_allele_chrom_map: &mut BTreeMap<String, String>,
+    distal_allele: &str,
+    chromosome: &str,
+) {
+    distal_allele_chrom_map.insert(distal_allele.to_string(), chromosome.to_string());
+}
+
 fn collect_same_type_unique_overlap_pairs(
     allele_match: &BTreeMap<String, Vec<String>>,
     allele_overlaps: &BTreeMap<String, Vec<(String, usize)>>,
@@ -821,6 +867,7 @@ pub fn join_partial_alleles(
     all_starts_hap_backgrounds: &mut BTreeMap<String, String>,
     all_ends_hap_backgrounds: &mut BTreeMap<String, String>,
     complete_hap_backgrounds: &mut BTreeMap<String, String>,
+    cis_dups: &[Vec<Vec<i32>>],
     variant_report: &VariantReport,
     region_coordinates: &RegionCoordinates,
     fp_graph: &FpGraph,
@@ -832,6 +879,7 @@ pub fn join_partial_alleles(
     if all_ends_ml_per_allele.is_some() {
         methyl_values = all_ends_ml_per_allele.clone().unwrap().clone();
     }
+    let mut distal_allele_chrom_map: BTreeMap<String, String> = BTreeMap::new();
     let mut merged_allele_summary = Vec::new();
     let mut distal_alleles_handled = Vec::new();
     let mut proximal_alleles_handled = Vec::new();
@@ -858,7 +906,7 @@ pub fn join_partial_alleles(
         let chromosome = background_parts[1].to_string();
         let methylation_value = get_methylation_value(allele, &methyl_values, None)?;
 
-        merged_allele_summary.push(AlleleSummary {
+        let allele_summary = AlleleSummary {
             allele_name: allele.clone(),
             chromosome: chromosome.replace("chromosome_unknown", "unknown"),
             distal_haplotype: distal_haplotype,
@@ -866,7 +914,13 @@ pub fn join_partial_alleles(
             allele_size: allele_size.to_string(),
             methylation: methylation_value,
             ending_in_qal: is_qal_allele(allele, &qal_units),
-        });
+        };
+        record_distal_allele_chromosome(
+            &mut distal_allele_chrom_map,
+            allele,
+            &allele_summary.chromosome,
+        );
+        merged_allele_summary.push(allele_summary);
         distal_alleles_handled.push(allele.clone());
         proximal_alleles_handled.push(allele.clone());
     }
@@ -932,7 +986,6 @@ pub fn join_partial_alleles(
                 .push(allele.clone());
         }
     }
-
     let partial_allele_number_match =
         (partial_allele_starts == partial_allele_ends) && (partial_allele_starts <= 4);
 
@@ -971,6 +1024,7 @@ pub fn join_partial_alleles(
     )?;
 
     for alleles_to_merge in pairs_of_alleles_to_merge {
+        let original_distal_allele = get_original_distal_allele(&alleles_to_merge);
         let new_allele_summary = get_allele_summary(
             &alleles_to_merge,
             all_starts_hap_backgrounds,
@@ -982,6 +1036,11 @@ pub fn join_partial_alleles(
             &methyl_values,
             &qal_units,
         )?;
+        record_distal_allele_chromosome(
+            &mut distal_allele_chrom_map,
+            &original_distal_allele,
+            &new_allele_summary.chromosome,
+        );
         merged_allele_summary.push(new_allele_summary);
     }
 
@@ -1053,7 +1112,7 @@ pub fn join_partial_alleles(
                             debug!(
                                 "adding merged allele from checking 4-way overlaps: {allele_name1}"
                             );
-                            merged_allele_summary.push(AlleleSummary {
+                            let allele_summary = AlleleSummary {
                                 allele_name: allele_name1,
                                 chromosome: chr_info
                                     .clone()
@@ -1063,7 +1122,13 @@ pub fn join_partial_alleles(
                                 allele_size: allele_size1.clone(),
                                 methylation: methylation_value,
                                 ending_in_qal,
-                            });
+                            };
+                            record_distal_allele_chromosome(
+                                &mut distal_allele_chrom_map,
+                                &right_flank1,
+                                &allele_summary.chromosome,
+                            );
+                            merged_allele_summary.push(allele_summary);
                             distal_alleles_handled.push(right_flank1.clone());
                             proximal_alleles_handled.push(left_flank1.clone());
                         }
@@ -1083,7 +1148,7 @@ pub fn join_partial_alleles(
                             debug!(
                                 "adding merged allele from checking 4-way overlaps: {allele_name2}"
                             );
-                            merged_allele_summary.push(AlleleSummary {
+                            let allele_summary = AlleleSummary {
                                 allele_name: allele_name2,
                                 chromosome: chr_info
                                     .clone()
@@ -1093,7 +1158,13 @@ pub fn join_partial_alleles(
                                 allele_size: allele_size2.clone(),
                                 methylation: methylation_value,
                                 ending_in_qal,
-                            });
+                            };
+                            record_distal_allele_chromosome(
+                                &mut distal_allele_chrom_map,
+                                &right_flank2,
+                                &allele_summary.chromosome,
+                            );
+                            merged_allele_summary.push(allele_summary);
                             distal_alleles_handled.push(right_flank2.clone());
                             proximal_alleles_handled.push(left_flank2.clone());
                         }
@@ -1115,7 +1186,7 @@ pub fn join_partial_alleles(
                             debug!(
                                 "adding merged allele from checking 4-way overlaps: {allele_name3}"
                             );
-                            merged_allele_summary.push(AlleleSummary {
+                            let allele_summary = AlleleSummary {
                                 allele_name: allele_name3,
                                 chromosome: chr_info
                                     .clone()
@@ -1125,7 +1196,13 @@ pub fn join_partial_alleles(
                                 allele_size: allele_size3.clone(),
                                 methylation: methylation_value,
                                 ending_in_qal,
-                            });
+                            };
+                            record_distal_allele_chromosome(
+                                &mut distal_allele_chrom_map,
+                                &right_flank2,
+                                &allele_summary.chromosome,
+                            );
+                            merged_allele_summary.push(allele_summary);
                             distal_alleles_handled.push(right_flank2.clone());
                             proximal_alleles_handled.push(left_flank1.clone());
                         }
@@ -1145,7 +1222,7 @@ pub fn join_partial_alleles(
                             debug!(
                                 "adding merged allele from checking 4-way overlaps: {allele_name4}"
                             );
-                            merged_allele_summary.push(AlleleSummary {
+                            let allele_summary = AlleleSummary {
                                 allele_name: allele_name4,
                                 chromosome: chr_info
                                     .clone()
@@ -1155,7 +1232,13 @@ pub fn join_partial_alleles(
                                 allele_size: allele_size4.clone(),
                                 methylation: methylation_value,
                                 ending_in_qal,
-                            });
+                            };
+                            record_distal_allele_chromosome(
+                                &mut distal_allele_chrom_map,
+                                &right_flank1,
+                                &allele_summary.chromosome,
+                            );
+                            merged_allele_summary.push(allele_summary);
                             distal_alleles_handled.push(right_flank1.clone());
                             proximal_alleles_handled.push(left_flank2.clone());
                         }
@@ -1264,7 +1347,7 @@ pub fn join_partial_alleles(
                             debug!("adding partial allele {allele} with a minimum size estimate based on two possible proximal ends");
                             if !allele.starts_with("LeftFlank") && !allele.starts_with("RightFlank")
                             {
-                                merged_allele_summary.push(AlleleSummary {
+                                let allele_summary = AlleleSummary {
                                     allele_name: allele.clone(),
                                     chromosome: infered_chromosome.clone(),
                                     distal_haplotype: background,
@@ -1272,11 +1355,17 @@ pub fn join_partial_alleles(
                                     allele_size: format!(">={allele_size}"),
                                     methylation: methylation_value,
                                     ending_in_qal,
-                                });
+                                };
+                                record_distal_allele_chromosome(
+                                    &mut distal_allele_chrom_map,
+                                    allele,
+                                    &allele_summary.chromosome,
+                                );
+                                merged_allele_summary.push(allele_summary);
                             } else {
                                 let allele_size =
                                     allele.split("-").filter(|x| !x.contains("Flank")).count();
-                                merged_allele_summary.push(AlleleSummary {
+                                let allele_summary = AlleleSummary {
                                     allele_name: allele.clone(),
                                     chromosome: infered_chromosome.clone(),
                                     distal_haplotype: background,
@@ -1284,7 +1373,13 @@ pub fn join_partial_alleles(
                                     allele_size: format!(">{allele_size}"),
                                     methylation: methylation_value,
                                     ending_in_qal,
-                                });
+                                };
+                                record_distal_allele_chromosome(
+                                    &mut distal_allele_chrom_map,
+                                    allele,
+                                    &allele_summary.chromosome,
+                                );
+                                merged_allele_summary.push(allele_summary);
                             }
                             distal_alleles_handled.push(allele.clone());
                         }
@@ -1421,17 +1516,7 @@ pub fn join_partial_alleles(
             debug!("Evaluating remaining distal alleles: {allele} {background}");
             let methylation_value = get_methylation_value(allele, &methyl_values, None)?;
             let allele_size = allele.split("-").filter(|x| !x.contains("Flank")).count();
-            if cis_dup_alleles.contains(allele) {
-                merged_allele_summary.push(AlleleSummary {
-                    allele_name: allele.clone(),
-                    chromosome: String::from("unknown"),
-                    distal_haplotype: background.clone(),
-                    allele_type: String::from("assembled_cis_duplication"),
-                    allele_size: format!("{allele_size}"),
-                    methylation: methylation_value,
-                    ending_in_qal,
-                });
-            } else {
+            if !cis_dup_alleles.contains(allele) {
                 if ((background == "qAIntactPolyA" && start_allele_chr4 >= 2)
                         || (background == "qB" && start_allele_chr4 >= 2)
                         || (background == "qADisruptedPolyA" && start_allele_chr10 >= 2))
@@ -1445,7 +1530,7 @@ pub fn join_partial_alleles(
                     let allele_size = allele_size + all_start_min_size;
                     let this_allele_first_node = allele.split("-").next().unwrap();
                     if all_start_alleles_last_nodes.contains(&this_allele_first_node) {
-                        merged_allele_summary.push(AlleleSummary {
+                        let allele_summary = AlleleSummary {
                             allele_name: allele.clone(),
                             chromosome: remaining_proximal_allele_chromosome.clone(),
                             distal_haplotype: background.clone(),
@@ -1453,9 +1538,15 @@ pub fn join_partial_alleles(
                             allele_size: format!(">={allele_size}"),
                             methylation: methylation_value,
                             ending_in_qal,
-                        });
+                        };
+                        record_distal_allele_chromosome(
+                            &mut distal_allele_chrom_map,
+                            allele,
+                            &allele_summary.chromosome,
+                        );
+                        merged_allele_summary.push(allele_summary);
                     } else {
-                        merged_allele_summary.push(AlleleSummary {
+                        let allele_summary = AlleleSummary {
                             allele_name: allele.clone(),
                             chromosome: remaining_proximal_allele_chromosome.clone(),
                             distal_haplotype: background.clone(),
@@ -1463,7 +1554,13 @@ pub fn join_partial_alleles(
                             allele_size: format!(">{allele_size}"),
                             methylation: methylation_value,
                             ending_in_qal,
-                        });
+                        };
+                        record_distal_allele_chromosome(
+                            &mut distal_allele_chrom_map,
+                            allele,
+                            &allele_summary.chromosome,
+                        );
+                        merged_allele_summary.push(allele_summary);
                     }
                 } else if allele.starts_with("LeftFlank") {
                     let chromosome_info = if all_starts_hap_backgrounds.contains_key(allele) {
@@ -1475,7 +1572,7 @@ pub fn join_partial_alleles(
                     } else {
                         remaining_proximal_allele_chromosome.clone()
                     };
-                    merged_allele_summary.push(AlleleSummary {
+                    let allele_summary = AlleleSummary {
                         allele_name: allele.clone(),
                         chromosome: chromosome_info.clone(),
                         distal_haplotype: background.clone(),
@@ -1483,9 +1580,15 @@ pub fn join_partial_alleles(
                         allele_size: format!(">={allele_size}"),
                         methylation: methylation_value,
                         ending_in_qal,
-                    });
+                    };
+                    record_distal_allele_chromosome(
+                        &mut distal_allele_chrom_map,
+                        allele,
+                        &allele_summary.chromosome,
+                    );
+                    merged_allele_summary.push(allele_summary);
                 } else {
-                    merged_allele_summary.push(AlleleSummary {
+                    let allele_summary = AlleleSummary {
                         allele_name: allele.clone(),
                         chromosome: remaining_proximal_allele_chromosome.clone(),
                         distal_haplotype: background.clone(),
@@ -1493,9 +1596,42 @@ pub fn join_partial_alleles(
                         allele_size: format!(">{allele_size}"),
                         methylation: methylation_value,
                         ending_in_qal,
-                    });
+                    };
+                    record_distal_allele_chromosome(
+                        &mut distal_allele_chrom_map,
+                        allele,
+                        &allele_summary.chromosome,
+                    );
+                    merged_allele_summary.push(allele_summary);
                 }
             }
+        }
+    }
+    debug!("distal_allele_chrom_map {distal_allele_chrom_map:?}");
+    let cis_dup_chromosomes =
+        infer_cis_dup_chromosomes(cis_dups, &cis_dup_alleles, &distal_allele_chrom_map);
+    debug!("cis_dup_chromosomes {cis_dup_chromosomes:?}");
+    // handle cis-dups now
+    for (allele, background) in all_ends_hap_backgrounds.iter() {
+        if cis_dup_alleles.contains(allele) {
+            let ending_in_qal = is_qal_allele(allele, &qal_units);
+            debug!("Evaluating cis-dup allele: {allele} {background}");
+            let methylation_value = get_methylation_value(allele, &methyl_values, None)?;
+            let allele_size = allele.split("-").filter(|x| !x.contains("Flank")).count();
+            let chromosome = cis_dup_chromosomes
+                .get(allele)
+                .cloned()
+                .unwrap_or_else(|| String::from("unknown"));
+            let allele_summary = AlleleSummary {
+                allele_name: allele.clone(),
+                chromosome,
+                distal_haplotype: background.clone(),
+                allele_type: String::from("assembled_cis_duplication"),
+                allele_size: format!("{allele_size}"),
+                methylation: methylation_value,
+                ending_in_qal,
+            };
+            merged_allele_summary.push(allele_summary);
         }
     }
     Ok(merged_allele_summary)

@@ -365,7 +365,7 @@ mod tests {
 /// * `separater` - symbol to join fingerprints
 /// # Returns
 /// * `Vec<String>` - alleles represented as strings
-pub fn vec_to_string<T: Display>(haps: &Vec<Vec<T>>, separater: &str) -> Vec<String> {
+pub(crate) fn vec_to_string<T: Display>(haps: &Vec<Vec<T>>, separater: &str) -> Vec<String> {
     let mut haps_string = Vec::new();
     for hap in haps {
         let mut renamed_hap = Vec::new();
@@ -1210,6 +1210,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         &mut all_starts_hap_backgrounds,
         &mut all_ends_hap_backgrounds,
         &mut hap_backgrounds,
+        &cis_dups,
         &variant_report,
         &region_coordinates,
         &fp_graph,
