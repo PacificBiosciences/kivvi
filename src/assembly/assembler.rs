@@ -512,11 +512,27 @@ impl FpGraph {
                             .push(read.to_string());
                         // record cyclic nodes
                         if *node1 == *node2 {
-                            let node_count = read_nodes.iter().filter(|&n| *n == *node1).count();
-                            self.cyclic_nodes
-                                .entry(*node1)
-                                .or_default()
-                                .push(node_count);
+                            //let node_count = read_nodes.iter().filter(|&n| *n == *node1).count();
+                            let mut node_count = 0;
+                            for each_node in read_nodes {
+                                if *each_node == *node1 {
+                                    node_count += 1;
+                                } else {
+                                    if node_count > 0 {
+                                        self.cyclic_nodes
+                                            .entry(*node1)
+                                            .or_default()
+                                            .push(node_count);
+                                    }
+                                    node_count = 0;
+                                }
+                            }
+                            if node_count > 0 {
+                                self.cyclic_nodes
+                                    .entry(*node1)
+                                    .or_default()
+                                    .push(node_count);
+                            }
                         }
                     }
                 }

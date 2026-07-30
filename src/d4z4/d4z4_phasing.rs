@@ -888,7 +888,7 @@ fn remove_redundant_haplotypes(
                         is_overlap = true;
                     }
                     if sensitive
-                        && (*overlap_len == 2 || *overlap_len == 3)
+                        && *overlap_len == 3
                         && (hap_size == *overlap_len + 1 || matching_hap_size == *overlap_len + 1)
                     {
                         is_overlap = true;

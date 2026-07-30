@@ -1039,6 +1039,7 @@ pub fn join_partial_alleles(
                         // merge left_flank1 and right_flank1, merge left_flank2 and right_flank2
                         if !right_flank1.starts_with("RightFlank")
                             && !right_flank1.contains("LeftFlank")
+                            && !distal_alleles_handled.contains(&right_flank1)
                         {
                             let chr_info = all_starts_hap_backgrounds
                                 .get(&left_flank1)
@@ -1068,6 +1069,7 @@ pub fn join_partial_alleles(
                         }
                         if !right_flank2.starts_with("RightFlank")
                             && !right_flank2.contains("LeftFlank")
+                            && !distal_alleles_handled.contains(&right_flank2)
                         {
                             let chr_info = all_starts_hap_backgrounds
                                 .get(&left_flank2)
@@ -1099,6 +1101,7 @@ pub fn join_partial_alleles(
                         // merge left_flank1 and right_flank2, merge left_flank2 and right_flank1
                         if !right_flank2.starts_with("RightFlank")
                             && !right_flank2.contains("LeftFlank")
+                            && !distal_alleles_handled.contains(&right_flank2)
                         {
                             let chr_info = all_starts_hap_backgrounds
                                 .get(&left_flank1)
@@ -1128,6 +1131,7 @@ pub fn join_partial_alleles(
                         }
                         if !right_flank1.starts_with("RightFlank")
                             && !right_flank1.contains("LeftFlank")
+                            && !distal_alleles_handled.contains(&right_flank1)
                         {
                             let chr_info = all_starts_hap_backgrounds
                                 .get(&left_flank2)
