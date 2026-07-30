@@ -569,9 +569,12 @@ fn prepare_d4z4_analysis(
 
     let blacklist_segments = blacklist_segments.into_iter().collect::<HashSet<_>>();
     mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
+    let rename_long_insertion_fingerprint = !blacklist_segments.is_empty();
 
-    let (fp_info, qal_units) = handle_qal_units(fp_info)?;
-    let fp_info = handle_last_d4z4_long_insertion(fp_info)?;
+    let (mut fp_info, qal_units) = handle_qal_units(fp_info, rename_long_insertion_fingerprint)?;
+    if rename_long_insertion_fingerprint {
+        fp_info = handle_last_d4z4_long_insertion(fp_info)?;
+    }
 
     let all_read_length = read_length
         .iter()

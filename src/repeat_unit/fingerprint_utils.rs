@@ -733,7 +733,10 @@ pub fn get_start_end_fps(
     Ok(start_end_fps)
 }
 
-pub fn handle_qal_units(fp_info: FingerprintInfo) -> Result<(FingerprintInfo, Vec<i32>), DError> {
+pub fn handle_qal_units(
+    fp_info: FingerprintInfo,
+    rename_long_insertion_fingerprint: bool,
+) -> Result<(FingerprintInfo, Vec<i32>), DError> {
     let mut new_read_edges = BTreeMap::new();
     let mut new_grouped_reads = BTreeMap::new();
     let mut new_replace = BTreeMap::<i32, i32>::new();
@@ -791,7 +794,8 @@ pub fn handle_qal_units(fp_info: FingerprintInfo) -> Result<(FingerprintInfo, Ve
     }
     debug!("new_replace: {new_replace:?}");
 
-    if new_replace.is_empty() {
+    if new_replace.is_empty() || !rename_long_insertion_fingerprint {
+        debug!("no need to rename long insertion fingerprints");
         return Ok((fp_info.clone(), qal_units));
     }
 
@@ -1642,7 +1646,10 @@ mod tests {
             read_positions: BTreeMap::new(),
             read_bases: BTreeMap::new(),
             fp_to_tid: BTreeMap::new(),
-            variants_by_position: BTreeMap::from([(target_variant.position(), vec![target_variant])]),
+            variants_by_position: BTreeMap::from([(
+                target_variant.position(),
+                vec![target_variant],
+            )]),
         };
 
         let (updated, qal_units) = handle_qal_units(fp_info).unwrap();
