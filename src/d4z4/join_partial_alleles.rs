@@ -225,24 +225,26 @@ fn infer_cis_dup_chromosomes(
     let mut cis_dup_chromosomes = BTreeMap::new();
     for cis_dup_group in cis_dups {
         let alleles = crate::caller::vec_to_string(cis_dup_group, "-");
-        for linked_pair in alleles.windows(2) {
-            let allele_a = &linked_pair[0];
-            let allele_b = &linked_pair[1];
-            let a_is_cis_dup = cis_dup_alleles.contains(allele_a);
-            let b_is_cis_dup = cis_dup_alleles.contains(allele_b);
-            if a_is_cis_dup == b_is_cis_dup {
-                continue;
-            }
-            let (cis_dup_allele, normal_allele) = if a_is_cis_dup {
-                (allele_a, allele_b)
-            } else {
-                (allele_b, allele_a)
-            };
-            if cis_dup_chromosomes.contains_key(cis_dup_allele) {
-                continue;
-            }
-            if let Some(chromosome) = distal_allele_chrom_map.get(normal_allele) {
-                cis_dup_chromosomes.insert(cis_dup_allele.clone(), chromosome.clone());
+        for i in 0..alleles.len() {
+            for j in (i + 1)..alleles.len() {
+                let allele_a = &alleles[i];
+                let allele_b = &alleles[j];
+                let a_is_cis_dup = cis_dup_alleles.contains(allele_a);
+                let b_is_cis_dup = cis_dup_alleles.contains(allele_b);
+                if a_is_cis_dup == b_is_cis_dup {
+                    continue;
+                }
+                let (cis_dup_allele, normal_allele) = if a_is_cis_dup {
+                    (allele_a, allele_b)
+                } else {
+                    (allele_b, allele_a)
+                };
+                if cis_dup_chromosomes.contains_key(cis_dup_allele) {
+                    continue;
+                }
+                if let Some(chromosome) = distal_allele_chrom_map.get(normal_allele) {
+                    cis_dup_chromosomes.insert(cis_dup_allele.clone(), chromosome.clone());
+                }
             }
         }
     }
