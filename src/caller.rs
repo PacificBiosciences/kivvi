@@ -16,7 +16,7 @@ use crate::plot::plot_alleles::plot_alleles_and_reads;
 use crate::read_filtering::{filter_realignments_d4z4, filter_realignments_kiv2};
 use crate::repeat_unit::fingerprint::{get_fingerprint, FingerprintInfo, ReadParameters};
 use crate::repeat_unit::fingerprint_utils::{
-    handle_last_d4z4_long_insertion, handle_qal_units, mark_segments_as_unknown,
+    handle_deletion_units, handle_last_d4z4_long_insertion, handle_qal_units,
     rm_redundant_finger_prints,
 };
 use crate::util::{create_kivvi_temp_dir, d4z4_coordinates, kiv2_coordinates, DError, DResult};
@@ -297,10 +297,10 @@ fn prepare_d4z4_analysis(
         }
     }
 
+    // handle insertions and deletions related to qAL units and another common long insertion
     let blacklist_segments = blacklist_segments.into_iter().collect::<HashSet<_>>();
-    mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
+    handle_deletion_units(&mut fp_info, &blacklist_segments);
     let rename_long_insertion_fingerprint = !blacklist_segments.is_empty();
-
     let (mut fp_info, qal_units) = handle_qal_units(fp_info, rename_long_insertion_fingerprint)?;
     if rename_long_insertion_fingerprint {
         fp_info = handle_last_d4z4_long_insertion(fp_info)?;

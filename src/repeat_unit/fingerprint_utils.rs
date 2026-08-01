@@ -7,10 +7,18 @@ use log::{debug, trace};
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 
-pub(crate) fn mark_segments_as_unknown(
+pub(crate) fn handle_deletion_units(
     fp_info: &mut FingerprintInfo,
     segment_names_to_zero: &HashSet<String>,
 ) {
+    // repeat units with big insertions may sometimes be aligned as one full unit plus extra segment with a deletion
+    // we don't want these deletion segments to become a different fingerprint
+    // so we mark deletion segments as 0 (unknown)
+    // then, we want to remove these deletion segments from the read edges of a read
+    // e.g. a read is 1-2-3--10. 2-3 is a qAL unit but aligned as 2 (full unit) plus 3 (segment with deletion).
+    // we want to update the read to 1-2--10
+    // there may exist reads with the long insertion aligned, which could be a fingerprint 4. e.g. a read could be 1-4--10
+    // in a separate function (handle_qal_units), we identify 2 as the matching unit for 4 (they only differ by the long insertion) and replace 4 with 2. So the read is updated to 1-2--10
     let segment_names_to_zero_short = segment_names_to_zero
         .iter()
         .filter_map(|segment_name| {
@@ -102,34 +110,6 @@ pub(crate) fn mark_segments_as_unknown(
             fp_info.read_edges.insert(read_name.clone(), new_edges);
         }
     }
-
-    /*
-    // mark blacklist fingerprints as unknown
-    let read_positions = fp_info.read_positions.clone();
-    for (read_name, positions) in read_positions {
-        if let Some(read_edges) = fp_info.read_edges.get_mut(&read_name) {
-            if let Some(first_blacklist_index) = read_edges
-                .iter()
-                .position(|fingerprint| blacklist_fingerprints.contains(fingerprint))
-            {
-                let zero_from = first_blacklist_index.saturating_sub(1);
-                debug!(
-                    "marking segments of read {read_name}, {:?}, from index {zero_from} to end as unknown", read_edges
-                );
-                for segment_index in zero_from..read_edges.len() {
-                    if let Some(read_edge) = read_edges.get_mut(segment_index) {
-                        *read_edge = 0;
-                    }
-                    if let Some(read_position) = positions.get(segment_index) {
-                        let segment_name = format!("{read_name}:{read_position}");
-                        fp_info.grouped_reads.insert(segment_name, 0);
-                    }
-                }
-                debug!("Updated read edges of read {read_name} to {:?}", read_edges);
-            }
-        }
-    }
-    */
 }
 
 /// Clean up segment raw fps
@@ -1471,7 +1451,7 @@ mod tests {
     use std::collections::{BTreeMap, HashSet};
 
     #[test]
-    fn mark_segments_as_unknown_removes_blacklisted_internal_segment() {
+    fn handle_deletion_units_removes_blacklisted_internal_segment() {
         let mut fp_info = FingerprintInfo {
             read_edges: BTreeMap::from([("read1".to_string(), vec![4, 5, -10])]),
             grouped_reads: BTreeMap::from([
@@ -1488,7 +1468,7 @@ mod tests {
         };
         let blacklist_segments = HashSet::from(["read1:200:50".to_string()]);
 
-        mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
+        handle_deletion_units(&mut fp_info, &blacklist_segments);
 
         assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![4, -10]));
         assert_eq!(fp_info.read_positions.get("read1"), Some(&vec![100, 300]));
@@ -1496,7 +1476,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_segments_as_unknown_preserves_trailing_edge_without_position() {
+    fn handle_deletion_units_preserves_trailing_edge_without_position() {
         let mut fp_info = FingerprintInfo {
             read_edges: BTreeMap::from([("read1".to_string(), vec![4, 5, -10])]),
             grouped_reads: BTreeMap::from([
@@ -1512,7 +1492,7 @@ mod tests {
         };
         let blacklist_segments = HashSet::from(["read1:200:50".to_string()]);
 
-        mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
+        handle_deletion_units(&mut fp_info, &blacklist_segments);
 
         assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![4, -10]));
         assert_eq!(fp_info.read_positions.get("read1"), Some(&vec![100]));
@@ -1520,7 +1500,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_segments_as_unknown_preserves_unpositioned_middle_negative_ten() {
+    fn handle_deletion_units_preserves_unpositioned_middle_negative_ten() {
         let mut fp_info = FingerprintInfo {
             read_edges: BTreeMap::from([("read1".to_string(), vec![4, -10, 5])]),
             grouped_reads: BTreeMap::from([
@@ -1536,7 +1516,7 @@ mod tests {
         };
         let blacklist_segments = HashSet::from(["read1:200:50".to_string()]);
 
-        mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
+        handle_deletion_units(&mut fp_info, &blacklist_segments);
 
         assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![4, -10]));
         assert_eq!(fp_info.read_positions.get("read1"), Some(&vec![100]));
@@ -1544,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_segments_as_unknown_preserves_terminal_negative_ten_after_blacklisted_zero() {
+    fn handle_deletion_units_preserves_terminal_negative_ten_after_blacklisted_zero() {
         let mut fp_info = FingerprintInfo {
             read_edges: BTreeMap::from([("read1".to_string(), vec![0, 23, 23, 0, -10])]),
             grouped_reads: BTreeMap::from([
@@ -1562,7 +1542,7 @@ mod tests {
         };
         let blacklist_segments = HashSet::from(["read1:400:50".to_string()]);
 
-        mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
+        handle_deletion_units(&mut fp_info, &blacklist_segments);
 
         assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![0, 23, 23, -10]));
         assert_eq!(
@@ -1573,7 +1553,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_segments_as_unknown_preserves_positioned_negative_ten_after_blacklisted_segment() {
+    fn handle_deletion_units_preserves_positioned_negative_ten_after_blacklisted_segment() {
         let mut fp_info = FingerprintInfo {
             read_edges: BTreeMap::from([("read1".to_string(), vec![0, 23, 23, -10])]),
             grouped_reads: BTreeMap::from([
@@ -1591,7 +1571,7 @@ mod tests {
         };
         let blacklist_segments = HashSet::from(["read1:300:50".to_string()]);
 
-        mark_segments_as_unknown(&mut fp_info, &blacklist_segments);
+        handle_deletion_units(&mut fp_info, &blacklist_segments);
 
         assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![0, 23, -10]));
         assert_eq!(
