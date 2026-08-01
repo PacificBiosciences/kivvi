@@ -805,6 +805,769 @@ pub(crate) fn remove_redundant_alleles(
     Ok(alleles_to_remove)
 }
 
+#[derive(Default)]
+/// Tracks assembled output plus which proximal and distal alleles have already
+/// been consumed while building final summaries.
+struct JoinPartialAllelesState {
+    distal_allele_chrom_map: BTreeMap<String, String>,
+    merged_allele_summary: Vec<AlleleSummary>,
+    distal_alleles_handled: Vec<String>,
+    proximal_alleles_handled: Vec<String>,
+}
+
+/// Captures how incomplete alleles were classified before merge heuristics run.
+struct PartialAlleleAnalysis {
+    allele_match: BTreeMap<String, Vec<String>>,
+    partial_allele_number_match: bool,
+    number_no_cis_dup: usize,
+    cis_dup_alleles: Vec<String>,
+}
+
+/// Derived context used when estimating size and chromosome for distal alleles
+/// that could not be merged directly.
+struct RemainingAlleleContext {
+    remaining_distal_alleles: Vec<String>,
+    remaining_proximal_alleles: Vec<String>,
+    all_start_min_size: usize,
+    all_start_alleles_last_nodes: Vec<String>,
+    remaining_proximal_allele_chromosome: String,
+    start_allele_chr4: usize,
+    start_allele_chr10: usize,
+}
+
+/// Combines complete-allele and incomplete-allele variant annotations into one
+/// lookup keyed by fingerprint node id.
+fn build_variant_lookup(variant_report: &VariantReport) -> BTreeMap<i32, Vec<String>> {
+    let complete_allele_variants = variant_report.complete_allele_variants.clone();
+    let mut variants = variant_report.fp_variants_on_incomplete_alleles.clone();
+    for allele_variants in complete_allele_variants.values() {
+        for (fp_id, variant) in allele_variants {
+            variants.insert(fp_id.1, variant.clone());
+        }
+    }
+    variants
+}
+
+/// Classifies a partial allele by aggregating the per-node variant class across
+/// all non-flank nodes in the allele string.
+fn classify_partial_allele(
+    allele: &str,
+    variants: &BTreeMap<i32, Vec<String>>,
+    region_coordinates: &RegionCoordinates,
+) -> Result<String, DError> {
+    let mut this_allele_fps_classified = Vec::new();
+    for node in allele.split('-') {
+        if !node.contains("Flank") {
+            let node_i32 = node.parse::<i32>()?;
+            if let Some(this_node_variant) = variants.get(&node_i32) {
+                let (allele_type, count_qa_disrupted, count_qb) =
+                    classify_fingerprint(this_node_variant, region_coordinates);
+                debug!(
+                    "{allele} node {node_i32} allele_type {allele_type} count_qb {count_qb} count_qa_disrupted {count_qa_disrupted}"
+                );
+                this_allele_fps_classified.push(allele_type);
+            }
+        }
+    }
+    Ok(classify_allele(&this_allele_fps_classified))
+}
+
+/// Adds summaries for already assembled alleles and records their distal
+/// chromosome assignments for downstream cis-dup inference.
+fn collect_complete_allele_summaries(
+    state: &mut JoinPartialAllelesState,
+    complete_hap_backgrounds: &BTreeMap<String, String>,
+    methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
+    qal_units: &[i32],
+) -> Result<(usize, usize), DError> {
+    let mut assembled_chr4_allele = 0;
+    let mut assembled_chr10_allele = 0;
+    for (allele, background) in complete_hap_backgrounds {
+        if background.contains("chr4") {
+            assembled_chr4_allele += 1;
+        }
+        if background.contains("chr10") {
+            assembled_chr10_allele += 1;
+        }
+        let allele_size = allele.split("-").count() - 2;
+        let background_parts = background.split("-").collect::<Vec<&str>>();
+        let methylation_value = get_methylation_value(allele, methyl_values, None)?;
+
+        let allele_summary = AlleleSummary {
+            allele_name: allele.clone(),
+            chromosome: background_parts[1].replace("chromosome_unknown", "unknown"),
+            distal_haplotype: background_parts[0].to_string(),
+            allele_type: String::from("assembled"),
+            allele_size: allele_size.to_string(),
+            methylation: methylation_value,
+            ending_in_qal: is_qal_allele(&allele.clone(), &qal_units.to_vec()),
+        };
+        record_distal_allele_chromosome(
+            &mut state.distal_allele_chrom_map,
+            allele,
+            &allele_summary.chromosome,
+        );
+        state.merged_allele_summary.push(allele_summary);
+        state.distal_alleles_handled.push(allele.clone());
+        state.proximal_alleles_handled.push(allele.clone());
+    }
+    Ok((assembled_chr4_allele, assembled_chr10_allele))
+}
+
+/// Classifies unmatched start and end alleles by allele type and tracks which
+/// distal alleles behave like cis duplications.
+fn analyze_partial_alleles(
+    all_starts_hap_backgrounds: &BTreeMap<String, String>,
+    all_ends_hap_backgrounds: &BTreeMap<String, String>,
+    complete_hap_backgrounds: &BTreeMap<String, String>,
+    variants: &BTreeMap<i32, Vec<String>>,
+    region_coordinates: &RegionCoordinates,
+    fp_info: &FingerprintInfo,
+) -> Result<PartialAlleleAnalysis, DError> {
+    let mut allele_match: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut partial_allele_starts = 0;
+    let mut partial_allele_ends = 0;
+
+    for allele in all_starts_hap_backgrounds.keys() {
+        if !complete_hap_backgrounds.contains_key(allele) {
+            partial_allele_starts += 1;
+            let allele_type = classify_partial_allele(allele, variants, region_coordinates)?;
+            debug!(
+                "{allele} {} allele_type {allele_type}",
+                all_starts_hap_backgrounds.get(allele).unwrap()
+            );
+            allele_match
+                .entry(allele_type)
+                .or_default()
+                .push(allele.clone());
+        }
+    }
+
+    let mut number_no_cis_dup = 0;
+    let mut cis_dup_alleles = Vec::new();
+    for allele in all_ends_hap_backgrounds.keys() {
+        let is_cis_dup = is_cis_dup(allele, fp_info)?;
+        if !is_cis_dup {
+            number_no_cis_dup += 1;
+        } else {
+            cis_dup_alleles.push(allele.clone());
+        }
+        if !complete_hap_backgrounds.contains_key(allele) && !is_cis_dup {
+            partial_allele_ends += 1;
+            let allele_type = classify_partial_allele(allele, variants, region_coordinates)?;
+            debug!(
+                "{allele} {} allele_type {allele_type}",
+                all_ends_hap_backgrounds.get(allele).unwrap()
+            );
+            allele_match
+                .entry(allele_type)
+                .or_default()
+                .push(allele.clone());
+        }
+    }
+
+    Ok(PartialAlleleAnalysis {
+        allele_match,
+        partial_allele_number_match: partial_allele_starts == partial_allele_ends
+            && partial_allele_starts <= 4,
+        number_no_cis_dup,
+        cis_dup_alleles,
+    })
+}
+
+/// Precomputes overlap lengths between every proximal and distal partial allele
+/// pair that could potentially be merged.
+fn calculate_allele_overlaps(
+    all_starts_hap_backgrounds: &BTreeMap<String, String>,
+    all_ends_hap_backgrounds: &BTreeMap<String, String>,
+    fp_graph: &FpGraph,
+    fp_info: &FingerprintInfo,
+) -> BTreeMap<String, Vec<(String, usize)>> {
+    let mut allele_overlaps: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
+    for proximal_allele in all_starts_hap_backgrounds.keys() {
+        for distal_allele in all_ends_hap_backgrounds.keys() {
+            if !proximal_allele.ends_with("RightFlank")
+                && !distal_allele.starts_with("LeftFlank")
+                && !distal_allele.starts_with("RightFlank")
+            {
+                let (ovl_len, _allele_name, _allele_size) = merge_two_partial_alleles(
+                    &vec![proximal_allele.clone(), distal_allele.clone()],
+                    fp_graph,
+                    fp_info,
+                );
+                allele_overlaps
+                    .entry(proximal_allele.clone())
+                    .or_default()
+                    .push((distal_allele.clone(), ovl_len));
+            }
+        }
+    }
+    allele_overlaps
+}
+
+/// Generates summaries for the selected proximal/distal merge pairs and marks
+/// the consumed alleles as handled in the shared join state.
+fn merge_selected_partial_alleles(
+    state: &mut JoinPartialAllelesState,
+    pairs_of_alleles_to_merge: Vec<Vec<String>>,
+    all_starts_hap_backgrounds: &BTreeMap<String, String>,
+    all_ends_hap_backgrounds: &BTreeMap<String, String>,
+    fp_graph: &FpGraph,
+    fp_info: &FingerprintInfo,
+    methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
+    qal_units: &[i32],
+) -> Result<(), DError> {
+    for alleles_to_merge in pairs_of_alleles_to_merge {
+        let original_distal_allele = get_original_distal_allele(&alleles_to_merge);
+        let new_allele_summary = get_allele_summary(
+            &alleles_to_merge,
+            all_starts_hap_backgrounds,
+            all_ends_hap_backgrounds,
+            &mut state.distal_alleles_handled,
+            &mut state.proximal_alleles_handled,
+            fp_graph,
+            fp_info,
+            methyl_values,
+            &qal_units.to_vec(),
+        )?;
+        record_distal_allele_chromosome(
+            &mut state.distal_allele_chrom_map,
+            &original_distal_allele,
+            &new_allele_summary.chromosome,
+        );
+        state.merged_allele_summary.push(new_allele_summary);
+    }
+    Ok(())
+}
+
+/// Appends a finished allele summary and updates the distal chromosome map used
+/// later when assigning cis-dup chromosomes.
+fn add_allele_summary(
+    state: &mut JoinPartialAllelesState,
+    distal_allele: &str,
+    allele_summary: AlleleSummary,
+) {
+    record_distal_allele_chromosome(
+        &mut state.distal_allele_chrom_map,
+        distal_allele,
+        &allele_summary.chromosome,
+    );
+    state.merged_allele_summary.push(allele_summary);
+}
+
+/// Infers a shared chromosome label when all backgrounds belong to the same
+/// chromosome family, otherwise returns `unknown`.
+fn infer_shared_chromosome(backgrounds: &[String], mixed_chr4: &str, mixed_chr10: &str) -> String {
+    if backgrounds.is_empty() {
+        return String::from("unknown");
+    }
+    if backgrounds
+        .iter()
+        .all(|background| background.contains("chr4"))
+    {
+        if backgrounds.windows(2).all(|window| window[0] == window[1]) {
+            return backgrounds[0].replace("chromosome_unknown", "unknown");
+        }
+        return String::from(mixed_chr4);
+    }
+    if backgrounds
+        .iter()
+        .all(|background| background.contains("chr10"))
+    {
+        if backgrounds.windows(2).all(|window| window[0] == window[1]) {
+            return backgrounds[0].replace("chromosome_unknown", "unknown");
+        }
+        return String::from(mixed_chr10);
+    }
+    String::from("unknown")
+}
+
+/// Parses a size string such as `>=12` and returns the numeric lower bound.
+fn parse_size_lower_bound(size: &str) -> Option<usize> {
+    size.split(">=").last()?.parse::<usize>().ok()
+}
+
+/// Adds a four-way merge result when a specific proximal/distal pair has enough
+/// support and has not already been consumed.
+fn try_add_four_way_merge(
+    state: &mut JoinPartialAllelesState,
+    proximal_allele: &str,
+    distal_allele: &str,
+    merged_name: &str,
+    merged_size: &str,
+    all_starts_hap_backgrounds: &BTreeMap<String, String>,
+    all_ends_hap_backgrounds: &BTreeMap<String, String>,
+    methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
+    qal_units: &[i32],
+) -> Result<(), DError> {
+    if distal_allele.starts_with("RightFlank")
+        || distal_allele.contains("LeftFlank")
+        || state
+            .distal_alleles_handled
+            .contains(&distal_allele.to_string())
+    {
+        return Ok(());
+    }
+
+    let chr_info = all_starts_hap_backgrounds
+        .get(proximal_allele)
+        .unwrap()
+        .clone();
+    let background = all_ends_hap_backgrounds.get(distal_allele).unwrap().clone();
+    let methylation_value = get_methylation_value(&distal_allele.to_string(), methyl_values, None)?;
+    let ending_in_qal = is_qal_allele(&distal_allele.to_string(), &qal_units.to_vec());
+    debug!("adding merged allele from checking 4-way overlaps: {merged_name}");
+    let allele_summary = AlleleSummary {
+        allele_name: merged_name.to_string(),
+        chromosome: chr_info.replace("chromosome_unknown", "unknown"),
+        distal_haplotype: background,
+        allele_type: String::from("merged"),
+        allele_size: merged_size.to_string(),
+        methylation: methylation_value,
+        ending_in_qal,
+    };
+    add_allele_summary(state, distal_allele, allele_summary);
+    state.distal_alleles_handled.push(distal_allele.to_string());
+    state
+        .proximal_alleles_handled
+        .push(proximal_allele.to_string());
+    Ok(())
+}
+
+/// Handles the case where two proximal and two distal partial alleles of the
+/// same type exist, using overlap support to merge obvious pairs and otherwise
+/// emitting bounded partial sizes.
+fn handle_four_partial_alleles_group(
+    state: &mut JoinPartialAllelesState,
+    allele_type: &str,
+    this_type_alleles: &[String],
+    all_starts_hap_backgrounds: &BTreeMap<String, String>,
+    all_ends_hap_backgrounds: &BTreeMap<String, String>,
+    fp_graph: &FpGraph,
+    fp_info: &FingerprintInfo,
+    methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
+    qal_units: &[i32],
+) -> Result<(), DError> {
+    if this_type_alleles.len() != 4 {
+        return Ok(());
+    }
+
+    let left_flanks = this_type_alleles
+        .iter()
+        .filter(|allele| allele.starts_with("LeftFlank") && !allele.contains("RightFlank"))
+        .cloned()
+        .collect::<Vec<String>>();
+    let right_flanks = this_type_alleles
+        .iter()
+        .filter(|allele| allele.ends_with("RightFlank"))
+        .cloned()
+        .collect::<Vec<String>>();
+    if left_flanks.len() != 2 || right_flanks.len() != 2 {
+        return Ok(());
+    }
+
+    debug!(
+        "evaluating four partial alleles of the same type {allele_type}: {left_flanks:?} and {right_flanks:?}"
+    );
+    let left_flank1 = left_flanks.first().unwrap().clone();
+    let left_flank2 = left_flanks.last().unwrap().clone();
+    let right_flank1 = right_flanks.first().unwrap().clone();
+    let right_flank2 = right_flanks.last().unwrap().clone();
+
+    let (ovl_len1, allele_name1, allele_size1) = merge_two_partial_alleles(
+        &vec![left_flank1.clone(), right_flank1.clone()],
+        fp_graph,
+        fp_info,
+    );
+    let (ovl_len2, allele_name2, allele_size2) = merge_two_partial_alleles(
+        &vec![left_flank2.clone(), right_flank2.clone()],
+        fp_graph,
+        fp_info,
+    );
+    let (ovl_len3, allele_name3, allele_size3) = merge_two_partial_alleles(
+        &vec![left_flank1.clone(), right_flank2.clone()],
+        fp_graph,
+        fp_info,
+    );
+    let (ovl_len4, allele_name4, allele_size4) = merge_two_partial_alleles(
+        &vec![left_flank2.clone(), right_flank1.clone()],
+        fp_graph,
+        fp_info,
+    );
+
+    debug!("checking {left_flank1} against {right_flank1}: ovl_len1 {ovl_len1} allele_name1 {allele_name1} allele_size1 {allele_size1}");
+    debug!("checking {left_flank2} against {right_flank2}: ovl_len2 {ovl_len2} allele_name2 {allele_name2} allele_size2 {allele_size2}");
+    debug!("checking {left_flank1} against {right_flank2}: ovl_len3 {ovl_len3} allele_name3 {allele_name3} allele_size3 {allele_size3}");
+    debug!("checking {left_flank2} against {right_flank1}: ovl_len4 {ovl_len4} allele_name4 {allele_name4} allele_size4 {allele_size4}");
+
+    if ovl_len1 >= 2 && ovl_len2 >= 2 && ovl_len3 == 0 && ovl_len4 == 0 {
+        try_add_four_way_merge(
+            state,
+            &left_flank1,
+            &right_flank1,
+            &allele_name1,
+            &allele_size1,
+            all_starts_hap_backgrounds,
+            all_ends_hap_backgrounds,
+            methyl_values,
+            qal_units,
+        )?;
+        try_add_four_way_merge(
+            state,
+            &left_flank2,
+            &right_flank2,
+            &allele_name2,
+            &allele_size2,
+            all_starts_hap_backgrounds,
+            all_ends_hap_backgrounds,
+            methyl_values,
+            qal_units,
+        )?;
+    } else if ovl_len1 == 0 && ovl_len2 == 0 && ovl_len3 >= 2 && ovl_len4 >= 2 {
+        try_add_four_way_merge(
+            state,
+            &left_flank1,
+            &right_flank2,
+            &allele_name3,
+            &allele_size3,
+            all_starts_hap_backgrounds,
+            all_ends_hap_backgrounds,
+            methyl_values,
+            qal_units,
+        )?;
+        try_add_four_way_merge(
+            state,
+            &left_flank2,
+            &right_flank1,
+            &allele_name4,
+            &allele_size4,
+            all_starts_hap_backgrounds,
+            all_ends_hap_backgrounds,
+            methyl_values,
+            qal_units,
+        )?;
+    }
+
+    let left_flank_size_short = left_flanks
+        .iter()
+        .map(|allele| {
+            allele
+                .split("-")
+                .filter(|node| !node.contains("Flank"))
+                .count()
+        })
+        .min()
+        .unwrap_or(0);
+    debug!(
+        "shorter of the two proximal alleles of this type {allele_type}: {left_flank_size_short}"
+    );
+
+    let left_flank_chromosomes = left_flanks
+        .iter()
+        .filter_map(|allele| all_starts_hap_backgrounds.get(allele).cloned())
+        .collect::<Vec<String>>();
+    debug!(
+        "chromosomes of the two proximal alleles of this type {allele_type}: {left_flank_chromosomes:?}"
+    );
+    let inferred_chromosome = infer_shared_chromosome(
+        &left_flank_chromosomes,
+        "chr4:upstream_group_unknown",
+        "chr10:upstream_group_unknown",
+    );
+
+    for allele in &right_flanks {
+        if state.distal_alleles_handled.contains(allele) {
+            continue;
+        }
+        let mut allele_size = allele
+            .split("-")
+            .filter(|node| !node.contains("Flank"))
+            .count()
+            + left_flank_size_short;
+        if allele == &right_flank1 {
+            if let (Some(size1), Some(size4)) = (
+                parse_size_lower_bound(&allele_size1),
+                parse_size_lower_bound(&allele_size4),
+            ) {
+                allele_size = allele_size.min(size1.min(size4));
+            }
+        }
+        if allele == &right_flank2 {
+            if let (Some(size2), Some(size3)) = (
+                parse_size_lower_bound(&allele_size2),
+                parse_size_lower_bound(&allele_size3),
+            ) {
+                allele_size = allele_size.min(size2.min(size3));
+            }
+        }
+
+        let background = all_ends_hap_backgrounds.get(allele).unwrap().clone();
+        let methylation_value = get_methylation_value(allele, methyl_values, None)?;
+        let ending_in_qal = is_qal_allele(allele, &qal_units.to_vec());
+        debug!("adding partial allele {allele} with a minimum size estimate based on two possible proximal ends");
+        let allele_size = if !allele.starts_with("LeftFlank") && !allele.starts_with("RightFlank") {
+            format!(">={allele_size}")
+        } else {
+            let flank_only_size = allele
+                .split("-")
+                .filter(|node| !node.contains("Flank"))
+                .count();
+            format!(">{flank_only_size}")
+        };
+        let allele_summary = AlleleSummary {
+            allele_name: allele.clone(),
+            chromosome: inferred_chromosome.clone(),
+            distal_haplotype: background,
+            allele_type: String::from("partial"),
+            allele_size,
+            methylation: methylation_value,
+            ending_in_qal,
+        };
+        add_allele_summary(state, allele, allele_summary);
+        state.distal_alleles_handled.push(allele.clone());
+    }
+    for allele in &left_flanks {
+        state.proximal_alleles_handled.push(allele.clone());
+    }
+
+    Ok(())
+}
+
+/// Computes the fallback context used to size and assign chromosomes to any
+/// distal partial alleles that remain after the direct merge passes.
+fn build_remaining_allele_context(
+    state: &JoinPartialAllelesState,
+    all_starts_hap_backgrounds: &BTreeMap<String, String>,
+    all_ends_hap_backgrounds: &BTreeMap<String, String>,
+    cis_dup_alleles: &[String],
+) -> RemainingAlleleContext {
+    let remaining_distal_alleles = all_ends_hap_backgrounds
+        .keys()
+        .filter(|allele| !state.distal_alleles_handled.contains(*allele))
+        .filter(|allele| !cis_dup_alleles.contains(*allele))
+        .cloned()
+        .collect::<Vec<String>>();
+    let remaining_proximal_alleles = all_starts_hap_backgrounds
+        .keys()
+        .filter(|allele| !state.proximal_alleles_handled.contains(*allele))
+        .cloned()
+        .collect::<Vec<String>>();
+
+    let start_allele_chr4 = all_starts_hap_backgrounds
+        .values()
+        .filter(|background| background.contains("chr4"))
+        .count();
+    let start_allele_chr10 = all_starts_hap_backgrounds
+        .values()
+        .filter(|background| background.contains("chr10"))
+        .count();
+    let all_start_min_size = if start_allele_chr4 >= 2 && start_allele_chr10 >= 2 {
+        all_starts_hap_backgrounds
+            .keys()
+            .filter(|allele| !allele.ends_with("RightFlank"))
+            .map(|allele| {
+                allele
+                    .split("-")
+                    .filter(|node| !node.contains("Flank"))
+                    .count()
+            })
+            .min()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let all_start_alleles_last_nodes = all_starts_hap_backgrounds
+        .keys()
+        .filter(|allele| !allele.ends_with("RightFlank"))
+        .filter(|allele| {
+            allele
+                .split("-")
+                .filter(|node| !node.contains("Flank"))
+                .count()
+                == all_start_min_size
+        })
+        .filter_map(|allele| allele.split("-").last().map(|node| node.to_string()))
+        .collect::<Vec<String>>();
+
+    let remaining_proximal_allele_chromosome = if remaining_proximal_alleles.len()
+        >= remaining_distal_alleles.len()
+        && remaining_distal_alleles.len() <= 2
+    {
+        let backgrounds = remaining_proximal_alleles
+            .iter()
+            .filter_map(|allele| all_starts_hap_backgrounds.get(allele).cloned())
+            .collect::<Vec<String>>();
+        debug!("remaining proximal alleles are on the following chromosomes: {backgrounds:?}");
+        infer_shared_chromosome(
+            &backgrounds,
+            "chr4:upstream_group_unknown",
+            "chr10:upstream_group_unknown",
+        )
+    } else {
+        String::from("unknown")
+    };
+
+    RemainingAlleleContext {
+        remaining_distal_alleles,
+        remaining_proximal_alleles,
+        all_start_min_size,
+        all_start_alleles_last_nodes,
+        remaining_proximal_allele_chromosome,
+        start_allele_chr4,
+        start_allele_chr10,
+    }
+}
+
+/// Emits summaries for unmatched distal partial alleles using lower-bound size
+/// estimates from the remaining proximal alleles when available.
+fn handle_remaining_distal_alleles(
+    state: &mut JoinPartialAllelesState,
+    context: &RemainingAlleleContext,
+    all_starts_hap_backgrounds: &BTreeMap<String, String>,
+    all_ends_hap_backgrounds: &BTreeMap<String, String>,
+    partial_analysis: &PartialAlleleAnalysis,
+    methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
+    qal_units: &[i32],
+) -> Result<(), DError> {
+    debug!("After handling pairs of allele types:");
+    debug!(
+        "remaining_distal_alleles: {:?}",
+        context.remaining_distal_alleles
+    );
+    debug!(
+        "remaining_proximal_alleles: {:?}",
+        context.remaining_proximal_alleles
+    );
+    debug!("all_start_min_size: {}", context.all_start_min_size);
+
+    for (allele, background) in all_ends_hap_backgrounds {
+        if state.distal_alleles_handled.contains(allele)
+            || partial_analysis.cis_dup_alleles.contains(allele)
+        {
+            continue;
+        }
+
+        let ending_in_qal = is_qal_allele(allele, &qal_units.to_vec());
+        debug!("Evaluating remaining distal alleles: {allele} {background}");
+        let methylation_value = get_methylation_value(allele, methyl_values, None)?;
+        let allele_size = allele
+            .split("-")
+            .filter(|node| !node.contains("Flank"))
+            .count();
+
+        if ((background == "qAIntactPolyA" && context.start_allele_chr4 >= 2)
+            || (background == "qB" && context.start_allele_chr4 >= 2)
+            || (background == "qADisruptedPolyA" && context.start_allele_chr10 >= 2))
+            && context.all_start_min_size > 0
+            && partial_analysis.number_no_cis_dup <= 4
+            && !allele.starts_with("LeftFlank")
+            && !allele.starts_with("RightFlank")
+        {
+            debug!(
+                "adding size {} to partial allele {allele} {background} with size {allele_size}",
+                context.all_start_min_size
+            );
+            let total_size = allele_size + context.all_start_min_size;
+            let first_node = allele.split("-").next().unwrap().to_string();
+            let allele_size = if context.all_start_alleles_last_nodes.contains(&first_node) {
+                format!(">={total_size}")
+            } else {
+                format!(">{total_size}")
+            };
+            let allele_summary = AlleleSummary {
+                allele_name: allele.clone(),
+                chromosome: context.remaining_proximal_allele_chromosome.clone(),
+                distal_haplotype: background.clone(),
+                allele_type: String::from("partial"),
+                allele_size,
+                methylation: methylation_value,
+                ending_in_qal,
+            };
+            add_allele_summary(state, allele, allele_summary);
+        } else if allele.starts_with("LeftFlank") {
+            let chromosome_info = all_starts_hap_backgrounds
+                .get(allele)
+                .cloned()
+                .unwrap_or_else(|| context.remaining_proximal_allele_chromosome.clone())
+                .replace("chromosome_unknown", "unknown");
+            let allele_summary = AlleleSummary {
+                allele_name: allele.clone(),
+                chromosome: chromosome_info,
+                distal_haplotype: background.clone(),
+                allele_type: String::from("partial"),
+                allele_size: format!(">={allele_size}"),
+                methylation: methylation_value,
+                ending_in_qal,
+            };
+            add_allele_summary(state, allele, allele_summary);
+        } else {
+            let allele_summary = AlleleSummary {
+                allele_name: allele.clone(),
+                chromosome: context.remaining_proximal_allele_chromosome.clone(),
+                distal_haplotype: background.clone(),
+                allele_type: String::from("partial"),
+                allele_size: format!(">{allele_size}"),
+                methylation: methylation_value,
+                ending_in_qal,
+            };
+            add_allele_summary(state, allele, allele_summary);
+        }
+    }
+
+    Ok(())
+}
+
+/// Appends summaries for distal alleles classified as cis duplications after
+/// chromosome inference has been completed from the non-cis-dup alleles.
+fn append_cis_dup_summaries(
+    state: &mut JoinPartialAllelesState,
+    cis_dups: &[Vec<Vec<i32>>],
+    partial_analysis: &PartialAlleleAnalysis,
+    all_ends_hap_backgrounds: &BTreeMap<String, String>,
+    methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
+    qal_units: &[i32],
+) -> Result<(), DError> {
+    debug!(
+        "distal_allele_chrom_map {:?}",
+        state.distal_allele_chrom_map
+    );
+    let cis_dup_chromosomes = infer_cis_dup_chromosomes(
+        cis_dups,
+        &partial_analysis.cis_dup_alleles,
+        &state.distal_allele_chrom_map,
+    );
+    debug!("cis_dup_chromosomes {cis_dup_chromosomes:?}");
+
+    for (allele, background) in all_ends_hap_backgrounds {
+        if !partial_analysis.cis_dup_alleles.contains(allele) {
+            continue;
+        }
+        let ending_in_qal = is_qal_allele(allele, &qal_units.to_vec());
+        debug!("Evaluating cis-dup allele: {allele} {background}");
+        let methylation_value = get_methylation_value(allele, methyl_values, None)?;
+        let allele_size = allele
+            .split("-")
+            .filter(|node| !node.contains("Flank"))
+            .count();
+        let chromosome = cis_dup_chromosomes
+            .get(allele)
+            .cloned()
+            .unwrap_or_else(|| String::from("unknown"));
+        let allele_summary = AlleleSummary {
+            allele_name: allele.clone(),
+            chromosome,
+            distal_haplotype: background.clone(),
+            allele_type: String::from("assembled_cis_duplication"),
+            allele_size: format!("{allele_size}"),
+            methylation: methylation_value,
+            ending_in_qal,
+        };
+        state.merged_allele_summary.push(allele_summary);
+    }
+
+    Ok(())
+}
+
 /// Join partial alleles
 /// # Arguments
 /// * `all_starts_hap_backgrounds` - background of all starts haplotypes
@@ -826,766 +1589,98 @@ pub fn join_partial_alleles(
     all_ends_ml_per_allele: &Option<BTreeMap<String, Vec<Vec<i32>>>>,
     qal_units: Vec<i32>,
 ) -> Result<Vec<AlleleSummary>, DError> {
-    let mut methyl_values: BTreeMap<String, Vec<Vec<i32>>> = BTreeMap::new();
-    if all_ends_ml_per_allele.is_some() {
-        methyl_values = all_ends_ml_per_allele.clone().unwrap().clone();
-    }
-    let mut distal_allele_chrom_map: BTreeMap<String, String> = BTreeMap::new();
-    let mut merged_allele_summary = Vec::new();
-    let mut distal_alleles_handled = Vec::new();
-    let mut proximal_alleles_handled = Vec::new();
-    let complete_allele_variants = variant_report.complete_allele_variants.clone();
-    let mut variants = variant_report.fp_variants_on_incomplete_alleles.clone();
-    for (_allele, allele_variants) in complete_allele_variants.iter() {
-        for (fp_id, variant) in allele_variants.iter() {
-            variants.insert(fp_id.1, variant.clone());
-        }
-    }
-
-    let mut assembled_chr4_allele = 0;
-    let mut assembled_chr10_allele = 0;
-    for (allele, background) in complete_hap_backgrounds.iter() {
-        if background.contains("chr4") {
-            assembled_chr4_allele += 1;
-        }
-        if background.contains("chr10") {
-            assembled_chr10_allele += 1;
-        }
-        let allele_size = allele.split("-").count() - 2;
-        let background_parts = background.split("-").collect::<Vec<&str>>();
-        let distal_haplotype = background_parts[0].to_string();
-        let chromosome = background_parts[1].to_string();
-        let methylation_value = get_methylation_value(allele, &methyl_values, None)?;
-
-        let allele_summary = AlleleSummary {
-            allele_name: allele.clone(),
-            chromosome: chromosome.replace("chromosome_unknown", "unknown"),
-            distal_haplotype: distal_haplotype,
-            allele_type: String::from("assembled"),
-            allele_size: allele_size.to_string(),
-            methylation: methylation_value,
-            ending_in_qal: is_qal_allele(allele, &qal_units),
-        };
-        record_distal_allele_chromosome(
-            &mut distal_allele_chrom_map,
-            allele,
-            &allele_summary.chromosome,
-        );
-        merged_allele_summary.push(allele_summary);
-        distal_alleles_handled.push(allele.clone());
-        proximal_alleles_handled.push(allele.clone());
-    }
-
-    let mut allele_match: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut partial_allele_starts = 0;
-    let mut partial_allele_ends = 0;
-    for (allele, background) in all_starts_hap_backgrounds.iter() {
-        if !complete_hap_backgrounds.contains_key(allele) {
-            partial_allele_starts += 1;
-            let mut this_allele_fps_classified = Vec::new();
-            let nodes = allele.split("-").collect::<Vec<&str>>();
-            for node in nodes {
-                if !node.contains("Flank") {
-                    let node_i32 = node.parse::<i32>()?;
-                    if variants.contains_key(&node_i32) {
-                        let this_node_variant = variants.get(&node_i32).unwrap();
-                        let (allele_type, count_qa_disrupted, count_qb) =
-                            classify_fingerprint(this_node_variant, region_coordinates);
-                        debug!("{allele} node {node_i32} allele_type {allele_type} count_qb {count_qb} count_qa_disrupted {count_qa_disrupted}");
-                        this_allele_fps_classified.push(allele_type);
-                    }
-                }
-            }
-            let allele_type = classify_allele(&this_allele_fps_classified);
-            debug!("{allele} {background} allele_type {allele_type}");
-            allele_match
-                .entry(allele_type.clone())
-                .or_default()
-                .push(allele.clone());
-        }
-    }
-    let mut number_no_cis_dup = 0;
-    let mut cis_dup_alleles = Vec::new();
-    for (allele, background) in all_ends_hap_backgrounds.iter() {
-        let is_cis_dup = is_cis_dup(allele, fp_info)?;
-        if !is_cis_dup {
-            number_no_cis_dup += 1;
-        } else {
-            cis_dup_alleles.push(allele.clone());
-        }
-        if !complete_hap_backgrounds.contains_key(allele) && !is_cis_dup {
-            partial_allele_ends += 1;
-            let mut this_allele_fps_classified = Vec::new();
-            let nodes = allele.split("-").collect::<Vec<&str>>();
-            for node in nodes {
-                if !node.contains("Flank") {
-                    let node_i32 = node.parse::<i32>()?;
-                    if variants.contains_key(&node_i32) {
-                        let this_node_variant = variants.get(&node_i32).unwrap();
-                        let (allele_type, count_qa_disrupted, count_qb) =
-                            classify_fingerprint(this_node_variant, region_coordinates);
-                        debug!("{allele} node {node_i32} allele_type {allele_type} count_qb {count_qb} count_qa_disrupted {count_qa_disrupted}");
-                        this_allele_fps_classified.push(allele_type);
-                    }
-                }
-            }
-            let allele_type = classify_allele(&this_allele_fps_classified);
-            debug!("{allele} {background} allele_type {allele_type}");
-            allele_match
-                .entry(allele_type.clone())
-                .or_default()
-                .push(allele.clone());
-        }
-    }
-    let partial_allele_number_match =
-        (partial_allele_starts == partial_allele_ends) && (partial_allele_starts <= 4);
-
-    // get overlaps
-    let mut allele_overlaps: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
-    for proximal_allele in all_starts_hap_backgrounds.keys() {
-        for distal_allele in all_ends_hap_backgrounds.keys() {
-            if !proximal_allele.ends_with("RightFlank")
-                && !distal_allele.starts_with("LeftFlank")
-                && !distal_allele.starts_with("RightFlank")
-            {
-                let (ovl_len, _allele_name, _allele_size) = merge_two_partial_alleles(
-                    &vec![proximal_allele.clone(), distal_allele.clone()],
-                    fp_graph,
-                    fp_info,
-                );
-                allele_overlaps
-                    .entry(proximal_allele.clone())
-                    .or_default()
-                    .push((distal_allele.clone(), ovl_len));
-            }
-        }
-    }
+    let methyl_values = all_ends_ml_per_allele.clone().unwrap_or_default();
+    let mut state = JoinPartialAllelesState::default();
+    let variants = build_variant_lookup(variant_report);
+    // first handle complete alleles
+    let (assembled_chr4_allele, assembled_chr10_allele) = collect_complete_allele_summaries(
+        &mut state,
+        complete_hap_backgrounds,
+        &methyl_values,
+        &qal_units,
+    )?;
+    // then handle partial alleles, see if we could merge a proximal partial allele with a distal partial allele
+    let partial_analysis = analyze_partial_alleles(
+        all_starts_hap_backgrounds,
+        all_ends_hap_backgrounds,
+        complete_hap_backgrounds,
+        &variants,
+        region_coordinates,
+        fp_info,
+    )?;
+    let allele_overlaps = calculate_allele_overlaps(
+        all_starts_hap_backgrounds,
+        all_ends_hap_backgrounds,
+        fp_graph,
+        fp_info,
+    );
 
     // merge partial alleles
     let mut pairs_of_alleles_to_merge = Vec::new();
     collect_partial_alleles_to_merge(
-        &allele_match,
+        &partial_analysis.allele_match,
         assembled_chr4_allele,
         assembled_chr10_allele,
-        partial_allele_number_match,
+        partial_analysis.partial_allele_number_match,
         all_starts_hap_backgrounds,
         all_ends_hap_backgrounds,
         &allele_overlaps,
         &mut pairs_of_alleles_to_merge,
     )?;
+    merge_selected_partial_alleles(
+        &mut state,
+        pairs_of_alleles_to_merge,
+        all_starts_hap_backgrounds,
+        all_ends_hap_backgrounds,
+        fp_graph,
+        fp_info,
+        &methyl_values,
+        &qal_units,
+    )?;
 
-    for alleles_to_merge in pairs_of_alleles_to_merge {
-        let original_distal_allele = get_original_distal_allele(&alleles_to_merge);
-        let new_allele_summary = get_allele_summary(
-            &alleles_to_merge,
-            all_starts_hap_backgrounds,
-            all_ends_hap_backgrounds,
-            &mut distal_alleles_handled,
-            &mut proximal_alleles_handled,
-            fp_graph,
-            fp_info,
-            &methyl_values,
-            &qal_units,
-        )?;
-        record_distal_allele_chromosome(
-            &mut distal_allele_chrom_map,
-            &original_distal_allele,
-            &new_allele_summary.chromosome,
-        );
-        merged_allele_summary.push(new_allele_summary);
-    }
-
-    // handle scenario where there are two pairs of proximal-distal partial alleles in each group
-    // try to merge a pair by checking overlap
-    // get chromosome information if both proximal alleles are on the same chromosome
-    // add the size of the shortest proximal allele
+    // if there are two pairs of partial alleles of the same type, we can do some further analysis to merge them
+    // or, if no merging is possible, at least assign a chromosome
     for allele_type in ["qB", "qAIntactPolyA", "qADisruptedPolyA"] {
-        if let Some(this_type_alleles) = allele_match.get(allele_type) {
-            if this_type_alleles.len() == 4 {
-                let left_flanks = this_type_alleles
-                    .iter()
-                    .filter(|x| x.starts_with("LeftFlank") && !x.contains("RightFlank"))
-                    .map(|x| x.to_string())
-                    .collect::<Vec<String>>();
-                let right_flanks = this_type_alleles
-                    .iter()
-                    .filter(|x| x.ends_with("RightFlank"))
-                    .map(|x| x.to_string())
-                    .collect::<Vec<String>>();
-                if left_flanks.len() == 2 && right_flanks.len() == 2 {
-                    debug!("evaluating four partial alleles of the same type {allele_type}: {left_flanks:?} and {right_flanks:?}");
-                    // check if we have two pairs of overlapping partial alleles
-                    let left_flank1 = left_flanks.first().unwrap().clone();
-                    let left_flank2 = left_flanks.last().unwrap().clone();
-                    let right_flank1 = right_flanks.first().unwrap().clone();
-                    let right_flank2 = right_flanks.last().unwrap().clone();
-
-                    let (ovl_len1, allele_name1, allele_size1) = merge_two_partial_alleles(
-                        &vec![left_flank1.clone(), right_flank1.clone()],
-                        fp_graph,
-                        fp_info,
-                    );
-                    debug!("checking {left_flank1} against {right_flank1}: ovl_len1 {ovl_len1} allele_name1 {allele_name1} allele_size1 {allele_size1}");
-                    let (ovl_len2, allele_name2, allele_size2) = merge_two_partial_alleles(
-                        &vec![left_flank2.clone(), right_flank2.clone()],
-                        fp_graph,
-                        fp_info,
-                    );
-                    debug!("checking {left_flank2} against {right_flank2}: ovl_len2 {ovl_len2} allele_name2 {allele_name2} allele_size2 {allele_size2}");
-                    let (ovl_len3, allele_name3, allele_size3) = merge_two_partial_alleles(
-                        &vec![left_flank1.clone(), right_flank2.clone()],
-                        fp_graph,
-                        fp_info,
-                    );
-                    debug!("checking {left_flank1} against {right_flank2}: ovl_len3 {ovl_len3} allele_name3 {allele_name3} allele_size3 {allele_size3}");
-                    let (ovl_len4, allele_name4, allele_size4) = merge_two_partial_alleles(
-                        &vec![left_flank2.clone(), right_flank1.clone()],
-                        fp_graph,
-                        fp_info,
-                    );
-                    debug!("checking {left_flank2} against {right_flank1}: ovl_len4 {ovl_len4} allele_name4 {allele_name4} allele_size4 {allele_size4}");
-
-                    if ovl_len1 >= 2 && ovl_len2 >= 2 && ovl_len3 == 0 && ovl_len4 == 0 {
-                        // merge left_flank1 and right_flank1, merge left_flank2 and right_flank2
-                        if !right_flank1.starts_with("RightFlank")
-                            && !right_flank1.contains("LeftFlank")
-                            && !distal_alleles_handled.contains(&right_flank1)
-                        {
-                            let chr_info = all_starts_hap_backgrounds
-                                .get(&left_flank1)
-                                .unwrap()
-                                .clone();
-                            let background =
-                                all_ends_hap_backgrounds.get(&right_flank1).unwrap().clone();
-                            let methylation_value =
-                                get_methylation_value(&right_flank1, &methyl_values, None)?;
-                            let ending_in_qal = is_qal_allele(&right_flank1, &qal_units);
-                            debug!(
-                                "adding merged allele from checking 4-way overlaps: {allele_name1}"
-                            );
-                            let allele_summary = AlleleSummary {
-                                allele_name: allele_name1,
-                                chromosome: chr_info
-                                    .clone()
-                                    .replace("chromosome_unknown", "unknown"),
-                                distal_haplotype: background,
-                                allele_type: String::from("merged"),
-                                allele_size: allele_size1.clone(),
-                                methylation: methylation_value,
-                                ending_in_qal,
-                            };
-                            record_distal_allele_chromosome(
-                                &mut distal_allele_chrom_map,
-                                &right_flank1,
-                                &allele_summary.chromosome,
-                            );
-                            merged_allele_summary.push(allele_summary);
-                            distal_alleles_handled.push(right_flank1.clone());
-                            proximal_alleles_handled.push(left_flank1.clone());
-                        }
-                        if !right_flank2.starts_with("RightFlank")
-                            && !right_flank2.contains("LeftFlank")
-                            && !distal_alleles_handled.contains(&right_flank2)
-                        {
-                            let chr_info = all_starts_hap_backgrounds
-                                .get(&left_flank2)
-                                .unwrap()
-                                .clone();
-                            let background =
-                                all_ends_hap_backgrounds.get(&right_flank2).unwrap().clone();
-                            let methylation_value =
-                                get_methylation_value(&right_flank2, &methyl_values, None)?;
-                            let ending_in_qal = is_qal_allele(&right_flank2, &qal_units);
-                            debug!(
-                                "adding merged allele from checking 4-way overlaps: {allele_name2}"
-                            );
-                            let allele_summary = AlleleSummary {
-                                allele_name: allele_name2,
-                                chromosome: chr_info
-                                    .clone()
-                                    .replace("chromosome_unknown", "unknown"),
-                                distal_haplotype: background,
-                                allele_type: String::from("merged"),
-                                allele_size: allele_size2.clone(),
-                                methylation: methylation_value,
-                                ending_in_qal,
-                            };
-                            record_distal_allele_chromosome(
-                                &mut distal_allele_chrom_map,
-                                &right_flank2,
-                                &allele_summary.chromosome,
-                            );
-                            merged_allele_summary.push(allele_summary);
-                            distal_alleles_handled.push(right_flank2.clone());
-                            proximal_alleles_handled.push(left_flank2.clone());
-                        }
-                    } else if ovl_len1 == 0 && ovl_len2 == 0 && ovl_len3 >= 2 && ovl_len4 >= 2 {
-                        // merge left_flank1 and right_flank2, merge left_flank2 and right_flank1
-                        if !right_flank2.starts_with("RightFlank")
-                            && !right_flank2.contains("LeftFlank")
-                            && !distal_alleles_handled.contains(&right_flank2)
-                        {
-                            let chr_info = all_starts_hap_backgrounds
-                                .get(&left_flank1)
-                                .unwrap()
-                                .clone();
-                            let background =
-                                all_ends_hap_backgrounds.get(&right_flank2).unwrap().clone();
-                            let methylation_value =
-                                get_methylation_value(&right_flank2, &methyl_values, None)?;
-                            let ending_in_qal = is_qal_allele(&right_flank2, &qal_units);
-                            debug!(
-                                "adding merged allele from checking 4-way overlaps: {allele_name3}"
-                            );
-                            let allele_summary = AlleleSummary {
-                                allele_name: allele_name3,
-                                chromosome: chr_info
-                                    .clone()
-                                    .replace("chromosome_unknown", "unknown"),
-                                distal_haplotype: background,
-                                allele_type: String::from("merged"),
-                                allele_size: allele_size3.clone(),
-                                methylation: methylation_value,
-                                ending_in_qal,
-                            };
-                            record_distal_allele_chromosome(
-                                &mut distal_allele_chrom_map,
-                                &right_flank2,
-                                &allele_summary.chromosome,
-                            );
-                            merged_allele_summary.push(allele_summary);
-                            distal_alleles_handled.push(right_flank2.clone());
-                            proximal_alleles_handled.push(left_flank1.clone());
-                        }
-                        if !right_flank1.starts_with("RightFlank")
-                            && !right_flank1.contains("LeftFlank")
-                            && !distal_alleles_handled.contains(&right_flank1)
-                        {
-                            let chr_info = all_starts_hap_backgrounds
-                                .get(&left_flank2)
-                                .unwrap()
-                                .clone();
-                            let background =
-                                all_ends_hap_backgrounds.get(&right_flank1).unwrap().clone();
-                            let methylation_value =
-                                get_methylation_value(&right_flank1, &methyl_values, None)?;
-                            let ending_in_qal = is_qal_allele(&right_flank1, &qal_units);
-                            debug!(
-                                "adding merged allele from checking 4-way overlaps: {allele_name4}"
-                            );
-                            let allele_summary = AlleleSummary {
-                                allele_name: allele_name4,
-                                chromosome: chr_info
-                                    .clone()
-                                    .replace("chromosome_unknown", "unknown"),
-                                distal_haplotype: background,
-                                allele_type: String::from("merged"),
-                                allele_size: allele_size4.clone(),
-                                methylation: methylation_value,
-                                ending_in_qal,
-                            };
-                            record_distal_allele_chromosome(
-                                &mut distal_allele_chrom_map,
-                                &right_flank1,
-                                &allele_summary.chromosome,
-                            );
-                            merged_allele_summary.push(allele_summary);
-                            distal_alleles_handled.push(right_flank1.clone());
-                            proximal_alleles_handled.push(left_flank2.clone());
-                        }
-                    }
-                    // add the size of the shorter of the two left flanks
-                    let left_flank_size_short = left_flanks
-                        .iter()
-                        .map(|x| x.split("-").filter(|x| !x.contains("Flank")).count())
-                        .min()
-                        .unwrap_or(0);
-                    debug!(
-                        "shorter of the two proximal alleles of this type {allele_type}: {left_flank_size_short}"
-                    );
-                    // get the last node of the shorter of the two left flanks
-                    let mut left_flank_last_nodes = Vec::new();
-                    for left_flank in &left_flanks {
-                        let left_flank_size = left_flank
-                            .split("-")
-                            .filter(|x| !x.contains("Flank"))
-                            .count();
-                        if left_flank_size == left_flank_size_short {
-                            let last_node = left_flank.split("-").last().unwrap();
-                            left_flank_last_nodes.push(last_node);
-                        }
-                    }
-
-                    // check which chromosome the two left flanks are on
-                    let mut infered_chromosome = String::from("unknown");
-                    let left_flank_chromosomes = left_flanks
-                        .iter()
-                        .map(|x| all_starts_hap_backgrounds.get(x))
-                        .filter(|x| x.is_some())
-                        .map(|x| x.unwrap().clone())
-                        .collect::<Vec<String>>();
-                    debug!("chromosomes of the two proximal alleles of this type {allele_type}: {left_flank_chromosomes:?}");
-                    if left_flank_chromosomes.len() == 2 {
-                        let left_flank_chromosome_1 = left_flank_chromosomes.first().unwrap();
-                        let left_flank_chromosome_2 = left_flank_chromosomes.last().unwrap();
-                        if left_flank_chromosome_1.contains("chr4")
-                            && left_flank_chromosome_2.contains("chr4")
-                        {
-                            infered_chromosome =
-                                if left_flank_chromosome_1 == left_flank_chromosome_2 {
-                                    left_flank_chromosome_1.clone()
-                                } else {
-                                    String::from("chr4:upstream_group_unknown")
-                                };
-                        } else if left_flank_chromosome_1.contains("chr10")
-                            && left_flank_chromosome_2.contains("chr10")
-                        {
-                            infered_chromosome =
-                                if left_flank_chromosome_1 == left_flank_chromosome_2 {
-                                    left_flank_chromosome_1.clone()
-                                } else {
-                                    String::from("chr10:upstream_group_unknown")
-                                };
-                        }
-                    }
-
-                    for allele in &right_flanks {
-                        if !distal_alleles_handled.contains(allele) {
-                            let mut allele_size =
-                                allele.split("-").filter(|x| !x.contains("Flank")).count()
-                                    + left_flank_size_short;
-                            // we can add the shorter of the two left flanks
-                            if allele == &right_flank1 {
-                                let allele_size1 = allele_size1
-                                    .split(">=")
-                                    .last()
-                                    .unwrap()
-                                    .parse::<usize>()
-                                    .unwrap();
-                                let allele_size4 = allele_size4
-                                    .split(">=")
-                                    .last()
-                                    .unwrap()
-                                    .parse::<usize>()
-                                    .unwrap();
-                                let min_size = allele_size1.min(allele_size4);
-                                if allele_size > min_size {
-                                    allele_size = min_size;
-                                }
-                            }
-                            if allele == &right_flank2 {
-                                let allele_size2 = allele_size2
-                                    .split(">=")
-                                    .last()
-                                    .unwrap()
-                                    .parse::<usize>()
-                                    .unwrap();
-                                let allele_size3 = allele_size3
-                                    .split(">=")
-                                    .last()
-                                    .unwrap()
-                                    .parse::<usize>()
-                                    .unwrap();
-                                let min_size = allele_size2.min(allele_size3);
-                                if allele_size > min_size {
-                                    allele_size = min_size;
-                                }
-                            }
-                            let background = all_ends_hap_backgrounds.get(allele).unwrap().clone();
-                            let methylation_value =
-                                get_methylation_value(allele, &methyl_values, None)?;
-                            let ending_in_qal = is_qal_allele(allele, &qal_units);
-                            debug!("adding partial allele {allele} with a minimum size estimate based on two possible proximal ends");
-                            if !allele.starts_with("LeftFlank") && !allele.starts_with("RightFlank")
-                            {
-                                let allele_summary = AlleleSummary {
-                                    allele_name: allele.clone(),
-                                    chromosome: infered_chromosome.clone(),
-                                    distal_haplotype: background,
-                                    allele_type: String::from("partial"),
-                                    allele_size: format!(">={allele_size}"),
-                                    methylation: methylation_value,
-                                    ending_in_qal,
-                                };
-                                record_distal_allele_chromosome(
-                                    &mut distal_allele_chrom_map,
-                                    allele,
-                                    &allele_summary.chromosome,
-                                );
-                                merged_allele_summary.push(allele_summary);
-                            } else {
-                                let allele_size =
-                                    allele.split("-").filter(|x| !x.contains("Flank")).count();
-                                let allele_summary = AlleleSummary {
-                                    allele_name: allele.clone(),
-                                    chromosome: infered_chromosome.clone(),
-                                    distal_haplotype: background,
-                                    allele_type: String::from("partial"),
-                                    allele_size: format!(">{allele_size}"),
-                                    methylation: methylation_value,
-                                    ending_in_qal,
-                                };
-                                record_distal_allele_chromosome(
-                                    &mut distal_allele_chrom_map,
-                                    allele,
-                                    &allele_summary.chromosome,
-                                );
-                                merged_allele_summary.push(allele_summary);
-                            }
-                            distal_alleles_handled.push(allele.clone());
-                        }
-                    }
-                    for allele in &left_flanks {
-                        proximal_alleles_handled.push(allele.clone());
-                    }
-                }
-            }
+        if let Some(this_type_alleles) = partial_analysis.allele_match.get(allele_type) {
+            handle_four_partial_alleles_group(
+                &mut state,
+                allele_type,
+                this_type_alleles,
+                all_starts_hap_backgrounds,
+                all_ends_hap_backgrounds,
+                fp_graph,
+                fp_info,
+                &methyl_values,
+                &qal_units,
+            )?;
         }
     }
-
-    // here we can do some cleanup to remove redundant alleles
-    let remaining_distal_alleles = all_ends_hap_backgrounds
-        .iter()
-        .filter(|(k, _v)| !distal_alleles_handled.contains(k))
-        .map(|(k, _)| k.clone())
-        .filter(|x| !cis_dup_alleles.contains(x))
-        .collect::<Vec<String>>();
-    let remaining_proximal_alleles = all_starts_hap_backgrounds
-        .iter()
-        .filter(|(k, _v)| !proximal_alleles_handled.contains(k))
-        .map(|(k, _)| k.clone())
-        .collect::<Vec<String>>();
-    debug!("After handling pairs of allele types:");
-    debug!("remaining_distal_alleles: {remaining_distal_alleles:?}");
-    debug!("remaining_proximal_alleles: {remaining_proximal_alleles:?}");
-    /*
-    if remaining_proximal_alleles.len() > remaining_distal_alleles.len()
-        && all_starts_hap_backgrounds.len() >= 4
-    {
-        // remove redundant proximal alleles
-        remaining_proximal_alleles = remove_redundant_alleles(&remaining_proximal_alleles, 2)?;
-    } else if remaining_proximal_alleles.len() < remaining_distal_alleles.len()
-        && all_ends_hap_backgrounds.len() >= 4
-    {
-        // remove redundant distal alleles
-        remaining_distal_alleles = remove_redundant_alleles(&remaining_distal_alleles, 2)?;
-    }
-    */
-
-    // for the remaining distal alleles, we want to see if there is any information on the chromosome
-    // or the size that we can update
-
-    // get the min size of all proximal alleles
-    let start_allele_chr4 = all_starts_hap_backgrounds
-        .iter()
-        .filter(|(_, background)| background.contains("chr4"))
-        .count();
-    let start_allele_chr10 = all_starts_hap_backgrounds
-        .iter()
-        .filter(|(_, background)| background.contains("chr10"))
-        .count();
-    let all_start_min_size = if start_allele_chr4 >= 2 && start_allele_chr10 >= 2 {
-        all_starts_hap_backgrounds
-            .iter()
-            .filter(|(k, _v)| !k.ends_with("RightFlank"))
-            .map(|(k, _v)| k.split("-").filter(|x| !x.contains("Flank")).count())
-            .min()
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    debug!("all_start_min_size: {all_start_min_size}");
-    // get the last node of the shorter of all proximal alleles
-    let mut all_start_alleles_last_nodes = Vec::new();
-    for (allele, _background) in all_starts_hap_backgrounds.iter() {
-        let allele_size = allele.split("-").filter(|x| !x.contains("Flank")).count();
-        if allele_size == all_start_min_size && !allele.ends_with("RightFlank") {
-            let allele_last_node = allele.split("-").last().unwrap();
-            all_start_alleles_last_nodes.push(allele_last_node);
-        }
-    }
-    // check if the remaining proximal alleles are on the same chromosome
-    let mut remaining_proximal_allele_chromosome = String::from("unknown");
-    //if all_starts_hap_backgrounds.len() == 4
-    // && all_ends_hap_backgrounds.len() == 4
-    // && start_allele_chr4 == 2
-    // && start_allele_chr10 == 2
-    if remaining_proximal_alleles.len() >= remaining_distal_alleles.len()
-        && remaining_distal_alleles.len() <= 2
-    {
-        let remaining_proximal_alleles_chromosomes = all_starts_hap_backgrounds
-            .iter()
-            .filter(|(k, _v)| remaining_proximal_alleles.contains(k))
-            .map(|(_, v)| v.clone())
-            .collect::<Vec<String>>();
-        debug!("remaining proximal alleles are on the following chromosomes: {remaining_proximal_alleles_chromosomes:?}");
-        if remaining_proximal_alleles_chromosomes.len() == 1 {
-            remaining_proximal_allele_chromosome = remaining_proximal_alleles_chromosomes
-                .first()
-                .unwrap()
-                .clone()
-                .replace("chromosome_unknown", "unknown");
-        } else if remaining_proximal_alleles_chromosomes.len() == 2 {
-            let remaining_proximal_allele_chromosome_1 = remaining_proximal_alleles_chromosomes
-                .first()
-                .unwrap()
-                .clone();
-            let remaining_proximal_allele_chromosome_2 = remaining_proximal_alleles_chromosomes
-                .last()
-                .unwrap()
-                .clone();
-            if remaining_proximal_allele_chromosome_1.contains("chr4")
-                && remaining_proximal_allele_chromosome_2.contains("chr4")
-            {
-                if remaining_proximal_allele_chromosome_1 == remaining_proximal_allele_chromosome_2
-                {
-                    remaining_proximal_allele_chromosome = remaining_proximal_allele_chromosome_1
-                        .replace("chromosome_unknown", "unknown");
-                } else {
-                    remaining_proximal_allele_chromosome =
-                        String::from("chr4:upstream_group_unknown");
-                }
-            } else if remaining_proximal_allele_chromosome_1.contains("chr10")
-                && remaining_proximal_allele_chromosome_2.contains("chr10")
-            {
-                if remaining_proximal_allele_chromosome_1 == remaining_proximal_allele_chromosome_2
-                {
-                    remaining_proximal_allele_chromosome = remaining_proximal_allele_chromosome_1
-                        .replace("chromosome_unknown", "unknown");
-                } else {
-                    remaining_proximal_allele_chromosome =
-                        String::from("chr10:upstream_group_unknown");
-                }
-            }
-        }
-    }
-
-    // add remaining distall alleles
-    for (allele, background) in all_ends_hap_backgrounds.iter() {
-        let ending_in_qal = is_qal_allele(allele, &qal_units);
-        if !distal_alleles_handled.contains(allele) {
-            debug!("Evaluating remaining distal alleles: {allele} {background}");
-            let methylation_value = get_methylation_value(allele, &methyl_values, None)?;
-            let allele_size = allele.split("-").filter(|x| !x.contains("Flank")).count();
-            if !cis_dup_alleles.contains(allele) {
-                if ((background == "qAIntactPolyA" && start_allele_chr4 >= 2)
-                        || (background == "qB" && start_allele_chr4 >= 2)
-                        || (background == "qADisruptedPolyA" && start_allele_chr10 >= 2))
-                        // && allele_size <= 10   // TODO: evaluate if we want to do this for all partial alleles
-                        && all_start_min_size > 0
-                        && number_no_cis_dup <= 4 // we could have cis dup alleles and size shouldn't be added
-                        && !allele.starts_with("LeftFlank")
-                        && !allele.starts_with("RightFlank")
-                {
-                    debug!("adding size {all_start_min_size} to partial allele {allele} {background} with size {allele_size}");
-                    let allele_size = allele_size + all_start_min_size;
-                    let this_allele_first_node = allele.split("-").next().unwrap();
-                    if all_start_alleles_last_nodes.contains(&this_allele_first_node) {
-                        let allele_summary = AlleleSummary {
-                            allele_name: allele.clone(),
-                            chromosome: remaining_proximal_allele_chromosome.clone(),
-                            distal_haplotype: background.clone(),
-                            allele_type: String::from("partial"),
-                            allele_size: format!(">={allele_size}"),
-                            methylation: methylation_value,
-                            ending_in_qal,
-                        };
-                        record_distal_allele_chromosome(
-                            &mut distal_allele_chrom_map,
-                            allele,
-                            &allele_summary.chromosome,
-                        );
-                        merged_allele_summary.push(allele_summary);
-                    } else {
-                        let allele_summary = AlleleSummary {
-                            allele_name: allele.clone(),
-                            chromosome: remaining_proximal_allele_chromosome.clone(),
-                            distal_haplotype: background.clone(),
-                            allele_type: String::from("partial"),
-                            allele_size: format!(">{allele_size}"),
-                            methylation: methylation_value,
-                            ending_in_qal,
-                        };
-                        record_distal_allele_chromosome(
-                            &mut distal_allele_chrom_map,
-                            allele,
-                            &allele_summary.chromosome,
-                        );
-                        merged_allele_summary.push(allele_summary);
-                    }
-                } else if allele.starts_with("LeftFlank") {
-                    let chromosome_info = if all_starts_hap_backgrounds.contains_key(allele) {
-                        all_starts_hap_backgrounds
-                            .get(allele)
-                            .unwrap()
-                            .clone()
-                            .replace("chromosome_unknown", "unknown")
-                    } else {
-                        remaining_proximal_allele_chromosome.clone()
-                    };
-                    let allele_summary = AlleleSummary {
-                        allele_name: allele.clone(),
-                        chromosome: chromosome_info.clone(),
-                        distal_haplotype: background.clone(),
-                        allele_type: String::from("partial"),
-                        allele_size: format!(">={allele_size}"),
-                        methylation: methylation_value,
-                        ending_in_qal,
-                    };
-                    record_distal_allele_chromosome(
-                        &mut distal_allele_chrom_map,
-                        allele,
-                        &allele_summary.chromosome,
-                    );
-                    merged_allele_summary.push(allele_summary);
-                } else {
-                    let allele_summary = AlleleSummary {
-                        allele_name: allele.clone(),
-                        chromosome: remaining_proximal_allele_chromosome.clone(),
-                        distal_haplotype: background.clone(),
-                        allele_type: String::from("partial"),
-                        allele_size: format!(">{allele_size}"),
-                        methylation: methylation_value,
-                        ending_in_qal,
-                    };
-                    record_distal_allele_chromosome(
-                        &mut distal_allele_chrom_map,
-                        allele,
-                        &allele_summary.chromosome,
-                    );
-                    merged_allele_summary.push(allele_summary);
-                }
-            }
-        }
-    }
-    debug!("distal_allele_chrom_map {distal_allele_chrom_map:?}");
-    let cis_dup_chromosomes =
-        infer_cis_dup_chromosomes(cis_dups, &cis_dup_alleles, &distal_allele_chrom_map);
-    debug!("cis_dup_chromosomes {cis_dup_chromosomes:?}");
-    // handle cis-dups now
-    for (allele, background) in all_ends_hap_backgrounds.iter() {
-        if cis_dup_alleles.contains(allele) {
-            let ending_in_qal = is_qal_allele(allele, &qal_units);
-            debug!("Evaluating cis-dup allele: {allele} {background}");
-            let methylation_value = get_methylation_value(allele, &methyl_values, None)?;
-            let allele_size = allele.split("-").filter(|x| !x.contains("Flank")).count();
-            let chromosome = cis_dup_chromosomes
-                .get(allele)
-                .cloned()
-                .unwrap_or_else(|| String::from("unknown"));
-            let allele_summary = AlleleSummary {
-                allele_name: allele.clone(),
-                chromosome,
-                distal_haplotype: background.clone(),
-                allele_type: String::from("assembled_cis_duplication"),
-                allele_size: format!("{allele_size}"),
-                methylation: methylation_value,
-                ending_in_qal,
-            };
-            merged_allele_summary.push(allele_summary);
-        }
-    }
-    Ok(merged_allele_summary)
+    // for remaining distal alleles, we may still be able to assign a chromosome or add to the distal allele size
+    let remaining_context = build_remaining_allele_context(
+        &state,
+        all_starts_hap_backgrounds,
+        all_ends_hap_backgrounds,
+        &partial_analysis.cis_dup_alleles,
+    );
+    handle_remaining_distal_alleles(
+        &mut state,
+        &remaining_context,
+        all_starts_hap_backgrounds,
+        all_ends_hap_backgrounds,
+        &partial_analysis,
+        &methyl_values,
+        &qal_units,
+    )?;
+    // finally, handle cis-duplication alleles
+    append_cis_dup_summaries(
+        &mut state,
+        cis_dups,
+        &partial_analysis,
+        all_ends_hap_backgrounds,
+        &methyl_values,
+        &qal_units,
+    )?;
+    Ok(state.merged_allele_summary)
 }
 
 #[cfg(test)]
