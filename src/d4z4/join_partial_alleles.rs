@@ -771,21 +771,19 @@ fn get_methylation_value(
     let last_n = &methylation[start_site..].to_vec();
     let last_n_i32 = last_n.iter().flatten().cloned().collect::<Vec<i32>>();
     if last_n_i32.is_empty() {
+        debug!("No reads to evaluate methylated CpGs for allele {allele}");
+        return Ok(f32::NAN);
+    }
+    let n_total = last_n_i32.len();
+    if n_total < 20 {
+        debug!(
+            "Not enough reads to evaluate methylated CpGs for allele {allele}: n_total {n_total}"
+        );
         return Ok(f32::NAN);
     }
     let n_methylated = last_n_i32.iter().filter(|x| **x >= 128).count();
-    let n_total = last_n_i32.len();
-    let starting_index_to_evaluate = n_total.saturating_sub(1000);
-    let reads_to_evaluate = last_n_i32[starting_index_to_evaluate..].to_vec();
-    let n_total_reads_to_evaluate = reads_to_evaluate.len();
-    let n_methylated_reads_to_evaluate = reads_to_evaluate.iter().filter(|x| **x >= 128).count();
-    debug!("allele {allele} n_methylated {n_methylated} n_total {n_total}");
-    debug!("allele {allele} n_methylated_reads_to_evaluate {n_methylated_reads_to_evaluate} out of last {n_total_reads_to_evaluate}");
+    debug!("Evaluating methylated CpGs for allele {allele}: n_methylated {n_methylated} n_total {n_total}");
     let methylation_value = (1000.0 * n_methylated as f32 / n_total as f32).round() / 1000.0;
-    let methylation_value_reads_to_evaluate =
-        (1000.0 * n_methylated_reads_to_evaluate as f32 / n_total_reads_to_evaluate as f32).round()
-            / 1000.0;
-    debug!("allele {allele} methylation_value {methylation_value} methylation_value_reads_to_evaluate {methylation_value_reads_to_evaluate}");
     Ok(methylation_value)
 }
 

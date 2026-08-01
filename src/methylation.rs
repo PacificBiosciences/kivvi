@@ -241,7 +241,7 @@ pub fn get_methyl_info(
         };
         for i in range {
             let uniq_fp_name = format!("{allele_index}.{i}");
-            debug!("allele {allele:?} uniq_fp_name {uniq_fp_name}");
+            trace!("allele {allele:?} uniq_fp_name {uniq_fp_name}");
             if fp_supporting_reads.contains_key(&uniq_fp_name) {
                 trace!("allele {allele:?} uniq_fp_name {uniq_fp_name} in fp_supporting_reads");
                 let mut this_fp_methyl_probs = Vec::new();

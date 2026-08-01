@@ -173,6 +173,8 @@ pub fn filter_realignments_d4z4(
     _reference: &PathBuf,
     realigned_bam: PathBuf,
 ) -> Result<(Vec<bam::Record>, Vec<String>, Vec<String>), DError> {
+    // repeat units with big insertions may sometimes be aligned as extra segment with deletions
+    // we don't want these segments to become a different fingerprint
     const D4Z4_BLACKLIST_DELETIONS: [DeletionFilter; 2] = [(1574, 5, 1685, 20), (2822, 5, 324, 10)];
 
     let mut white_list_read_segments = Vec::new();
