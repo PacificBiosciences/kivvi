@@ -18,7 +18,9 @@ use crate::repeat_unit::fingerprint::{get_fingerprint, FingerprintInfo, ReadPara
 use crate::repeat_unit::fingerprint_utils::{
     handle_last_d4z4_long_insertion, handle_qal_units, rm_redundant_finger_prints,
 };
-use crate::util::{d4z4_coordinates, kiv2_coordinates, DError, DResult};
+use crate::util::{
+    create_kivvi_temp_dir, d4z4_coordinates, kiv2_coordinates, DError, DResult,
+};
 use crate::variant::report_variants;
 use crate::vcf::write_vcf;
 use log::{debug, info};
@@ -417,6 +419,10 @@ fn remove_if_exists(path: impl AsRef<Path>) -> DResult {
     Ok(())
 }
 
+fn fai_path_for(reference: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.fai", reference.display()))
+}
+
 fn ensure_reads_present(
     sample_id: &str,
     stage: &str,
@@ -663,8 +669,9 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     let output_svg = output_path.join(format!("{sample_id}.kivvi.kiv2.svg"));
     // other region specific resources
     let region_coordinates = kiv2_coordinates();
+    let temp_dir = create_kivvi_temp_dir(output_path)?;
     // create temporary reference file
-    let reference = output_path.join(format!("{sample_id}.kiv2.ref.fa"));
+    let reference = temp_dir.path().join(format!("{sample_id}.kiv2.ref.fa"));
     std::fs::write(&reference, region_coordinates.clone().reference_seq)
         .expect("Unable to write temporary reference file");
     build_faidx(&reference)?;
@@ -871,9 +878,10 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     }
 
     // remove temporary reference file
-    remove_if_exists(reference)?;
-    let fai_file = output_path.join(format!("{sample_id}.kiv2.ref.fa.fai"));
+    remove_if_exists(&reference)?;
+    let fai_file = fai_path_for(&reference);
     remove_if_exists(fai_file)?;
+    temp_dir.close()?;
 
     info!("Completed kivvi analysis on KIV2...");
     Ok(())
@@ -907,8 +915,9 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     // other region specific resources
     let region_coordinates = d4z4_coordinates();
     debug!("region_coordinates: {:?}", region_coordinates);
+    let temp_dir = create_kivvi_temp_dir(output_path)?;
     // create temporary reference file
-    let reference = output_path.join(format!("{sample_id}.d4z4.ref.fa"));
+    let reference = temp_dir.path().join(format!("{sample_id}.d4z4.ref.fa"));
     std::fs::write(&reference, region_coordinates.clone().reference_seq)
         .expect("Unable to write temporary reference file");
     build_faidx(&reference)?;
@@ -938,7 +947,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let genome_reference = output_path.join(format!("{sample_id}.d4z4.genome.fa"));
+    let genome_reference = temp_dir.path().join(format!("{sample_id}.d4z4.genome.fa"));
     std::fs::write(&genome_reference, d4z4_genome_reference_seq)
         .expect("Unable to write temporary genome reference file");
     build_faidx(&genome_reference)?;
@@ -1448,12 +1457,13 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     }
 
     // remove temporary reference file
-    remove_if_exists(reference)?;
-    let fai_file = output_path.join(format!("{sample_id}.d4z4.ref.fa.fai"));
+    remove_if_exists(&reference)?;
+    let fai_file = fai_path_for(&reference);
     remove_if_exists(fai_file)?;
-    remove_if_exists(genome_reference)?;
-    let fai_file = output_path.join(format!("{sample_id}.d4z4.genome.fa.fai"));
+    remove_if_exists(&genome_reference)?;
+    let fai_file = fai_path_for(&genome_reference);
     remove_if_exists(fai_file)?;
+    temp_dir.close()?;
 
     info!("Completed kivvi analysis on D4Z4...");
     Ok(())

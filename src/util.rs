@@ -3,6 +3,7 @@ use log::debug;
 use rust_htslib::bam;
 use rust_htslib::bam::header::HeaderRecord;
 use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::str;
 
 pub type DError = std::boxed::Box<dyn std::error::Error>;
@@ -35,6 +36,18 @@ pub fn output_bam_header(template: &bam::HeaderView) -> bam::Header {
     let mut header = bam::Header::from_template(template);
     append_kivvi_pg_header(&mut header);
     header
+}
+
+pub fn kivvi_temp_root(output_dir: &Path) -> PathBuf {
+    output_dir.join(".kivvi-tmp")
+}
+
+pub fn create_kivvi_temp_dir(output_dir: &Path) -> Result<tempfile::TempDir, DError> {
+    let temp_root = kivvi_temp_root(output_dir);
+    std::fs::create_dir_all(&temp_root)?;
+    Ok(tempfile::Builder::new()
+        .prefix("kivvi-")
+        .tempdir_in(temp_root)?)
 }
 
 #[must_use]

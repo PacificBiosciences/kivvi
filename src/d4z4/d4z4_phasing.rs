@@ -7,7 +7,7 @@ use crate::assembly::assembler_utils::{
 use crate::caller::vec_to_string;
 use crate::d4z4::join_partial_alleles::is_cis_dup_by_read_start_offset;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
-use crate::util::DError;
+use crate::util::{create_kivvi_temp_dir, DError};
 use crate::variant::get_read_position_in_allele;
 use itertools::Itertools;
 use log::{debug, trace};
@@ -90,7 +90,7 @@ pub fn phase_flanking_gene(
 ) -> Result<(GeneCall, Option<PathBuf>), DError> {
     debug!("Running Paraphase for flanking region {gene}");
     let region_config = load_region_config_for_bam(wgs_bam)?;
-    let tmp_dir = tempfile::TempDir::new()?;
+    let tmp_dir = create_kivvi_temp_dir(output_path)?;
     let reader = bam::Reader::from_path(wgs_bam)?;
     let settings = phaser::Settings::new(
         sample,
