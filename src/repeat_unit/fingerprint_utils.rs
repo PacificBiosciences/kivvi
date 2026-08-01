@@ -858,16 +858,131 @@ pub fn get_start_end_fps(
     Ok(start_end_fps)
 }
 
+/// Locate fingerprint positions whose variant tables contain one of the target long insertions.
+///
+/// Returns `(index, encoded_alt)` pairs where `index` is the fingerprint column and
+/// `encoded_alt` is the expected byte representation stored in the fingerprint sequence.
+fn find_long_insertion_variant_codes(
+    fp_info: &FingerprintInfo,
+    target_variants: &[Variant],
+) -> Vec<(usize, u8)> {
+    fp_info
+        .variants_by_position
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_pos, variants_at_pos))| {
+            target_variants.iter().find_map(|target_variant| {
+                variants_at_pos
+                    .iter()
+                    .position(|variant| variant == target_variant)
+                    .and_then(|alt_index| {
+                        if alt_index <= 8 {
+                            Some((index, b'1' + alt_index as u8))
+                        } else {
+                            None
+                        }
+                    })
+            })
+        })
+        .collect()
+}
+
+/// Normalize a fingerprint by clearing a specific insertion code back to the reference state.
+///
+/// The second returned fingerprint also replaces unknown bases (`-`) with `0` so callers can
+/// match both exact and "unknown treated as reference" variants of the same unit.
+fn normalized_fp_without_insertion(unit_fp: &[u8], insertion_index: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut normalized_fp = unit_fp.to_vec();
+    normalized_fp[insertion_index] = b'0';
+    let mut normalized_fp_with_unknowns_replaced = normalized_fp.clone();
+    for base in &mut normalized_fp_with_unknowns_replaced {
+        if *base == b'-' {
+            *base = b'0';
+        }
+    }
+    (normalized_fp, normalized_fp_with_unknowns_replaced)
+}
+
+/// Find unit ids whose fingerprints match another unit after removing a long insertion.
+///
+/// Matching is done against both the exact normalized fingerprint and a version where unknown
+/// sites are treated as reference, mirroring the legacy replacement behavior.
+fn find_matching_units_for_insertion(
+    fp_info: &FingerprintInfo,
+    unit_fp: &[u8],
+    insertion_index: usize,
+) -> Vec<i32> {
+    let (normalized_fp, normalized_fp_with_unknowns_replaced) =
+        normalized_fp_without_insertion(unit_fp, insertion_index);
+    fp_info
+        .good_name_to_seq
+        .iter()
+        .filter_map(|(other_unit_name, other_unit_fp)| {
+            if other_unit_fp == &normalized_fp
+                || other_unit_fp == &normalized_fp_with_unknowns_replaced
+            {
+                Some(*other_unit_name)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Apply fingerprint-id replacements consistently across per-read and per-segment mappings.
+///
+/// This keeps the structural fingerprint metadata intact while rewriting only the ids that
+/// should collapse onto an existing unit.
+fn apply_fingerprint_replacements(
+    fp_info: FingerprintInfo,
+    replacements: &BTreeMap<i32, i32>,
+) -> Result<FingerprintInfo, DError> {
+    if replacements.is_empty() {
+        return Ok(fp_info);
+    }
+
+    let mut new_read_edges = BTreeMap::new();
+    for (read_name, read_fps) in &fp_info.read_edges {
+        let new_fps = read_fps
+            .iter()
+            .map(|fp| replacements.get(fp).copied().unwrap_or(*fp))
+            .collect::<Vec<_>>();
+        if new_fps != *read_fps {
+            debug!("updated edges {read_name}: from {read_fps:?} to {new_fps:?}");
+        }
+        new_read_edges.insert(read_name.clone(), new_fps);
+    }
+
+    let mut new_grouped_reads = BTreeMap::new();
+    for (segment_name, fp) in &fp_info.grouped_reads {
+        new_grouped_reads.insert(
+            segment_name.clone(),
+            replacements.get(fp).copied().unwrap_or(*fp),
+        );
+    }
+
+    Ok(FingerprintInfo {
+        read_edges: new_read_edges,
+        grouped_reads: new_grouped_reads,
+        fp_count: fp_info.fp_count,
+        good_name_to_seq: fp_info.good_name_to_seq,
+        read_positions: fp_info.read_positions,
+        read_bases: fp_info.read_bases,
+        fp_to_tid: fp_info.fp_to_tid,
+        variants_by_position: fp_info.variants_by_position,
+    })
+}
+
+/// Identify qAL units and perform fingerprint replacement
 pub fn handle_qal_units(
     fp_info: FingerprintInfo,
     rename_long_insertion_fingerprint: bool,
 ) -> Result<(FingerprintInfo, Vec<i32>), DError> {
-    let mut new_read_edges = BTreeMap::new();
-    let mut new_grouped_reads = BTreeMap::new();
     let mut new_replace = BTreeMap::<i32, i32>::new();
     let mut qal_units = Vec::new();
 
     let d4z4_region_coordinates = d4z4_coordinates();
+    // the second last insertion and third last insertion are two possible 1.6kb insertions indicating qAL units
     let long_insertion_variants = d4z4_region_coordinates
         .variants_to_call
         .iter()
@@ -877,24 +992,8 @@ pub fn handle_qal_units(
         .cloned()
         .collect::<Vec<_>>();
 
-    let long_insertion_variant_codes = fp_info
-        .variants_by_position
-        .iter()
-        .enumerate()
-        .filter_map(|(index, (_pos, variants_at_pos))| {
-            for long_insertion_variant in &long_insertion_variants {
-                if let Some(alt_index) = variants_at_pos
-                    .iter()
-                    .position(|variant| variant == long_insertion_variant)
-                {
-                    if alt_index <= 8 {
-                        return Some((index, b'1' + alt_index as u8));
-                    }
-                }
-            }
-            None
-        })
-        .collect::<Vec<_>>();
+    let long_insertion_variant_codes =
+        find_long_insertion_variant_codes(&fp_info, &long_insertion_variants);
 
     for (unit_name, unit_fp) in fp_info.good_name_to_seq.iter() {
         for (index, expected_code) in long_insertion_variant_codes.iter() {
@@ -904,15 +1003,17 @@ pub fn handle_qal_units(
                     std::str::from_utf8(unit_fp)?
                 );
                 qal_units.push(*unit_name);
-                let mut unit_seq_without_insertion = unit_fp.clone();
-                unit_seq_without_insertion[*index] = b'0';
-                for (other_unit_name, other_unit_fp) in fp_info.good_name_to_seq.iter() {
-                    if other_unit_fp == &unit_seq_without_insertion {
-                        debug!("Found matching unit {other_unit_name:?} for {unit_name:?}, unit fp: {:?}", std::str::from_utf8(other_unit_fp)?);
-                        new_replace.entry(*unit_name).or_insert(*other_unit_name);
-                        qal_units.push(*other_unit_name);
-                        break;
-                    }
+                // indentify a fingerprint that is identical with the qal unit except for the insertion
+                // when necessary, we replace the original qal fingerprint with the matching fingerprint
+                // because sometimes the qal unit is spit into two segments -
+                // first the matching fingerprint then another segment with a deletion.
+                let matching_unit_fps =
+                    find_matching_units_for_insertion(&fp_info, unit_fp, *index);
+                if let Some(matching_unit_fp) = matching_unit_fps.first() {
+                    debug!("Found matching unit {matching_unit_fp:?} for {unit_name:?}");
+                    new_replace.entry(*unit_name).or_insert(*matching_unit_fp);
+                    qal_units.push(*matching_unit_fp);
+                    break;
                 }
             }
         }
@@ -921,86 +1022,31 @@ pub fn handle_qal_units(
 
     if new_replace.is_empty() || !rename_long_insertion_fingerprint {
         debug!("no need to rename long insertion fingerprints");
-        return Ok((fp_info.clone(), qal_units));
-    }
-
-    for (each_read, read_fps) in fp_info.read_edges.iter() {
-        let mut new_fps = Vec::new();
-        for fp in read_fps {
-            if new_replace.contains_key(fp) {
-                let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
-                new_fps.push(*to_replace);
-            } else {
-                new_fps.push(*fp);
-            }
-        }
-        if new_fps != read_fps.to_vec() {
-            debug!("updated edges {each_read}: from {read_fps:?} to {new_fps:?}");
-        }
-        new_read_edges
-            .entry(each_read.to_string())
-            .or_insert(new_fps);
-    }
-
-    for (each_segment, fp) in fp_info.grouped_reads.iter() {
-        if new_replace.contains_key(fp) {
-            let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
-            new_grouped_reads
-                .entry(each_segment.to_string())
-                .or_insert(*to_replace);
-        } else {
-            new_grouped_reads
-                .entry(each_segment.to_string())
-                .or_insert(*fp);
-        }
+        return Ok((fp_info, qal_units));
     }
 
     Ok((
-        FingerprintInfo {
-            read_edges: new_read_edges,
-            grouped_reads: new_grouped_reads,
-            fp_count: fp_info.fp_count,
-            good_name_to_seq: fp_info.good_name_to_seq,
-            read_positions: fp_info.read_positions,
-            read_bases: fp_info.read_bases,
-            fp_to_tid: fp_info.fp_to_tid,
-            variants_by_position: fp_info.variants_by_position,
-        },
+        apply_fingerprint_replacements(fp_info, &new_replace)?,
         qal_units,
     ))
 }
 
+/// Handle another long insertion that is unrelated to qAL
 pub fn handle_last_d4z4_long_insertion(
     fp_info: FingerprintInfo,
 ) -> Result<FingerprintInfo, DError> {
-    let mut new_read_edges = BTreeMap::new();
-    let mut new_grouped_reads = BTreeMap::new();
     let mut new_replace = BTreeMap::<i32, i32>::new();
 
     let d4z4_region_coordinates = d4z4_coordinates();
+    // last insertion in variants_to_call
     let long_insertion_variant = d4z4_region_coordinates
         .variants_to_call
         .last()
         .cloned()
         .ok_or("missing d4z4 forced-call variant")?;
 
-    let long_insertion_variant_codes = fp_info
-        .variants_by_position
-        .iter()
-        .enumerate()
-        .filter_map(|(index, (_pos, variants_at_pos))| {
-            variants_at_pos
-                .iter()
-                .position(|variant| variant == &long_insertion_variant)
-                .and_then(|alt_index| {
-                    if alt_index <= 8 {
-                        Some((index, b'1' + alt_index as u8))
-                    } else {
-                        None
-                    }
-                })
-        })
-        .collect::<Vec<_>>();
+    let long_insertion_variant_codes =
+        find_long_insertion_variant_codes(&fp_info, &[long_insertion_variant]);
 
     for (unit_name, unit_fp) in fp_info.good_name_to_seq.iter() {
         for (index, expected_code) in long_insertion_variant_codes.iter() {
@@ -1009,23 +1055,8 @@ pub fn handle_last_d4z4_long_insertion(
                     "unit {unit_name:?} has final d4z4 long insertion at index {index}, unit fp: {:?}",
                     std::str::from_utf8(unit_fp)?
                 );
-                let mut unit_seq_without_insertion = unit_fp.clone();
-                unit_seq_without_insertion[*index] = b'0';
-                let mut unit_seq_without_insertion_replace_unknown =
-                    unit_seq_without_insertion.clone();
-                for x in &mut unit_seq_without_insertion_replace_unknown {
-                    if *x == b'-' {
-                        *x = b'0';
-                    }
-                }
-                let mut matching_unit_fps = Vec::new();
-                for (other_unit_name, other_unit_fp) in fp_info.good_name_to_seq.iter() {
-                    if other_unit_fp == &unit_seq_without_insertion
-                        || other_unit_fp == &unit_seq_without_insertion_replace_unknown
-                    {
-                        matching_unit_fps.push(*other_unit_name);
-                    }
-                }
+                let matching_unit_fps =
+                    find_matching_units_for_insertion(&fp_info, unit_fp, *index);
                 if matching_unit_fps.len() == 1 {
                     let matching_unit_fp = matching_unit_fps.first().unwrap();
                     debug!("Found matching unit {matching_unit_fp:?} for {unit_name:?}");
@@ -1040,47 +1071,7 @@ pub fn handle_last_d4z4_long_insertion(
         return Ok(fp_info);
     }
 
-    for (each_read, read_fps) in fp_info.read_edges.iter() {
-        let mut new_fps = Vec::new();
-        for fp in read_fps {
-            if new_replace.contains_key(fp) {
-                let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
-                new_fps.push(*to_replace);
-            } else {
-                new_fps.push(*fp);
-            }
-        }
-        if new_fps != read_fps.to_vec() {
-            debug!("updated edges {each_read}: from {read_fps:?} to {new_fps:?}");
-        }
-        new_read_edges
-            .entry(each_read.to_string())
-            .or_insert(new_fps);
-    }
-
-    for (each_segment, fp) in fp_info.grouped_reads.iter() {
-        if new_replace.contains_key(fp) {
-            let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
-            new_grouped_reads
-                .entry(each_segment.to_string())
-                .or_insert(*to_replace);
-        } else {
-            new_grouped_reads
-                .entry(each_segment.to_string())
-                .or_insert(*fp);
-        }
-    }
-
-    Ok(FingerprintInfo {
-        read_edges: new_read_edges,
-        grouped_reads: new_grouped_reads,
-        fp_count: fp_info.fp_count,
-        good_name_to_seq: fp_info.good_name_to_seq,
-        read_positions: fp_info.read_positions,
-        read_bases: fp_info.read_bases,
-        fp_to_tid: fp_info.fp_to_tid,
-        variants_by_position: fp_info.variants_by_position,
-    })
+    apply_fingerprint_replacements(fp_info, &new_replace)
 }
 
 /// Compare fingerprints and remove redundant ones
@@ -1910,7 +1901,7 @@ mod tests {
             )]),
         };
 
-        let (updated, qal_units) = handle_qal_units(fp_info, false).unwrap();
+        let (updated, qal_units) = handle_qal_units(fp_info, true).unwrap();
 
         assert_eq!(updated.read_edges.get("read1"), Some(&vec![8, -10]));
         assert_eq!(updated.grouped_reads.get("read1:0"), Some(&8));

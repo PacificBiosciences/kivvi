@@ -1680,13 +1680,13 @@ mod tests {
     #[test]
     fn test_get_methylation_value_mixed_nan_and_numeric() {
         let parts = vec![
-            vec![0],
-            vec![255],
-            vec![127],
-            vec![128],
-            vec![255],
-            vec![0],
-            vec![255],
+            vec![0; 5],
+            vec![255; 5],
+            vec![127; 5],
+            vec![128; 5],
+            vec![255; 5],
+            vec![0; 5],
+            vec![255; 5],
         ];
         let mut methyl_values = BTreeMap::new();
         methyl_values.insert("allele-mixed".to_string(), parts);
@@ -1700,13 +1700,13 @@ mod tests {
         );
 
         let parts = vec![
-            vec![0],
-            vec![255],
-            vec![127],
-            vec![128],
+            vec![0; 5],
+            vec![255; 5],
+            vec![127; 5],
+            vec![128; 5],
             Vec::new(),
-            vec![0],
-            vec![255],
+            vec![0; 5],
+            vec![255; 5],
         ];
         let mut methyl_values = BTreeMap::new();
         methyl_values.insert("allele-mixed".to_string(), parts);
