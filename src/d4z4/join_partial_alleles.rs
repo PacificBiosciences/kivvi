@@ -1651,7 +1651,7 @@ mod tests {
 
     #[test]
     fn test_get_methylation_value_numeric_values() {
-        let values: Vec<Vec<i32>> = (0..600).map(|_| vec![255]).collect();
+        let values: Vec<Vec<i32>> = (0..600).map(|_| vec![255; 10]).collect();
         let mut methyl_values = BTreeMap::new();
         methyl_values.insert("allele-1".to_string(), values);
         let allele = "allele-1".to_string();
@@ -2875,7 +2875,7 @@ mod tests {
         let mut read_positions = BTreeMap::new();
         read_positions.insert("read1".to_string(), vec![300, 450, 600]);
         read_positions.insert("read2".to_string(), vec![480, 630]);
-        read_positions.insert("read3".to_string(), vec![700, 850]);
+        read_positions.insert("read3".to_string(), vec![300, 450]);
 
         let fp_info = FingerprintInfo {
             read_edges,
