@@ -1,5 +1,6 @@
 use crate::assembly::assembler::FpGraph;
 use crate::assembly::assembler_utils::find_overlapping_alleles;
+use crate::d4z4::cis_dup::is_cis_dup_nodes;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
 use crate::util::RegionCoordinates;
 use crate::util::{DError, DResult};
@@ -120,57 +121,7 @@ pub(crate) fn is_cis_dup_by_read_start_offset(
         .filter(|node| !node.contains("Flank"))
         .map(|node| node.parse::<i32>())
         .collect::<Result<Vec<_>, _>>()?;
-    if allele_nodes.len() < 2 {
-        return Ok(false);
-    }
-
-    let mut supporting_reads = 0;
-    let mut delayed_start_reads = 0;
-    for (read, read_nodes) in fp_info.read_edges.iter() {
-        let Some(read_positions) = fp_info.read_positions.get(read) else {
-            continue;
-        };
-        if read_nodes.len() != read_positions.len() {
-            continue;
-        }
-
-        let start_idx = 0;
-        if read_nodes[start_idx] == allele_nodes[0] {
-            let overlap_len = cmp::min(read_nodes.len() - start_idx, allele_nodes.len());
-            if overlap_len < 2 {
-                continue;
-            }
-
-            let nodes_in_read = &read_nodes[start_idx..(start_idx + overlap_len)];
-            let nodes_in_allele = &allele_nodes[..overlap_len];
-            let mut match_count = 0;
-            let mut has_mismatch = false;
-            for (read_node, allele_node) in nodes_in_read.iter().zip(nodes_in_allele.iter()) {
-                if *read_node == 0 {
-                    continue;
-                }
-                if read_node == allele_node {
-                    match_count += 1;
-                } else {
-                    has_mismatch = true;
-                    break;
-                }
-            }
-
-            if !has_mismatch && match_count > 1 {
-                supporting_reads += 1;
-                debug!("supporting read {read} edges {read_nodes:?} positions {read_positions:?}");
-                if read_positions[start_idx] > 300 {
-                    delayed_start_reads += 1;
-                    debug!("delayed start read {read} edges {read_nodes:?} positions {read_positions:?}");
-                }
-            }
-        }
-    }
-    debug!("supporting_reads {supporting_reads} delayed_start_reads {delayed_start_reads}");
-    let delayed_start_threshold = (supporting_reads as f64 * 0.8).floor() as i32;
-    Ok(supporting_reads >= 3
-        && delayed_start_reads >= (supporting_reads - 1).min(delayed_start_threshold))
+    is_cis_dup_nodes(&allele_nodes, fp_info)
 }
 
 pub(crate) fn is_cis_dup(allele: &str, fp_info: &FingerprintInfo) -> Result<bool, DError> {

@@ -3,10 +3,10 @@ use crate::bam_operation::{
     get_start_end_d4z4, get_start_end_from_genome, realign, tag_reads, ClippedReads,
 };
 use crate::cli::Settings;
+use crate::d4z4::cis_dup::{find_cis_dup, process_alleles};
 use crate::d4z4::d4z4_phasing::{
-    find_cis_dup, get_background_for_allele_ends, get_background_for_allele_starts,
-    haplotype_background, merge_phasing_bams, phase_flanking_gene, process_alleles,
-    remove_phasing_bam,
+    get_background_for_allele_ends, get_background_for_allele_starts, haplotype_background,
+    merge_phasing_bams, phase_flanking_gene, remove_phasing_bam,
 };
 use crate::d4z4::join_partial_alleles::{join_partial_alleles, AlleleSummary};
 use crate::depth::median;
