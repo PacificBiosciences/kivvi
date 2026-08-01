@@ -9,6 +9,7 @@ Kivvi produces a single JSON file per sample, containing detailed information ab
 - `complete_alleles`: completely assembled alleles, represented as an ordered list of repeat unit IDs.
 - `partial_alleles`: partially assembled alleles
 - `supporting_reads`: reads supporting completely assembled alleles
+- `read_info`: links between repeat units present on each read
 - `complete_allele_variants`: variants on completely assembled alleles. Variants are reported per allele per repeat unit (`{unit index on allele};{unit ID};{variant list}`). 
 - `other_unit_variants`: variants on any repeat units that are not assembled into complete alleles (`{unit ID};{variant list}`).
 
@@ -52,9 +53,9 @@ Other information on D4Z4 can be found in the `additional` field.
 - `qc_metrics`: two metrics indicating the HiFi data quality of the D4Z4 region.
   - `median_read_length`: median read length of the D4Z4 region
   - `per_allele_depth`: median depth per D4Z4 allele (can be different from the genome average depth as D4Z4 is highly GC rich)
-- `median_methylation_all_sites`: median methylation level across all D4Z4 units. This value can be used to evaluate the overal methylation level of D4Z4 and is low in FSHD2 samples.
-- `median_methylation_per_site`: median methylation of each CpG site
-- `median_methylation_per_unit`: median methylation of each repeat unit
+- `methylation_all_sites`: median methylation level across all D4Z4 units. This value can be used to evaluate the overal methylation level of D4Z4 and is low in FSHD2 samples.
+- `methylation_per_site`: median methylation of each CpG site
+- `methylation_per_unit`: median methylation of each repeat unit
 - `allele_background`: reports three sets of information:
   - The chromosome and distal haplotype for each complete allele (`complete_alleles`), in the format of `x-y` (`x` can be `qAIntactPolyA`, or `qADisruptedPolyA` or `qB`, and `y` can be `chr4` or `chr10`). 
   - The distal haplotype for all allele ends (`all_allele_ends`), i.e. all D4Z4 alleles (including partial alleles) containing the last unit. 

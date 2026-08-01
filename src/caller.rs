@@ -1137,15 +1137,15 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         .collect::<Vec<_>>();
 
     sample_call.additional.insert(
-        String::from("median_methylation_all_sites"),
+        String::from("methylation_all_sites"),
         meth_summary.all_sites_methyl_median.into(),
     );
     sample_call.additional.insert(
-        String::from("median_methylation_per_unit"),
+        String::from("methylation_per_unit"),
         serde_json::to_value(&meth_per_fp_median_reformat)?.into(),
     );
     sample_call.additional.insert(
-        String::from("median_methylation_per_site"),
+        String::from("methylation_per_site"),
         serde_json::to_value(&meth_per_pos_median_reformat)?.into(),
     );
     sample_call.additional.insert(
