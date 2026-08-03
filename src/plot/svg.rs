@@ -161,7 +161,6 @@ impl Generator {
         // Plot the main pipe
         let mut x_cur = x;
 
-        //self.add_left_cap((x_cur, y), pipe_height);
         for seg in &pipe.segs {
             let dims = (self.to_x(seg.width), pipe_height);
             if seg.shape == Shape::Rect {
@@ -174,7 +173,6 @@ impl Generator {
 
             x_cur += self.to_x(seg.width);
         }
-        //self.add_right_cap((x_cur, y), pipe_height);
 
         // Plot insertions
         let mut x_cur = x;
@@ -198,28 +196,9 @@ impl Generator {
 
     fn plot_outline(&mut self, pipe: &Pipe, x: f64, y: f64) {
         let height = self.to_y(pipe.height);
-        /*
-        let mut width = 0;
-        for seg in &pipe.outline {
-            width += seg.width;
-        }
-        let width = self.to_x(width);
-        */
-        // Draw segment boundaries
-        //let mut bar_x = x + self.to_x(pipe.outline.first().unwrap().width);
         let mut line_x = x;
-        //for segment in pipe.outline.iter().skip(1) {
         for segment in pipe.outline.iter() {
             let color = encode_color(&segment.color);
-            /*
-            let point1 = format!("x1=\"{}\" y1=\"{}\"", bar_x, y);
-            let point2 = format!("x2=\"{}\" y2=\"{}\"", bar_x, y + height);
-            //let style = r##"stroke="#000000" stroke-width="0.5""##;
-            let style = format!("stroke=\"{}\" stroke-width=\"0.5\"", color);
-            let line = format!("<line {} {} {} />", point1, point2, style);
-            writeln!(self.file, "{}", line).unwrap();
-            bar_x += self.to_x(segment.width);
-            */
 
             // Draw bottom horizontal line
             let point1 = format!("x1=\"{}\" y1=\"{}\"", line_x, y + height);
@@ -233,45 +212,6 @@ impl Generator {
             self.write_svg_line(&line);
             line_x += self.to_x(segment.width);
         }
-        /*
-        // Draw top horizontal line
-        let point1 = format!("x1=\"{}\" y1=\"{}\"", x, y);
-        let point2 = format!("x2=\"{}\" y2=\"{}\"", x + width, y);
-        let style = r##"stroke="#000000" stroke-width="1.5""##;
-        let line = format!("<line {} {} {} />", point1, point2, style);
-        writeln!(self.file, "{}", line).unwrap();
-
-        // Draw bottom horizontal line
-        let point1 = format!("x1=\"{}\" y1=\"{}\"", x, y + height);
-        let point2 = format!("x2=\"{}\" y2=\"{}\"", x + width, y + height);
-        let style = r##"stroke="#000000" stroke-width="1.5""##;
-        let line = format!("<line {} {} {} />", point1, point2, style);
-        writeln!(self.file, "{}", line).unwrap();
-
-        // Draw left cap
-        let point1 = format!("{} {}", x, y);
-        let point2 = format!("{} {}", x - height / 2.0, y);
-        let point3 = format!("{} {}", x - height / 2.0, y + height);
-        let point4 = format!("{} {}", x, y + height);
-
-        let path = format!("d=\"M {} C {}, {}, {}\"", point1, point2, point3, point4);
-        let style = r##"stroke="#000000" stroke-width="1.5" fill="none" opacity="0.9""##;
-
-        let line = format!("<path {} {} />", path, style);
-        writeln!(self.file, "{}", line).unwrap();
-
-        // Draw right cap
-        let point1 = format!("{} {}", x + width, y);
-        let point2 = format!("{} {}", x + width + height / 2.0, y);
-        let point3 = format!("{} {}", x + width + height / 2.0, y + height);
-        let point4 = format!("{} {}", x + width, y + height);
-
-        let path = format!("d=\"M {} C {}, {}, {}\"", point1, point2, point3, point4);
-        let style = r##"stroke="#000000" stroke-width="1.5" fill="none" opacity="0.9""##;
-
-        let line = format!("<path {} {} />", path, style);
-        writeln!(self.file, "{}", line).unwrap();
-        */
     }
 
     fn plot_scale(&mut self, pipe: &Pipe, x: f64, y: f64) {

@@ -130,10 +130,7 @@ pub fn methyl_prob_by_position(
             / this_pos_meth.len() as f32)
             .round()
             / 1000.0;
-        //let this_pos_meth_median =
-        //    (1000.0 * median(this_pos_meth).unwrap() / 255.0).round() / 1000.0;
         let this_pos_meth_len = this_pos_meth.len();
-        //meth_per_pos_median.insert(*pos, this_pos_meth_median);
         meth_per_pos_median.insert(*pos, this_pos_meth_percent);
         trace!("methyl positions {pos} nsize {this_pos_meth_len} median methyl value {this_pos_meth_percent} methyl values {this_pos_meth:?} ");
     }
@@ -144,8 +141,6 @@ pub fn methyl_prob_by_position(
                 / this_fp_meth.len() as f32)
                 .round()
                 / 1000.0;
-            //let this_fp_meth_median =
-            //    (1000.0 * median(this_fp_meth).unwrap() / 255.0).round() / 1000.0;
             let this_fp_meth_len = this_fp_meth.len();
             meth_per_fp_median.insert(*fp, this_fp_meth_percent);
             trace!("fp {fp} nsize {this_fp_meth_len} percent methylation {this_fp_meth_percent} methyl values {this_fp_meth:?} ");
@@ -162,12 +157,6 @@ pub fn methyl_prob_by_position(
                 / 1000.0,
         )
     };
-    //let all_sites_methyl_median = median(&all_sites_methyl);
-    //let all_sites_methyl_median = if all_sites_methyl_median.is_none() {
-    //    None
-    //} else {
-    //    Some((1000.0 * all_sites_methyl_median.unwrap() / 255.0).round() / 1000.0)
-    //};
 
     Ok((
         MethSummary {
@@ -343,8 +332,6 @@ pub fn get_methyl_info(
                             //debug!(
                             //    "at methyl site {this_methyl_site} this_fp_this_pos_methyl_probs {this_fp_this_pos_methyl_probs:?}, methylation percentage {this_fp_this_pos_methy_perc}"
                             //);
-                            //this_fp_methyl_probs
-                            //    .push(median(&this_fp_this_pos_methyl_probs).unwrap());
                         } else {
                             trace!(
                                 "at methyl site {this_methyl_site} this_fp_this_pos_methyl_probs {this_fp_this_pos_methyl_probs:?} is empty, cannot get median"

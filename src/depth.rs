@@ -102,12 +102,12 @@ pub fn depth_based_cn(
 /// ```
 /// use kivvi::depth::median;
 /// let x = &[0, 3i32, 4];
-/// assert_eq!(3., median(x).unwrap());
+/// assert_eq!(median(x), Some(3.));
 /// assert!(median(&[] as &[i32]).is_none());
 /// let x = &[4i32, 2];
-/// assert_eq!(median(x).unwrap(), 3.);
+/// assert_eq!(median(x), Some(3.));
 /// let x = &[1i32, 2];
-/// assert_eq!(median(x).unwrap(), 1.5f32);
+/// assert_eq!(median(x), Some(1.5f32));
 /// ```
 #[must_use]
 pub fn median(x: &[i32]) -> Option<f32> {
