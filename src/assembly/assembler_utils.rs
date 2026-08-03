@@ -1,4 +1,4 @@
-use crate::util::DError;
+use crate::util::{missing_data_error, DError};
 use log::{debug, error, trace};
 use std::cmp;
 use std::collections::{BTreeMap, HashSet};
@@ -388,10 +388,18 @@ pub fn redundant_haplotype_allowed(
 ) -> Result<bool, DError> {
     let hap1_len = hap1.len() as i32;
     let hap2_len = hap2.len() as i32;
-    let hap1_first = hap1.first().ok_or("first not found")?;
-    let hap1_last = hap1.last().ok_or("last not found")?;
-    let hap2_first = hap2.first().ok_or("first not found")?;
-    let hap2_last = hap2.last().ok_or("last not found")?;
+    let hap1_first = hap1
+        .first()
+        .ok_or_else(|| missing_data_error("first haplotype node", format!("{hap1:?}")))?;
+    let hap1_last = hap1
+        .last()
+        .ok_or_else(|| missing_data_error("last haplotype node", format!("{hap1:?}")))?;
+    let hap2_first = hap2
+        .first()
+        .ok_or_else(|| missing_data_error("first haplotype node", format!("{hap2:?}")))?;
+    let hap2_last = hap2
+        .last()
+        .ok_or_else(|| missing_data_error("last haplotype node", format!("{hap2:?}")))?;
     // if the other haplotype is complete and is similar length, skip
     if *hap2_first < 0 && *hap2_first > -10 && *hap2_last <= -10 {
         if (hap1_len - hap2_len).abs() <= 2
