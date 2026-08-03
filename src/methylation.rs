@@ -71,9 +71,12 @@ pub fn methyl_prob_by_position(
     for (read_segment_name, site_to_pos) in cpg_sites_per_read.iter() {
         let read_name = read_segment_name
             .split_terminator(':')
-            .collect::<Vec<_>>()
-            .first()
-            .unwrap()
+            .next()
+            .ok_or_else(|| {
+                format!(
+                    "Read segment name is missing a read prefix for methylation lookup: '{read_segment_name}'"
+                )
+            })?
             .to_string();
         if read_methyl_bases.contains_key(&read_name) {
             // index of C -> methylation prob (unnormalized)
@@ -109,7 +112,11 @@ pub fn methyl_prob_by_position(
             meth_per_pos.entry(*pos).or_default().push(*ml_value as i32);
             all_sites_methyl.push(*ml_value as i32);
             if fp_info.grouped_reads.contains_key(read_segment) {
-                let this_segment_fp = fp_info.grouped_reads.get(read_segment).unwrap();
+                let this_segment_fp = fp_info.grouped_reads.get(read_segment).ok_or_else(|| {
+                    format!(
+                        "Read segment '{read_segment}' is missing a grouped fingerprint assignment"
+                    )
+                })?;
                 meth_per_fp
                     .entry(*this_segment_fp)
                     .or_default()
@@ -270,9 +277,12 @@ pub fn get_methyl_info(
                                 .ok_or("segment_name not in cpg_sites_per_read")?;
                             let read_name = segment_name
                                 .split_terminator(':')
-                                .collect::<Vec<_>>()
-                                .first()
-                                .unwrap()
+                                .next()
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Read segment name is missing a read prefix for methylation lookup: '{segment_name}'"
+                                    )
+                                })?
                                 .to_string();
                             if this_segment_pos.contains_key(&(this_methyl_site - 1)) {
                                 alleles_reads_methyl
@@ -298,9 +308,12 @@ pub fn get_methyl_info(
                                 //trace!("allele {allele:?} uniq_fp_name {uniq_fp_name} i {i} k {k} full_pos {full_pos} segment_name {} prob {}", segment_name.to_string(), *prob);
                                 let read_name = segment_name
                                     .split_terminator(':')
-                                    .collect::<Vec<_>>()
-                                    .first()
-                                    .unwrap()
+                                    .next()
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "Read segment name is missing a read prefix for methylation lookup: '{segment_name}'"
+                                        )
+                                    })?
                                     .to_string();
                                 alleles_reads_methyl
                                     .entry(allele_index)
@@ -471,17 +484,23 @@ pub fn get_methyl_tags(
 pub fn get_methyl_prob(record: &rust_htslib::bam::Record) -> Result<Option<Vec<u8>>, DError> {
     let qname = std::str::from_utf8(record.qname())?;
     let bases = record.seq().as_bytes();
-    let meth = get_mm_tag(record).and_then(|mm_tag| {
-        get_ml_tag(record)
-            .and_then(|ml_tag| parse_meth_tags(mm_tag, ml_tag))
-            .and_then(|tags| {
+    let meth = if let Some(mm_tag) = get_mm_tag(record) {
+        if let Some(ml_tag) = get_ml_tag(record) {
+            let tags = parse_meth_tags(mm_tag, ml_tag, qname)?;
+            tags.map(|tags| {
                 if record.is_reverse() {
-                    decode_on_minus(&bases, &tags)
+                    decode_on_minus(&bases, &tags, qname)
                 } else {
-                    decode_on_plus(&bases, &tags)
+                    decode_on_plus(&bases, &tags, qname)
                 }
             })
-    });
+            .transpose()?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     if let Some(ref meth_values) = meth {
         trace!(
             "read {qname} methylation values {:?} CG count {}",
@@ -496,9 +515,10 @@ pub fn get_methyl_prob(record: &rust_htslib::bam::Record) -> Result<Option<Vec<u
 /// # Arguments
 /// * `bases` - bases on the plus strand
 /// * `meth` - methylation information
+/// * `qname` - read name used for error reporting
 /// # Returns
-/// * `Option<Vec<u8>>` - methylation probabilities on this read
-pub fn decode_on_plus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
+/// * `Vec<u8>` - methylation probabilities on this read
+pub fn decode_on_plus(bases: &[u8], meth: &MethInfo, qname: &str) -> Result<Vec<u8>, DError> {
     let mut profile = Vec::new();
 
     let mut num_cs_skipped = 0;
@@ -519,7 +539,12 @@ pub fn decode_on_plus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
         // TODO: Check if the first condition needed
         if cite_index != meth.poses.len() && num_cs_skipped == meth.poses[cite_index] {
             if dinuc == b"CG" {
-                *profile.last_mut().unwrap() = meth.probs[cite_index];
+                let slot = profile.last_mut().ok_or_else(|| {
+                    format!(
+                        "Read '{qname}' has methylation data for a CpG site before any CpG was decoded on the plus strand"
+                    )
+                })?;
+                *slot = meth.probs[cite_index];
             } else {
                 non_cpgs_called += 1;
             }
@@ -535,16 +560,17 @@ pub fn decode_on_plus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
         warn!("Warning: non_cpgs_called = {non_cpgs_called}");
     }
 
-    Some(profile)
+    Ok(profile)
 }
 
 /// Decode methylation probabilities on a minus strand
 /// # Arguments
 /// * `bases` - bases on the minus strand
 /// * `meth` - methylation information
+/// * `qname` - read name used for error reporting
 /// # Returns
-/// * `Option<Vec<u8>>` - methylation probabilities on this read
-pub fn decode_on_minus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
+/// * `Vec<u8>` - methylation probabilities on this read
+pub fn decode_on_minus(bases: &[u8], meth: &MethInfo, qname: &str) -> Result<Vec<u8>, DError> {
     let mut profile = Vec::new();
 
     let mut num_cs_skipped = 0;
@@ -566,7 +592,12 @@ pub fn decode_on_minus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
 
         if cite_index != meth.poses.len() && num_cs_skipped == meth.poses[cite_index] {
             if dinuc == b"CG" {
-                *profile.last_mut().unwrap() = meth.probs[cite_index];
+                let slot = profile.last_mut().ok_or_else(|| {
+                    format!(
+                        "Read '{qname}' has methylation data for a CpG site before any CpG was decoded on the minus strand"
+                    )
+                })?;
+                *slot = meth.probs[cite_index];
             } else {
                 non_cpgs_called += 1;
             }
@@ -582,7 +613,7 @@ pub fn decode_on_minus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
         warn!("Warning: non_cpgs_called = {non_cpgs_called}");
     }
 
-    Some(profile)
+    Ok(profile)
 }
 
 /// Parses methylation tags from a BAM record into a `MethInfo` struct.
@@ -590,13 +621,19 @@ pub fn decode_on_minus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
 /// # Arguments
 /// * `mm_tag` - The MM tag from the BAM record.
 /// * `ml_tag` - The ML tag from the BAM record.
+/// * `qname` - Read name used to annotate parsing errors.
 ///
 /// # Returns
 /// Returns an `Option<MethInfo>` which is `Some` if the tags could be parsed, otherwise `None`.
-fn parse_meth_tags(mm_tag: Aux, ml_tag: Aux) -> Option<MethInfo> {
+fn parse_meth_tags(mm_tag: Aux, ml_tag: Aux, qname: &str) -> Result<Option<MethInfo>, DError> {
     let mm_tag = match mm_tag {
         Aux::String(tag) => tag,
-        _ => panic!("Unexpected MM tag format: {:?}", mm_tag),
+        _ => {
+            return Err(format!(
+                "Read '{qname}' has an MM tag with an unexpected format: {mm_tag:?}"
+            )
+            .into())
+        }
     };
 
     // consider other possible modifications in MM
@@ -620,29 +657,60 @@ fn parse_meth_tags(mm_tag: Aux, ml_tag: Aux) -> Option<MethInfo> {
         }
     }
     if c_m_mod.is_none() {
-        return None;
+        return Ok(None);
     }
-    let c_m_mod = c_m_mod.unwrap();
+    let c_m_mod = c_m_mod.ok_or_else(|| {
+        format!("Read '{qname}' is missing the expected C+m methylation modification block")
+    })?;
     let c_m_mod = c_m_mod
         .strip_prefix("C+m?")
-        .or_else(|| c_m_mod.strip_prefix("C+m"))?;
+        .or_else(|| c_m_mod.strip_prefix("C+m"))
+        .ok_or_else(|| {
+            format!(
+                "Read '{qname}' has a C+m methylation block with an unexpected prefix: '{c_m_mod}'"
+            )
+        })?;
     let c_m_mod = c_m_mod.trim_matches(',');
     if c_m_mod == "" {
-        return None;
+        return Ok(None);
     }
     let poses = c_m_mod
         .split(',')
-        .map(|n| n.parse::<usize>().unwrap())
-        .collect::<Vec<usize>>();
+        .map(|n| {
+            n.parse::<usize>().map_err(|e| {
+                format!("Read '{qname}' has an invalid methylation offset '{n}' in the MM tag: {e}")
+            })
+        })
+        .collect::<Result<Vec<usize>, _>>()?;
 
     let mut probs = match ml_tag {
         Aux::ArrayU8(tag) => tag.iter().collect::<Vec<_>>(),
-        _ => panic!("Unexpected ML tag format: {:?}", ml_tag),
+        _ => {
+            return Err(format!(
+                "Read '{qname}' has an ML tag with an unexpected format: {ml_tag:?}"
+            )
+            .into())
+        }
     };
+    if counter + poses.len() > probs.len() {
+        return Err(format!(
+            "Read '{qname}' has fewer ML probabilities ({}) than MM positions require ({})",
+            probs.len(),
+            counter + poses.len()
+        )
+        .into());
+    }
     probs = probs[counter..(counter + poses.len())].to_vec();
-    assert_eq!(poses.len(), probs.len());
+    if poses.len() != probs.len() {
+        return Err(format!(
+            "Read '{qname}' has mismatched MM/ML lengths: {} positions vs {} probabilities",
+            poses.len(),
+            probs.len()
+        )
+        .into());
+    }
 
-    Some(MethInfo { poses, probs })
+    Ok(Some(MethInfo { poses, probs }))
 }
 
 /// Retrieves the MM tag from a BAM record.

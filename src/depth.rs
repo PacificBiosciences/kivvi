@@ -47,7 +47,13 @@ pub fn depth_based_cn(
                 pos + 500,
                 pos + 1500,
             ))
-            .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
+            .map_err(|e| {
+                format!(
+                    "Failed to fetch depth region {depth_chrom}:{}-{}: {e}",
+                    pos + 500,
+                    pos + 1500
+                )
+            })?;
         for p in bam_reader.pileup() {
             let pileup = p?;
             let this_depth = pileup.depth();
@@ -74,7 +80,7 @@ pub fn depth_based_cn(
     let repeat_median = median(&rdepth);
 
     if let Some(genome_median_value) = genome_median {
-        info!("Genome depth is {:?}", genome_median.unwrap());
+        info!("Genome depth is {:?}", genome_median_value);
         if genome_median_value < 15.0 {
             warn!("Genome depth is low. Recommend sequencing to a higher coverage (>20X).");
         } else if let Some(repeat_median_value) = repeat_median {

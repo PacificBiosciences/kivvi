@@ -949,13 +949,13 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         let mut distal_hap = hap_background_parts[0].to_string();
         let mut chr = hap_background_parts[1].to_string();
         if distal_hap.contains("unknown") {
-            if all_ends_hap_backgrounds.contains_key(hap) {
-                distal_hap = all_ends_hap_backgrounds.get(hap).unwrap().to_string();
+            if let Some(background) = all_ends_hap_backgrounds.get(hap) {
+                distal_hap = background.to_string();
             }
         }
         if chr.contains("unknown") {
-            if all_starts_hap_backgrounds.contains_key(hap) {
-                chr = all_starts_hap_backgrounds.get(hap).unwrap().to_string();
+            if let Some(background) = all_starts_hap_backgrounds.get(hap) {
+                chr = background.to_string();
             }
         }
         updated_hap_backgrounds.insert(hap.clone(), format!("{distal_hap}-{chr}"));
@@ -1067,9 +1067,9 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
             .collect::<Vec<_>>();
         complete_allele_variants.insert(
             vec_to_string(&vec![allele], "-")
-                .first()
-                .unwrap()
-                .to_string(),
+                .into_iter()
+                .next()
+                .ok_or("Missing allele name after formatting D4Z4 complete allele variants")?,
             allele_variants_reformat,
         );
     }

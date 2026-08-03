@@ -41,8 +41,11 @@ pub(crate) fn classify_fingerprint(
     let variants_to_check = region_coordinates
         .variants_to_distinguish_allele_types
         .clone();
-    let variants_qa_disrupted = variants_to_check.get("qADisruptedPolyA").unwrap();
-    let variants_qb = variants_to_check.get("qB").unwrap();
+    let empty_variants = Vec::new();
+    let variants_qa_disrupted = variants_to_check
+        .get("qADisruptedPolyA")
+        .unwrap_or(&empty_variants);
+    let variants_qb = variants_to_check.get("qB").unwrap_or(&empty_variants);
     let count_qa_disrupted = variants
         .iter()
         .filter(|x| variants_qa_disrupted.contains(x))
@@ -763,7 +766,7 @@ pub(crate) fn remove_redundant_alleles(
                 (
                     x.split("-")
                         .filter(|x| !x.contains("Flank"))
-                        .map(|x| x.parse::<i32>().unwrap())
+                        .filter_map(|x| x.parse::<i32>().ok())
                         .collect::<Vec<i32>>(),
                     x.clone(),
                 )
@@ -779,10 +782,15 @@ pub(crate) fn remove_redundant_alleles(
         )?;
         let mut removed_one_redundant = false;
         for (allele, allele_match_info) in overlapping_alleles_match.iter() {
-            let allele_name = alleles_to_check_haps.get(allele).unwrap();
+            let allele_name = alleles_to_check_haps
+                .get(allele)
+                .ok_or_else(|| format!("Missing allele string for overlap candidate {allele:?}"))?;
             let allele_size = allele.len();
             for (matching_allele, overlap_len) in allele_match_info.iter() {
-                let matching_allele_name = alleles_to_check_haps.get(matching_allele).unwrap();
+                let matching_allele_name =
+                    alleles_to_check_haps.get(matching_allele).ok_or_else(|| {
+                        format!("Missing allele string for overlap candidate {matching_allele:?}")
+                    })?;
                 let matching_allele_size = matching_allele.len();
                 debug!("Checking if {allele_name} is redundant with {matching_allele_name}: overlap length {overlap_len}, allele size {allele_size}, matching allele size {matching_allele_size}");
                 if allele_size < matching_allele_size
@@ -1111,9 +1119,16 @@ fn try_add_four_way_merge(
 
     let chr_info = all_starts_hap_backgrounds
         .get(proximal_allele)
-        .unwrap()
+        .ok_or_else(|| {
+            format!("Missing start-haplotype background for proximal allele '{proximal_allele}'")
+        })?
         .clone();
-    let background = all_ends_hap_backgrounds.get(distal_allele).unwrap().clone();
+    let background = all_ends_hap_backgrounds
+        .get(distal_allele)
+        .ok_or_else(|| {
+            format!("Missing end-haplotype background for distal allele '{distal_allele}'")
+        })?
+        .clone();
     let methylation_value = get_methylation_value(&distal_allele.to_string(), methyl_values, None)?;
     let ending_in_qal = is_qal_allele(&distal_allele.to_string(), &qal_units.to_vec());
     debug!("adding merged allele from checking 4-way overlaps: {merged_name}");
@@ -1169,10 +1184,22 @@ fn handle_four_partial_alleles_group(
     debug!(
         "evaluating four partial alleles of the same type {allele_type}: {left_flanks:?} and {right_flanks:?}"
     );
-    let left_flank1 = left_flanks.first().unwrap().clone();
-    let left_flank2 = left_flanks.last().unwrap().clone();
-    let right_flank1 = right_flanks.first().unwrap().clone();
-    let right_flank2 = right_flanks.last().unwrap().clone();
+    let left_flank1 = left_flanks
+        .first()
+        .cloned()
+        .ok_or("Missing first left-flank allele")?;
+    let left_flank2 = left_flanks
+        .last()
+        .cloned()
+        .ok_or("Missing second left-flank allele")?;
+    let right_flank1 = right_flanks
+        .first()
+        .cloned()
+        .ok_or("Missing first right-flank allele")?;
+    let right_flank2 = right_flanks
+        .last()
+        .cloned()
+        .ok_or("Missing second right-flank allele")?;
 
     let (ovl_len1, allele_name1, allele_size1) = merge_two_partial_alleles(
         &vec![left_flank1.clone(), right_flank1.clone()],
