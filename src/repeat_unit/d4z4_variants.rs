@@ -1,6 +1,6 @@
 use crate::bam_operation::start_pos_on_read;
-use crate::util::DError;
 use crate::util::RegionCoordinates;
+use crate::util::{invalid_data_error, DError};
 use log::{debug, error, trace};
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::{bam, bam::Read, faidx};
@@ -110,8 +110,8 @@ fn genotype_homopolymer(
     bam_reader
         .fetch((&ref_name, 0, region_coordinates.repeat_len as i64))
         .map_err(|e| {
-            std::io::Error::other(format!(
-                "Failed to fetch homopolymer genotyping region 0-{} on {ref_name}: {e}",
+            invalid_data_error(format!(
+                "failed to fetch homopolymer genotyping region 0-{} on {ref_name}: {e}",
                 region_coordinates.repeat_len
             ))
         })?;
@@ -273,8 +273,8 @@ fn genotype_str(
     bam_reader
         .fetch((&ref_name, 0, region_coordinates.repeat_len as i64))
         .map_err(|e| {
-            std::io::Error::other(format!(
-                "Failed to fetch STR genotyping region 0-{} on {ref_name}: {e}",
+            invalid_data_error(format!(
+                "failed to fetch STR genotyping region 0-{} on {ref_name}: {e}",
                 region_coordinates.repeat_len
             ))
         })?;

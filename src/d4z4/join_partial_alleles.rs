@@ -3,7 +3,7 @@ use crate::assembly::assembler_utils::find_overlapping_alleles;
 use crate::d4z4::cis_dup::is_cis_dup_nodes;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
 use crate::util::RegionCoordinates;
-use crate::util::{DError, DResult};
+use crate::util::{missing_data_error, DError, DResult};
 use crate::variant::VariantReport;
 use log::debug;
 use std::cmp;
@@ -588,14 +588,13 @@ fn get_allele_summary(
     sorted_alleles.sort_by(|a, b| b.contains("LeftFlank").cmp(&a.contains("LeftFlank")));
     debug!("sorted_alleles {:?}", sorted_alleles);
     let proximal_allele = sorted_alleles.first().ok_or_else(|| {
-        std::io::Error::other(
-            "Unable to summarize merged allele because no proximal allele was provided",
-        )
+        missing_data_error("proximal allele", "unable to summarize merged allele")
     })?;
     let distal_allele = sorted_alleles.get(1).ok_or_else(|| {
-        std::io::Error::other(format!(
-            "Unable to summarize merged allele for {sorted_alleles:?} because the distal allele is missing"
-        ))
+        missing_data_error(
+            "distal allele",
+            format!("unable to summarize merged allele for {sorted_alleles:?}"),
+        )
     })?;
     distal_alleles_handled.push(distal_allele.clone());
     proximal_alleles_handled.push(proximal_allele.clone());

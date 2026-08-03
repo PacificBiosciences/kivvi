@@ -1,7 +1,9 @@
 use crate::bam_operation::ClippedReads;
 use crate::realignment::utilities::{Variant, VariantType};
 use crate::repeat_unit::fingerprint::{FingerprintInfo, ReadParameters};
-use crate::util::{d4z4_coordinates, DError, FlankReads, RegionCoordinates};
+use crate::util::{
+    d4z4_coordinates, invalid_data_error, missing_data_error, DError, FlankReads, RegionCoordinates,
+};
 use itertools::Itertools;
 use log::{debug, trace};
 use std::collections::BTreeMap;
@@ -161,10 +163,16 @@ pub fn clean_up_segment_raw_fps(
     let good_clips_p5 = &clipped_reads.good_clips_p5;
     let good_clips_p3 = &clipped_reads.good_clips_p3;
     for (read_segment, raw_fp) in &mut *read_segment_raw_fp {
-        assert_eq!(raw_fp.len(), num_pos);
+        if raw_fp.len() != num_pos {
+            return Err(invalid_data_error(format!(
+                "Read segment '{read_segment}' has fingerprint width {} but expected {} variant positions during clip-aware cleanup",
+                raw_fp.len(),
+                num_pos
+            )));
+        }
         if reads_clipped.contains_key(read_segment) {
             let this_read_clips = reads_clipped.get(read_segment).ok_or_else(|| {
-                format!("Missing clipped-read metadata for segment '{read_segment}'")
+                missing_data_error("clipped-read metadata", format!("segment '{read_segment}'"))
             })?;
             for (clip_side, tid, clip_pos) in this_read_clips {
                 if clip_side == "p5" {

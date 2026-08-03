@@ -5,7 +5,7 @@ use crate::repeat_unit::d4z4_variants::update_read_with_special_calls;
 use crate::repeat_unit::fingerprint_utils::{
     clean_up_segment_raw_fps, get_good_variants, get_start_end_fps, select_fps, update_fps,
 };
-use crate::util::{DError, FlankReads, RegionCoordinates};
+use crate::util::{invalid_data_error, missing_data_error, DError, FlankReads, RegionCoordinates};
 use log::{debug, trace};
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::{bam, bam::Read, faidx, htslib};
@@ -147,9 +147,9 @@ pub fn get_fingerprint(
         let ref_seq = ref_reader.fetch_seq(&ref_name, 0, ref_len as usize)?;
         log::debug!("index {i} ref_len {ref_len}");
         if unfiltered_sites_by_tid.contains_key(&(i as i32)) {
-            let unfiltered_sites = unfiltered_sites_by_tid
-                .get(&(i as i32))
-                .ok_or_else(|| format!("Missing unfiltered sites for reference tid {i}"))?;
+            let unfiltered_sites = unfiltered_sites_by_tid.get(&(i as i32)).ok_or_else(|| {
+                missing_data_error("unfiltered sites for reference tid", i.to_string())
+            })?;
 
             let variant_calls =
                 get_good_variants(&region_coordinates, unfiltered_sites, &ref_seq, is_d4z4)?;
@@ -195,7 +195,13 @@ pub fn get_fingerprint(
                 )?;
             }
             if let Some(raw_fp) = read_segment_raw_fp.values().next() {
-                assert_eq!(new_variants_by_position.len(), raw_fp.len());
+                if new_variants_by_position.len() != raw_fp.len() {
+                    return Err(invalid_data_error(format!(
+                        "Variant-position count ({}) does not match fingerprint width ({}) after realignment cleanup for tid {i}",
+                        new_variants_by_position.len(),
+                        raw_fp.len()
+                    )));
+                }
             }
             for (pos, variants) in new_variants_by_position {
                 variants_by_position
@@ -337,7 +343,10 @@ pub fn get_fingerprint(
     // full read names -> vector of starting positions of each segment
     let mut read_positions: BTreeMap<String, Vec<i32>> = BTreeMap::new();
     for (each_read, mut each_read_info) in read_fps.into_iter() {
-        let this_read_length = *read_length.get(&each_read).ok_or("key not found")? as i32;
+        let this_read_length = *read_length
+            .get(&each_read)
+            .ok_or_else(|| missing_data_error("read length", &each_read))?
+            as i32;
         each_read_info.sort_by(|a, b| a.pos.cmp(&b.pos));
 
         let mut this_read_edges: Vec<i32> = Vec::new();
@@ -449,7 +458,9 @@ pub fn get_fingerprint(
             prev_aln = each_read_segment.aln_len;
         }
         if !is_d4z4 {
-            let last_seg = each_read_info.last().ok_or("last not found")?;
+            let last_seg = each_read_info
+                .last()
+                .ok_or_else(|| missing_data_error("last read segment", &each_read))?;
             let last_fp_seq = std::str::from_utf8(&last_seg.fingerprint)?;
             if last_fp_seq.starts_with("xxxx") {
                 // replace a suspicious unit with unknown
@@ -476,7 +487,13 @@ pub fn get_fingerprint(
             .join("-");
         debug!("read {each_read} length {this_read_length:?} {this_read_edges_string:?}");
         debug!("read {each_read} length {this_read_length:?} {this_read_positions:?}");
-        assert!(this_read_edges.len() == this_read_positions.len());
+        if this_read_edges.len() != this_read_positions.len() {
+            return Err(invalid_data_error(format!(
+                "Read '{each_read}' produced {} fingerprint edges but {} fingerprint positions after segmentation",
+                this_read_edges.len(),
+                this_read_positions.len()
+            )));
+        }
         read_edges
             .entry(each_read.clone())
             .or_insert(this_read_edges);

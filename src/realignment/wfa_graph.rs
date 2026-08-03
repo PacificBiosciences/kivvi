@@ -1,5 +1,6 @@
 use crate::realignment::utilities::AlleleType;
 use crate::realignment::utilities::Variant;
+use crate::util::invalid_data_error;
 
 use bit_vec::BitVec;
 #[allow(unused_imports)]
@@ -193,10 +194,9 @@ impl WFAGraph {
             {
                 // get the next thing that needs to reconnect before the next variant
                 let Some((alt_index, Reverse(alt_reconnect))) = reconnect_queue.pop() else {
-                    return Err(std::io::Error::other(format!(
-                        "Reconnect queue became empty while resolving variants near position {variant_pos}"
-                    ))
-                    .into());
+                    return Err(invalid_data_error(format!(
+                        "reconnect queue became empty while resolving variants near position {variant_pos}"
+                    )));
                 };
                 assert!(alt_reconnect > previous_end);
 
@@ -221,10 +221,9 @@ impl WFAGraph {
                     == alt_reconnect
                 {
                     let Some((ai2, Reverse(ar2))) = reconnect_queue.pop() else {
-                        return Err(std::io::Error::other(format!(
-                            "Reconnect queue became empty while grouping reconnections at {alt_reconnect}"
-                        ))
-                        .into());
+                        return Err(invalid_data_error(format!(
+                            "reconnect queue became empty while grouping reconnections at {alt_reconnect}"
+                        )));
                     };
                     assert_eq!(alt_reconnect, ar2);
                     reference_reconnect.push(ai2);
@@ -296,10 +295,9 @@ impl WFAGraph {
         // reconnect everything downstream from here
         while !reconnect_queue.is_empty() {
             let Some((alt_index, Reverse(alt_reconnect))) = reconnect_queue.pop() else {
-                return Err(std::io::Error::other(
-                    "Reconnect queue became empty while draining downstream reconnections",
-                )
-                .into());
+                return Err(invalid_data_error(
+                    "reconnect queue became empty while draining downstream reconnections",
+                ));
             };
             assert!(alt_reconnect > previous_end);
             let ref_sequence: Vec<u8> = reference[previous_end..alt_reconnect].to_vec();
@@ -320,10 +318,9 @@ impl WFAGraph {
                 == alt_reconnect
             {
                 let Some((ai2, Reverse(ar2))) = reconnect_queue.pop() else {
-                    return Err(std::io::Error::other(format!(
-                        "Reconnect queue became empty while coalescing downstream reconnections at {alt_reconnect}"
-                    ))
-                    .into());
+                    return Err(invalid_data_error(format!(
+                        "reconnect queue became empty while coalescing downstream reconnections at {alt_reconnect}"
+                    )));
                 };
                 assert_eq!(alt_reconnect, ar2);
                 reference_reconnect.push(ai2);

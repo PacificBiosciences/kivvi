@@ -12,6 +12,18 @@ pub type DError = std::boxed::Box<dyn std::error::Error>;
 pub type DResult = Result<(), DError>;
 pub type Exception = simple_error::SimpleError;
 
+/// Build a standardized invalid-data error for runtime state or input that
+/// violates expectations but should not panic the process.
+pub fn invalid_data_error(message: impl Into<String>) -> DError {
+    std::io::Error::other(format!("invalid data: {}", message.into())).into()
+}
+
+/// Build a standardized missing-data error for required values that could not
+/// be found in the current execution context.
+pub fn missing_data_error(subject: &str, context: impl Into<String>) -> DError {
+    std::io::Error::other(format!("missing {subject}: {}", context.into())).into()
+}
+
 lazy_static::lazy_static! {
     pub static ref GIT_DESCRIBE: String = option_env!("VERGEN_GIT_DESCRIBE")
         .unwrap_or("unknown")

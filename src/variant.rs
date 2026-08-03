@@ -1,6 +1,6 @@
 use crate::assembly::assembler::AssemblyResult;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
-use crate::util::{DError, RegionCoordinates};
+use crate::util::{invalid_data_error, missing_data_error, DError, RegionCoordinates};
 use itertools::Itertools;
 use log::{debug, trace};
 use regex::Regex;
@@ -97,11 +97,15 @@ fn parse_variant_position(variant_name: &str) -> Result<i64, DError> {
     let position_field = variant_name
         .split_terminator(':')
         .next()
-        .ok_or_else(|| format!("Variant name is missing a position field: '{variant_name}'"))?;
+        .ok_or_else(|| missing_data_error("variant position field", variant_name))?;
     let position_token = position_field
         .split_terminator('-')
         .next_back()
-        .ok_or_else(|| format!("Variant name has an empty position field: '{variant_name}'"))?;
+        .ok_or_else(|| {
+            invalid_data_error(format!(
+                "variant name has an empty position field: '{variant_name}'"
+            ))
+        })?;
     position_token
         .parse::<i64>()
         .map_err(|e| format!("Failed to parse variant position from '{variant_name}': {e}").into())
@@ -116,10 +120,12 @@ fn parse_variant_alleles(variant_name: &str) -> Result<(String, String), DError>
     let allele_field = variant_name
         .split_terminator(':')
         .next_back()
-        .ok_or_else(|| format!("Variant name is missing an allele field: '{variant_name}'"))?;
-    let (ref_allele, alt_allele) = allele_field
-        .split_once('>')
-        .ok_or_else(|| format!("Variant allele field is not REF>ALT in '{variant_name}'"))?;
+        .ok_or_else(|| missing_data_error("variant allele field", variant_name))?;
+    let (ref_allele, alt_allele) = allele_field.split_once('>').ok_or_else(|| {
+        invalid_data_error(format!(
+            "variant allele field is not REF>ALT in '{variant_name}'"
+        ))
+    })?;
     Ok((ref_allele.to_string(), alt_allele.to_string()))
 }
 
@@ -560,8 +566,14 @@ fn get_fp_bases(
                 let this_read_positions = read_positions[read].clone();
                 let read_nodes = read_edges
                     .get(read)
-                    .ok_or("key not found: read in read_edges")?;
-                assert!(this_read_positions.len() == read_nodes.len());
+                    .ok_or_else(|| missing_data_error("read in read_edges", read))?;
+                if this_read_positions.len() != read_nodes.len() {
+                    return Err(invalid_data_error(format!(
+                        "Read '{read}' has {} fingerprint positions but {} fingerprint nodes while collecting allele fingerprint bases",
+                        this_read_positions.len(),
+                        read_nodes.len()
+                    )));
+                }
                 for (j, this_fp) in read_nodes.iter().enumerate() {
                     let fp_index_on_allele = j + *fp_index as usize;
                     if *this_fp > 0
@@ -578,9 +590,9 @@ fn get_fp_bases(
                             .or_default()
                             .insert(read_new_name.clone());
                         if read_info.contains_key(&read_new_name) {
-                            let read_bases = read_info.get(&read_new_name).ok_or(format!(
-                                "key not found: read_new_name {read_new_name:?} in read_info"
-                            ))?;
+                            let read_bases = read_info
+                                .get(&read_new_name)
+                                .ok_or_else(|| missing_data_error("read bases", &read_new_name))?;
                             if !nonunique_reads.contains(read) {
                                 for (pos, base) in read_bases.iter() {
                                     bases
@@ -631,14 +643,14 @@ pub fn get_read_position_in_allele(
     for allele in alleles {
         let allele_len = allele.len();
         if supporting_reads.contains_key(&allele) {
-            let allele_reads = supporting_reads
-                .get(&allele)
-                .ok_or("key not found: allele in supporting_reads")?;
+            let allele_reads = supporting_reads.get(&allele).ok_or_else(|| {
+                missing_data_error("allele in supporting_reads", format!("{allele:?}"))
+            })?;
             for read in allele_reads {
                 if read_edges.contains_key(read) {
                     let read_nodes = read_edges
                         .get(read)
-                        .ok_or("key not found: read in read_edges")?;
+                        .ok_or_else(|| missing_data_error("read in read_edges", read))?;
                     let read_nodes_len = read_nodes.len();
                     let mut found_match = false;
                     // allele incomplete. read can start earlier than allele
@@ -883,6 +895,13 @@ pub fn make_data_for_alleles(
 
                 let this_read_nodes = read_edges[read].clone();
                 let this_read_positions = read_positions[read].clone();
+                if this_read_nodes.len() != this_read_positions.len() {
+                    return Err(invalid_data_error(format!(
+                        "Read '{read}' has {} fingerprint nodes but {} fingerprint positions while mapping variant support onto alleles",
+                        this_read_nodes.len(),
+                        this_read_positions.len()
+                    )));
+                }
                 let mut read_map_index = 0;
                 for (read_node, read_position) in
                     this_read_nodes.iter().zip(this_read_positions.iter())
@@ -896,7 +915,7 @@ pub fn make_data_for_alleles(
                         if read_info.contains_key(&new_read_name) {
                             let this_read_bases = read_info
                                 .get(&new_read_name)
-                                .ok_or("key not found: new_read_name in read_info")?;
+                                .ok_or_else(|| missing_data_error("read bases", &new_read_name))?;
                             for (variant_index, pos) in all_var_pos.iter().enumerate() {
                                 let expected_variant_old = &all_var_sorted[variant_index];
                                 let (expected_ref, expected_variant) =
@@ -919,7 +938,9 @@ pub fn make_data_for_alleles(
                                     .parse::<i32>()?;
                                 let tid = this_read_bases
                                     .first_key_value()
-                                    .ok_or("Read bases map is unexpectedly empty while plotting variants")?
+                                    .ok_or_else(|| invalid_data_error(format!(
+                                        "read bases map is empty while plotting variants for '{new_read_name}'"
+                                    )))?
                                     .0
                                      .0;
                                 let ref_name = ref_reader.seq_name(tid as i32)?;
@@ -931,9 +952,15 @@ pub fn make_data_for_alleles(
                                     trace!("read {new_read_name:?} node {read_node} {expected_variant_old:?}, ({tid}, {pos}) not in this_read_bases");
                                     read_line.push(2);
                                 } else if variant_tid == tid {
-                                    let this_read_base = this_read_bases
-                                        .get(&(tid, *pos))
-                                        .ok_or("index not found in this_read_bases")?;
+                                    let this_read_base =
+                                        this_read_bases.get(&(tid, *pos)).ok_or_else(|| {
+                                            missing_data_error(
+                                                "read base at requested tid/position",
+                                                format!(
+                                                    "read '{new_read_name}', tid {tid}, pos {pos}"
+                                                ),
+                                            )
+                                        })?;
                                     let this_read_base_string =
                                         std::str::from_utf8(this_read_base)?.to_string();
                                     if this_read_base_string == expected_variant {
@@ -957,7 +984,6 @@ pub fn make_data_for_alleles(
                         }
                     }
                 }
-                assert_eq!(read_map_index, this_read_nodes.len() as i32);
                 let mut beginning_unknown: usize = 0;
                 for a in &read_line {
                     if *a == 2 {
@@ -972,20 +998,22 @@ pub fn make_data_for_alleles(
                 if start_position == 0 {
                     let first_node = this_read_nodes
                         .first()
-                        .ok_or("first not found in this_read_nodes")?;
+                        .ok_or_else(|| missing_data_error("first fingerprint node", read))?;
                     if *first_node < 0 && *first_node > -10 {
                         read_line_new.insert(0, 4);
                     }
                 }
                 let last_node = this_read_nodes
                     .last()
-                    .ok_or("last not found in this_read_nodes")?;
+                    .ok_or_else(|| missing_data_error("last fingerprint node", read))?;
                 if *last_node <= -10 {
                     read_line_new.push(4);
                 } else {
                     while *read_line_new
                         .last()
-                        .ok_or("last not found in read_line_new")?
+                        .ok_or_else(|| invalid_data_error(format!(
+                            "trimmed read line is unexpectedly empty while plotting variants for read '{read}'"
+                        )))?
                         == 2
                     {
                         read_line_new.pop();

@@ -2,7 +2,7 @@ use crate::bam_operation::start_pos_on_read;
 use crate::realignment::utilities::{AlleleType, Variant, VariantType};
 use crate::realignment::wfa_graph::{NodeAlleleMap, WFAGraph, WFAResult};
 use crate::repeat_unit::fingerprint::ReadParameters;
-use crate::util::RegionCoordinates;
+use crate::util::{invalid_data_error, RegionCoordinates};
 use log::{debug, trace};
 use paraphase::detail::util::DError;
 use rust_htslib::bam;
@@ -41,8 +41,8 @@ pub fn force_call_kiv2(
     bam_reader
         .fetch((&ref_name, 0, (region_coordinates.repeat_len as i64)))
         .map_err(|e| {
-            std::io::Error::other(format!(
-                "Failed to fetch KIV2 force-call region 0-{} on {ref_name}: {e}",
+            invalid_data_error(format!(
+                "failed to fetch KIV2 force-call region 0-{} on {ref_name}: {e}",
                 region_coordinates.repeat_len
             ))
         })?;
@@ -105,8 +105,8 @@ pub fn force_call_d4z4(
     bam_reader
         .fetch((&ref_name, 0, (region_coordinates.repeat_len as i64)))
         .map_err(|e| {
-            std::io::Error::other(format!(
-                "Failed to fetch D4Z4 force-call region 0-{} on {ref_name}: {e}",
+            invalid_data_error(format!(
+                "failed to fetch D4Z4 force-call region 0-{} on {ref_name}: {e}",
                 region_coordinates.repeat_len
             ))
         })?;
@@ -349,8 +349,8 @@ pub fn global_realignment(
             500,
         )
         .map_err(|e| {
-            std::io::Error::other(format!(
-                "Failed to build WFA graph for segment {segment_name} over reference range {min_position}-{max_position}: {e}"
+            invalid_data_error(format!(
+                "failed to build WFA graph for segment {segment_name} over reference range {min_position}-{max_position}: {e}"
             ))
         })?;
 
