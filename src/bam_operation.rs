@@ -1,7 +1,7 @@
 use crate::methylation::{get_methyl_prob, get_methyl_tags};
 use crate::util::{
-    append_kivvi_pg_header, resolve_chrom_name_from_header, DError, DResult, FlankReads,
-    RegionCoordinates,
+    append_kivvi_pg_header, missing_data_error, resolve_chrom_name_from_header, DError, DResult,
+    FlankReads, RegionCoordinates,
 };
 use log::{debug, trace, warn};
 use minimap2::Built;
@@ -555,12 +555,18 @@ pub fn get_start_end_d4z4(
     let mut starting_segments_flank = HashSet::new();
     let mut ending_segments_flank = HashSet::new();
     let mut bam_reader = bam::IndexedReader::from_path(bam_name)?;
-    let start_positions_flank = region_coordinates.start_positions_flank.ok_or(
-        "D4Z4 region is missing configured start flank positions for clipped-read detection",
-    )?;
-    let end_positions_flank = region_coordinates.end_positions_flank.ok_or(
-        "D4Z4 region is missing configured end flank positions for clipped-read detection",
-    )?;
+    let start_positions_flank = region_coordinates.start_positions_flank.ok_or_else(|| {
+        missing_data_error(
+            "configured start flank positions",
+            "D4Z4 clipped-read detection",
+        )
+    })?;
+    let end_positions_flank = region_coordinates.end_positions_flank.ok_or_else(|| {
+        missing_data_error(
+            "configured end flank positions",
+            "D4Z4 clipped-read detection",
+        )
+    })?;
     let ref_reader = faidx::Reader::from_path(reference)?;
     let ref_name = ref_reader.seq_name(0)?;
 
@@ -582,7 +588,8 @@ pub fn get_start_end_d4z4(
         let qname = std::str::from_utf8(record.qname())?.to_string();
         let _this_read_length = *read_length
             .get(&qname)
-            .ok_or("key not found in read_length")? as i32;
+            .ok_or_else(|| missing_data_error("read length", &qname))?
+            as i32;
         let segment_name = format!("{qname}:{}:{}", read_start_pos, alignment_len);
         if (reference_end_pos as usize) > region_coordinates.repeat_len + 50 {
             ending_reads_flank.insert(qname);
@@ -734,7 +741,9 @@ pub fn tag_reads(
         let reference_end_pos = &record.reference_end();
         let new_name = format!("{qname}:{}", read_start_pos);
         if grouped_reads.contains_key(&new_name) {
-            let hp_tag = grouped_reads.get(&new_name).ok_or("key not found")?;
+            let hp_tag = grouped_reads
+                .get(&new_name)
+                .ok_or_else(|| missing_data_error("grouped read fingerprint", &new_name))?;
             if hp_tag == &0 {
                 if *reference_start_pos < 10
                     && *reference_end_pos > (region_coordinates.repeat_len as i64) - 10

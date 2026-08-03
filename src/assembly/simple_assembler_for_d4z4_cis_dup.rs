@@ -1,5 +1,5 @@
 use crate::assembly::assembler::{AssemblyResult, FpGraph};
-use crate::util::DError;
+use crate::util::{missing_data_error, DError};
 use log::debug;
 use std::collections::BTreeMap;
 
@@ -185,14 +185,16 @@ impl FpGraph {
     /// # Returns
     /// * `Vec<Vec<i32>>` - extended haplotypes
     fn assemble_next_simple(&self, this_hap: Vec<i32>) -> Result<Vec<Vec<i32>>, DError> {
-        let last_unit = this_hap.last().ok_or("last not found")?;
+        let last_unit = this_hap
+            .last()
+            .ok_or_else(|| missing_data_error("last haplotype node", format!("{this_hap:?}")))?;
         if !self.next_per_node.contains_key(last_unit) {
             return Ok(vec![]);
         }
         let next_nodes = &self
             .next_per_node
             .get(last_unit)
-            .ok_or("key not found in next_per_node")?
+            .ok_or_else(|| missing_data_error("next nodes", format!("node {last_unit}")))?
             .iter()
             .map(|x| *x)
             .collect::<Vec<_>>();
@@ -222,14 +224,16 @@ impl FpGraph {
     /// # Returns
     /// * `Vec<Vec<i32>>` - extended haplotypes
     fn assemble_prev_simple(&self, this_hap: Vec<i32>) -> Result<Vec<Vec<i32>>, DError> {
-        let first_unit = this_hap.first().ok_or("last not found")?;
+        let first_unit = this_hap
+            .first()
+            .ok_or_else(|| missing_data_error("first haplotype node", format!("{this_hap:?}")))?;
         if !self.previous_per_node.contains_key(first_unit) {
             return Ok(vec![]);
         }
         let prev_nodes = &self
             .previous_per_node
             .get(first_unit)
-            .ok_or("key not found in previous_per_node")?
+            .ok_or_else(|| missing_data_error("previous nodes", format!("node {first_unit}")))?
             .iter()
             .map(|x| *x)
             .collect::<Vec<_>>();

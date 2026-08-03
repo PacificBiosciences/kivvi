@@ -1047,7 +1047,7 @@ pub fn handle_last_d4z4_long_insertion(
         .variants_to_call
         .last()
         .cloned()
-        .ok_or("missing d4z4 forced-call variant")?;
+        .ok_or_else(|| missing_data_error("d4z4 forced-call variant", "last variant to call"))?;
 
     let long_insertion_variant_codes =
         find_long_insertion_variant_codes(&fp_info, &[long_insertion_variant]);
@@ -1062,9 +1062,12 @@ pub fn handle_last_d4z4_long_insertion(
                 let matching_unit_fps =
                     find_matching_units_for_insertion(&fp_info, unit_fp, *index);
                 if matching_unit_fps.len() == 1 {
-                    let matching_unit_fp = matching_unit_fps
-                        .first()
-                        .ok_or("Expected exactly one matching unit fingerprint")?;
+                    let matching_unit_fp = matching_unit_fps.first().ok_or_else(|| {
+                        missing_data_error(
+                            "matching unit fingerprint",
+                            format!("long insertion unit {unit_name:?}"),
+                        )
+                    })?;
                     debug!("Found matching unit {matching_unit_fp:?} for {unit_name:?}");
                     new_replace.entry(*unit_name).or_insert(*matching_unit_fp);
                 }
@@ -1117,8 +1120,14 @@ pub fn rm_redundant_finger_prints(
         for (hap2_name, hap2) in fp_info.good_name_to_seq.iter() {
             if hap1 != hap2 {
                 let (num_diff, diff_sites) = edit_dis(hap1, hap2, false);
-                let count1 = fp_info.fp_count.get(hap1).ok_or("haplotype not found")?;
-                let count2 = fp_info.fp_count.get(hap2).ok_or("haplotype not found")?;
+                let count1 = fp_info
+                    .fp_count
+                    .get(hap1)
+                    .ok_or_else(|| missing_data_error("haplotype count", format!("{hap1:?}")))?;
+                let count2 = fp_info
+                    .fp_count
+                    .get(hap2)
+                    .ok_or_else(|| missing_data_error("haplotype count", format!("{hap2:?}")))?;
                 trace!("{hap1_name}: count {count1}, vs. {hap2_name}: count {count2}, {num_diff} mismatches at sites {diff_sites:?}");
                 // require count difference
                 if num_diff < 2 && *count1 <= max_read_count_to_correct && *count2 >= *count1 * 2 {
@@ -1160,9 +1169,12 @@ pub fn rm_redundant_finger_prints(
             }
         }
         if hap1_candidate_list.len() == 1 {
-            let to_replace_hap1 = hap1_candidate_list
-                .first()
-                .ok_or("first not found in hap1_candidate_list")?;
+            let to_replace_hap1 = hap1_candidate_list.first().ok_or_else(|| {
+                missing_data_error(
+                    "first haplotype replacement candidate",
+                    format!("{hap1_candidate_list:?}"),
+                )
+            })?;
             let reads1 = fp_info
                 .read_edges
                 .clone()
@@ -1194,7 +1206,9 @@ pub fn rm_redundant_finger_prints(
         let mut new_fps = Vec::new();
         for fp in read_fps {
             if new_replace.contains_key(fp) {
-                let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
+                let to_replace = new_replace
+                    .get(fp)
+                    .ok_or_else(|| missing_data_error("fingerprint replacement", fp.to_string()))?;
                 new_fps.push(*to_replace);
             } else {
                 new_fps.push(*fp);
@@ -1210,7 +1224,9 @@ pub fn rm_redundant_finger_prints(
 
     for (each_segment, fp) in fp_info.grouped_reads.iter() {
         if new_replace.contains_key(fp) {
-            let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
+            let to_replace = new_replace
+                .get(fp)
+                .ok_or_else(|| missing_data_error("fingerprint replacement", fp.to_string()))?;
             new_grouped_reads
                 .entry(each_segment.to_string())
                 .or_insert(*to_replace);

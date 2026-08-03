@@ -1,5 +1,5 @@
 use crate::bam_operation::start_pos_on_read;
-use crate::util::DError;
+use crate::util::{missing_data_error, DError};
 use log::{debug, trace};
 use rust_htslib::bam::{self, ext::BamRecordExtensions, record::Cigar, Writer};
 use rust_htslib::faidx;
@@ -410,18 +410,16 @@ pub fn get_longest_insertion_deletion(record: &bam::Record) -> Result<(i64, i64)
     let ins_length = if insertion_lengths.is_empty() {
         0
     } else {
-        *insertion_lengths
-            .iter()
-            .max()
-            .ok_or("max not found in insertion_lengths")?
+        *insertion_lengths.iter().max().ok_or_else(|| {
+            missing_data_error("maximum insertion length", "non-empty insertion_lengths")
+        })?
     };
     let del_length = if deletion_lengths.is_empty() {
         0
     } else {
-        *deletion_lengths
-            .iter()
-            .max()
-            .ok_or("max not found in deletion_lengths")?
+        *deletion_lengths.iter().max().ok_or_else(|| {
+            missing_data_error("maximum deletion length", "non-empty deletion_lengths")
+        })?
     };
     Ok((ins_length, del_length))
 }

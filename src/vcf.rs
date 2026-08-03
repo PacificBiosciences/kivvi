@@ -1,4 +1,6 @@
-use crate::util::{DError, DResult, RegionCoordinates, FULL_VERSION};
+use crate::util::{
+    invalid_data_error, missing_data_error, DError, DResult, RegionCoordinates, FULL_VERSION,
+};
 use crate::variant::VariantInfoByVariant;
 use itertools::Itertools;
 use rust_htslib::bcf::{self, record::GenotypeAllele, Format};
@@ -67,7 +69,9 @@ pub fn write_vcf(
         .map_err(|_| format!("Invalid VCF output path: {}", output_path.display()))?;
 
     for variant in all_var_sorted {
-        let variant_info = variant_summary.get(&variant).ok_or("key not found")?;
+        let variant_info = variant_summary
+            .get(&variant)
+            .ok_or_else(|| missing_data_error("variant summary entry", &variant))?;
         let mut record = writer.empty_record();
         let parsed_variant = parse_variant_key(&variant)?;
 
@@ -130,7 +134,9 @@ fn encode_ru_field(results: Vec<VariantInfoByVariant>) -> Result<(String, HashSe
                 .split_terminator('.')
                 .next()
                 .ok_or_else(|| {
-                    format!("Unexpected allele name format in RU field: '{allele_name_string}'")
+                    invalid_data_error(format!(
+                        "Unexpected allele name format in RU field: '{allele_name_string}'"
+                    ))
                 })?
                 .parse::<i64>()
                 .map_err(|e| {
@@ -168,15 +174,17 @@ fn parse_variant_key(variant: &str) -> Result<ParsedVariantKey<'_>, DError> {
     let mut fields = variant.split_terminator(':');
     let position = fields
         .next()
-        .ok_or_else(|| format!("Variant key is missing a position: '{variant}'"))?
+        .ok_or_else(|| missing_data_error("variant key position", variant))?
         .parse::<i64>()
         .map_err(|e| format!("Failed to parse variant position from '{variant}': {e}"))?;
     let allele_field = fields
         .next_back()
-        .ok_or_else(|| format!("Variant key is missing an allele field: '{variant}'"))?;
-    let (ref_base, alt_base) = allele_field
-        .split_once('>')
-        .ok_or_else(|| format!("Variant allele field is not REF>ALT in '{variant}'"))?;
+        .ok_or_else(|| missing_data_error("variant key allele field", variant))?;
+    let (ref_base, alt_base) = allele_field.split_once('>').ok_or_else(|| {
+        invalid_data_error(format!(
+            "Variant allele field is not REF>ALT in '{variant}'"
+        ))
+    })?;
     Ok(ParsedVariantKey {
         position,
         ref_base,
