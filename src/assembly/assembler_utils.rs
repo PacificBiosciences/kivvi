@@ -154,14 +154,15 @@ pub fn filter_complete_alleles(
                                     }
                                     let this_pos = i_index + q;
                                     if repeat_pos.contains_key(&this_pos) {
-                                        let repeat_size = repeat_pos.get(&this_pos).unwrap();
-                                        let end_pos = q + *repeat_size + 2;
-                                        if end_pos <= read_nodes_len {
-                                            if !read_nodes[q..end_pos].contains(&0) {
-                                                repeat_pos_support
-                                                    .entry(this_pos)
-                                                    .or_default()
-                                                    .push(read_nodes.clone());
+                                        if let Some(repeat_size) = repeat_pos.get(&this_pos) {
+                                            let end_pos = q + *repeat_size + 2;
+                                            if end_pos <= read_nodes_len {
+                                                if !read_nodes[q..end_pos].contains(&0) {
+                                                    repeat_pos_support
+                                                        .entry(this_pos)
+                                                        .or_default()
+                                                        .push(read_nodes.clone());
+                                                }
                                             }
                                         }
                                     }
@@ -278,15 +279,16 @@ pub fn filter_complete_alleles(
                     && num_suspicious_reads > 1
                     && !better_support
                 {
-                    let forward_pos = suspicious_forward.first_key_value().unwrap().0;
-                    let reverse_pos = suspicious_reverse.first_key_value().unwrap().0;
-                    if !good_support {
-                        if *reverse_pos <= *forward_pos - 1 {
-                            debug!("allele {allele:?} is suspicious because not every site is supported by reads linking the next two sites, and it has two suspicious sites, one with forward-matching suspicous reads and one with reverse-matching suspicious reads.");
-                            suspicious_complete_alleles.push(allele.clone());
-                        }
-                    } else {
-                        if *reverse_pos == *forward_pos - 2
+                    if let (Some((forward_pos, _)), Some((reverse_pos, _))) = (
+                        suspicious_forward.first_key_value(),
+                        suspicious_reverse.first_key_value(),
+                    ) {
+                        if !good_support {
+                            if *reverse_pos <= *forward_pos - 1 {
+                                debug!("allele {allele:?} is suspicious because not every site is supported by reads linking the next two sites, and it has two suspicious sites, one with forward-matching suspicous reads and one with reverse-matching suspicious reads.");
+                                suspicious_complete_alleles.push(allele.clone());
+                            }
+                        } else if *reverse_pos == *forward_pos - 2
                             && (*reverse_pos > allele.len() - 4
                                 || sites_supported_by_four.contains(reverse_pos))
                             && (*forward_pos > allele.len() - 4
@@ -299,23 +301,23 @@ pub fn filter_complete_alleles(
                         }
                     }
                 } else if suspicious_forward.is_empty() && suspicious_reverse.len() == 1 {
-                    let suspicious_site = suspicious_reverse.keys().next().unwrap();
-                    let suspicious_site_num_reads =
-                        suspicious_reverse.get(suspicious_site).unwrap().len();
-                    debug!("only one suspicious_site at index {suspicious_site:?} with {suspicious_site_num_reads} suspicious reads");
-                    if *suspicious_site > allele.len() - 4
-                        || sites_supported_by_four.contains(suspicious_site)
-                    {
-                        continue;
-                    }
-                    if *suspicious_site > allele.len() - 3
-                        || sites_supported_by_three.contains(suspicious_site)
-                    {
-                        continue;
-                    }
-                    if suspicious_site_num_reads >= 3 {
-                        debug!("allele {allele:?} is suspicious because the suspicious site is not supported by reads linking the next two or three sites.");
-                        suspicious_complete_alleles.push(allele.clone());
+                    if let Some((suspicious_site, reads)) = suspicious_reverse.first_key_value() {
+                        let suspicious_site_num_reads = reads.len();
+                        debug!("only one suspicious_site at index {suspicious_site:?} with {suspicious_site_num_reads} suspicious reads");
+                        if *suspicious_site > allele.len() - 4
+                            || sites_supported_by_four.contains(suspicious_site)
+                        {
+                            continue;
+                        }
+                        if *suspicious_site > allele.len() - 3
+                            || sites_supported_by_three.contains(suspicious_site)
+                        {
+                            continue;
+                        }
+                        if suspicious_site_num_reads >= 3 {
+                            debug!("allele {allele:?} is suspicious because the suspicious site is not supported by reads linking the next two or three sites.");
+                            suspicious_complete_alleles.push(allele.clone());
+                        }
                     }
                 } else if num_suspicious_reads >= 5 && !good_support {
                     debug!("allele {allele:?} is suspicious because it has at least 5 suspicious reads, and not every site is supported by reads linking the next two sites.");
@@ -339,24 +341,25 @@ pub fn filter_complete_alleles(
             let overlapping_haps_loose = find_overlapping_alleles(haps_to_assess, Some(7))?.1;
             for (hap1, hap1_overlaps) in overlapping_haps.iter() {
                 if complete_alleles.contains(hap1) && !suspicious_complete_alleles.contains(hap1) {
-                    let this_overlaps_loose = overlapping_haps_loose.get(hap1).unwrap();
-                    let this_overlaps_loose_count = this_overlaps_loose.len();
-                    let mut overlap_count = 0;
-                    for (hap2, overlap_len) in this_overlaps_loose.iter() {
-                        if !redundant_haplotype_allowed(hap1, hap2, overlap_len)? {
-                            overlap_count += 1;
-                        }
-                    }
-                    if overlap_count > 0 && this_overlaps_loose_count > 1 {
-                        debug!(
-                        "Complete haplotype {hap1:?} is suspicious because it has {this_overlaps_loose_count} loose overlapping haplotypes, {overlap_count} of them are not redundant");
-                        suspicious_complete_alleles.push(hap1.clone());
-                    } else {
-                        for (hap2, overlap_len) in hap1_overlaps.iter() {
+                    if let Some(this_overlaps_loose) = overlapping_haps_loose.get(hap1) {
+                        let this_overlaps_loose_count = this_overlaps_loose.len();
+                        let mut overlap_count = 0;
+                        for (hap2, overlap_len) in this_overlaps_loose.iter() {
                             if !redundant_haplotype_allowed(hap1, hap2, overlap_len)? {
-                                debug!(
-                                    "Complete haplotype {hap1:?} is suspicious because it is overlapping with another haplotype {hap2:?}");
-                                suspicious_complete_alleles.push(hap1.clone());
+                                overlap_count += 1;
+                            }
+                        }
+                        if overlap_count > 0 && this_overlaps_loose_count > 1 {
+                            debug!(
+                            "Complete haplotype {hap1:?} is suspicious because it has {this_overlaps_loose_count} loose overlapping haplotypes, {overlap_count} of them are not redundant");
+                            suspicious_complete_alleles.push(hap1.clone());
+                        } else {
+                            for (hap2, overlap_len) in hap1_overlaps.iter() {
+                                if !redundant_haplotype_allowed(hap1, hap2, overlap_len)? {
+                                    debug!(
+                                        "Complete haplotype {hap1:?} is suspicious because it is overlapping with another haplotype {hap2:?}");
+                                    suspicious_complete_alleles.push(hap1.clone());
+                                }
                             }
                         }
                     }
@@ -467,12 +470,10 @@ pub fn get_repeat(allele: &Vec<i32>) -> BTreeMap<usize, usize> {
 /// # Returns
 /// * `bool` - true if spanning, false otherwise
 pub fn check_spanning(read_nodes: &Vec<i32>) -> bool {
-    let first_node = read_nodes.first().unwrap();
-    let last_node = read_nodes.last().unwrap();
-    if *first_node < 0 && *last_node < 0 {
-        return true;
-    }
-    false
+    let (Some(first_node), Some(last_node)) = (read_nodes.first(), read_nodes.last()) else {
+        return false;
+    };
+    *first_node < 0 && *last_node < 0
 }
 
 /// Return whether two haplotypes (can be different length) are matching.

@@ -442,9 +442,18 @@ fn merge_two_partial_alleles(
     let cyclic_nodes = &fp_graph.cyclic_nodes;
     let grouped_reads = &fp_info.grouped_reads;
 
-    let allele1 = alleles[0].clone();
-    let allele2 = alleles[1].clone();
-    let allele2_end = allele2.split("-").map(|x| x.to_string()).last().unwrap();
+    let Some(allele1) = alleles.first().cloned() else {
+        return (0, String::new(), String::from(">=0"));
+    };
+    let Some(allele2) = alleles.get(1).cloned() else {
+        let allele_size = allele1.split("-").filter(|x| !x.contains("Flank")).count();
+        return (0, allele1, format!(">={allele_size}"));
+    };
+    let allele2_end = allele2
+        .split("-")
+        .last()
+        .unwrap_or("RightFlank")
+        .to_string();
     let ct1 = allele1
         .split("-")
         .map(|x| x.to_string())
@@ -452,7 +461,7 @@ fn merge_two_partial_alleles(
         .collect::<Vec<String>>();
     let mut ct1 = ct1
         .iter()
-        .map(|x| x.parse::<i32>().unwrap())
+        .filter_map(|x| x.parse::<i32>().ok())
         .collect::<Vec<i32>>();
     let ct2 = allele2
         .split("-")
@@ -461,7 +470,7 @@ fn merge_two_partial_alleles(
         .collect::<Vec<String>>();
     let mut ct2 = ct2
         .iter()
-        .map(|x| x.parse::<i32>().unwrap())
+        .filter_map(|x| x.parse::<i32>().ok())
         .collect::<Vec<i32>>();
     let min_len = cmp::min(ct1.len(), ct2.len());
     // overlapping
@@ -494,12 +503,14 @@ fn merge_two_partial_alleles(
                 .iter()
                 .filter(|(_, v)| **v == cyclic_node)
                 .count();
-            let cyclic_node_cn = cyclic_nodes
+            let Some(cyclic_node_cn) = cyclic_nodes
                 .get(&cyclic_node)
-                .unwrap()
-                .iter()
-                .max()
-                .unwrap();
+                .and_then(|copy_numbers| copy_numbers.iter().max())
+            else {
+                let new_ct = [&ct1[..], &ct2[ovl_len..]].concat();
+                let allele_size = new_ct.len();
+                return (ovl_len, alleles.join("..."), format!(">={allele_size}"));
+            };
             debug!("cyclic_node {cyclic_node} cyclic_node_depth {cyclic_node_depth} cyclic_node_cn {cyclic_node_cn}");
             if cyclic_node_depth <= 40 && *cyclic_node_cn >= 3 {
                 while let Some(&last_element) = ct1.last() {
@@ -544,11 +555,10 @@ fn is_qal_allele(allele: &String, qal_units: &Vec<i32>) -> bool {
     let hap = allele
         .split("-")
         .filter(|x| !x.contains("Flank"))
-        .map(|x| x.parse::<i32>().unwrap())
+        .filter_map(|x| x.parse::<i32>().ok())
         .collect::<Vec<i32>>();
 
-    if !hap.is_empty() {
-        let last_unit_before_end = hap.last().unwrap();
+    if let Some(last_unit_before_end) = hap.last() {
         if qal_units.contains(last_unit_before_end) {
             return true;
         }
@@ -577,27 +587,35 @@ fn get_allele_summary(
     let mut sorted_alleles = alleles.clone();
     sorted_alleles.sort_by(|a, b| b.contains("LeftFlank").cmp(&a.contains("LeftFlank")));
     debug!("sorted_alleles {:?}", sorted_alleles);
-    distal_alleles_handled.push(sorted_alleles[1].clone());
-    proximal_alleles_handled.push(sorted_alleles[0].clone());
-    let ending_in_qal = is_qal_allele(&sorted_alleles[1], qal_units);
-    let chr_info = if all_starts_hap_backgrounds.contains_key(&sorted_alleles[0]) {
-        all_starts_hap_backgrounds.get(&sorted_alleles[0]).unwrap()
-    } else {
-        &String::from("unknown")
-    };
-    let polya_info = if all_ends_hap_backgrounds.contains_key(&sorted_alleles[1]) {
-        all_ends_hap_backgrounds.get(&sorted_alleles[1]).unwrap()
-    } else {
-        &String::from("unknown")
-    };
-    let methylation_value = get_methylation_value(&sorted_alleles[1], methyl_values, None)?;
+    let proximal_allele = sorted_alleles.first().ok_or_else(|| {
+        std::io::Error::other(
+            "Unable to summarize merged allele because no proximal allele was provided",
+        )
+    })?;
+    let distal_allele = sorted_alleles.get(1).ok_or_else(|| {
+        std::io::Error::other(format!(
+            "Unable to summarize merged allele for {sorted_alleles:?} because the distal allele is missing"
+        ))
+    })?;
+    distal_alleles_handled.push(distal_allele.clone());
+    proximal_alleles_handled.push(proximal_allele.clone());
+    let ending_in_qal = is_qal_allele(distal_allele, qal_units);
+    let chr_info = all_starts_hap_backgrounds
+        .get(proximal_allele)
+        .cloned()
+        .unwrap_or_else(|| String::from("unknown"));
+    let polya_info = all_ends_hap_backgrounds
+        .get(distal_allele)
+        .cloned()
+        .unwrap_or_else(|| String::from("unknown"));
+    let methylation_value = get_methylation_value(distal_allele, methyl_values, None)?;
 
     let (_ovl_len, allele_name, allele_size) =
         merge_two_partial_alleles(&sorted_alleles, fp_graph, fp_info);
     Ok(AlleleSummary {
         allele_name: allele_name,
-        chromosome: chr_info.clone().replace("chromosome_unknown", "unknown"),
-        distal_haplotype: polya_info.clone(),
+        chromosome: chr_info.replace("chromosome_unknown", "unknown"),
+        distal_haplotype: polya_info,
         allele_type: String::from("merged"),
         allele_size: allele_size,
         methylation: methylation_value,
@@ -940,10 +958,11 @@ fn analyze_partial_alleles(
         if !complete_hap_backgrounds.contains_key(allele) {
             partial_allele_starts += 1;
             let allele_type = classify_partial_allele(allele, variants, region_coordinates)?;
-            debug!(
-                "{allele} {} allele_type {allele_type}",
-                all_starts_hap_backgrounds.get(allele).unwrap()
-            );
+            if let Some(background) = all_starts_hap_backgrounds.get(allele) {
+                debug!("{allele} {background} allele_type {allele_type}");
+            } else {
+                debug!("{allele} background_missing allele_type {allele_type}");
+            }
             allele_match
                 .entry(allele_type)
                 .or_default()
@@ -963,10 +982,11 @@ fn analyze_partial_alleles(
         if !complete_hap_backgrounds.contains_key(allele) && !is_cis_dup {
             partial_allele_ends += 1;
             let allele_type = classify_partial_allele(allele, variants, region_coordinates)?;
-            debug!(
-                "{allele} {} allele_type {allele_type}",
-                all_ends_hap_backgrounds.get(allele).unwrap()
-            );
+            if let Some(background) = all_ends_hap_backgrounds.get(allele) {
+                debug!("{allele} {background} allele_type {allele_type}");
+            } else {
+                debug!("{allele} background_missing allele_type {allele_type}");
+            }
             allele_match
                 .entry(allele_type)
                 .or_default()
@@ -1328,7 +1348,10 @@ fn handle_four_partial_alleles_group(
             }
         }
 
-        let background = all_ends_hap_backgrounds.get(allele).unwrap().clone();
+        let Some(background) = all_ends_hap_backgrounds.get(allele).cloned() else {
+            debug!("Skipping partial allele {allele} because distal background is missing");
+            continue;
+        };
         let methylation_value = get_methylation_value(allele, methyl_values, None)?;
         let ending_in_qal = is_qal_allele(allele, &qal_units.to_vec());
         debug!("adding partial allele {allele} with a minimum size estimate based on two possible proximal ends");
@@ -1495,7 +1518,7 @@ fn handle_remaining_distal_alleles(
                 context.all_start_min_size
             );
             let total_size = allele_size + context.all_start_min_size;
-            let first_node = allele.split("-").next().unwrap().to_string();
+            let first_node = allele.split("-").next().unwrap_or_default().to_string();
             let allele_size = if context.all_start_alleles_last_nodes.contains(&first_node) {
                 format!(">={total_size}")
             } else {

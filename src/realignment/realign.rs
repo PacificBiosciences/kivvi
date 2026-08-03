@@ -40,7 +40,12 @@ pub fn force_call_kiv2(
     let mut bam_reader = bam::IndexedReader::from_path(realigned_bam)?;
     bam_reader
         .fetch((&ref_name, 0, (region_coordinates.repeat_len as i64)))
-        .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
+        .map_err(|e| {
+            std::io::Error::other(format!(
+                "Failed to fetch KIV2 force-call region 0-{} on {ref_name}: {e}",
+                region_coordinates.repeat_len
+            ))
+        })?;
     for read_entry in bam_reader.records() {
         let mut read = read_entry?;
         //build out the cigar info
@@ -99,7 +104,12 @@ pub fn force_call_d4z4(
     let mut bam_reader = bam::IndexedReader::from_path(realigned_bam)?;
     bam_reader
         .fetch((&ref_name, 0, (region_coordinates.repeat_len as i64)))
-        .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
+        .map_err(|e| {
+            std::io::Error::other(format!(
+                "Failed to fetch D4Z4 force-call region 0-{} on {ref_name}: {e}",
+                region_coordinates.repeat_len
+            ))
+        })?;
     for read_entry in bam_reader.records() {
         let mut read = read_entry?;
         //build out the cigar info
@@ -257,7 +267,9 @@ pub fn global_realignment(
     }
 
     // convert into a non-option
-    let first_overlap: usize = first_overlap.unwrap();
+    let Some(first_overlap) = first_overlap else {
+        return Ok(vec![b'x'; total_num_pos]);
+    };
     assert_eq!(num_overlaps, last_overlap - first_overlap);
 
     // check for homozygous variants also
@@ -280,8 +292,16 @@ pub fn global_realignment(
     assert_eq!(read_sequence.len(), read_qualities.len());
 
     // these should always exist based on how we set it up
-    let read_start: usize = *coordinate_lookup.get(&min_position).unwrap() as usize;
-    let mut read_end: usize = *coordinate_lookup.get(&max_position).unwrap() as usize;
+    let Some(read_start) = coordinate_lookup.get(&min_position).copied() else {
+        debug!("missing read start coordinate for segment {segment_name} at {min_position}");
+        return Ok(vec![b'x'; total_num_pos]);
+    };
+    let Some(read_end) = coordinate_lookup.get(&max_position).copied() else {
+        debug!("missing read end coordinate for segment {segment_name} at {max_position}");
+        return Ok(vec![b'x'; total_num_pos]);
+    };
+    let read_start: usize = read_start as usize;
+    let mut read_end: usize = read_end as usize;
 
     // consider soft clip site
     if clip_variant_sites.contains_key(&adj_pos) {
@@ -328,7 +348,11 @@ pub fn global_realignment(
             ref_end,
             500,
         )
-        .unwrap();
+        .map_err(|e| {
+            std::io::Error::other(format!(
+                "Failed to build WFA graph for segment {segment_name} over reference range {min_position}-{max_position}: {e}"
+            ))
+        })?;
 
     // pass through for the WFA errors now
     let wfa_result: WFAResult = match wfa_graph.edit_distance_with_pruning(read_align, 500) {
@@ -393,7 +417,11 @@ pub fn global_realignment(
 
         let mut low_qual = false;
         if coordinate_lookup.contains_key(&pos) {
-            let pos_on_read = *coordinate_lookup.get(&pos).unwrap() as usize;
+            let Some(pos_on_read) = coordinate_lookup.get(&pos).copied() else {
+                pos_index += num_var;
+                continue;
+            };
+            let pos_on_read = pos_on_read as usize;
             let this_pos_qual = read_qualities[pos_on_read];
             if this_pos_qual < min_qual {
                 low_qual = true;
@@ -427,8 +455,7 @@ pub fn global_realignment(
                             &read_sequence,
                             &coordinate_lookup,
                         );
-                        if !check_alt.is_none() {
-                            let found_alt = check_alt.unwrap();
+                        if let Some(found_alt) = check_alt {
                             if found_alt {
                                 read_simplified.push(b'1');
                                 debug!("update pos {pos} to alternate");
@@ -460,15 +487,19 @@ pub fn global_realignment(
                         .filter(|x| **x == AlleleType::Alternate)
                         .count();
                     if alt_count == 1 {
-                        let alt_index = allele_calls
+                        if let Some(alt_index) = allele_calls
                             .iter()
                             .position(|x| *x == AlleleType::Alternate)
-                            .unwrap();
-                        if alt_index == 0 {
-                            read_simplified.push(b'1');
-                        } else if alt_index <= 8 {
-                            let allele_name = alt_index + 1;
-                            read_simplified.extend_from_slice(allele_name.to_string().as_bytes());
+                        {
+                            if alt_index == 0 {
+                                read_simplified.push(b'1');
+                            } else if alt_index <= 8 {
+                                let allele_name = alt_index + 1;
+                                read_simplified
+                                    .extend_from_slice(allele_name.to_string().as_bytes());
+                            } else {
+                                read_simplified.push(b'-');
+                            }
                         } else {
                             read_simplified.push(b'-');
                         }
@@ -513,17 +544,25 @@ pub fn close_check_variant(
         let mut left_pos_on_read: Option<i64> = None;
         let mut right_pos_on_read: Option<i64> = None;
         if coordinate_lookup.contains_key(&left_pos_on_ref) {
-            left_pos_on_read = Some(*coordinate_lookup.get(&left_pos_on_ref).unwrap());
+            left_pos_on_read = coordinate_lookup.get(&left_pos_on_ref).copied();
         } else if coordinate_lookup.contains_key(&(left_pos_on_ref - 1)) {
-            left_pos_on_read = Some(*coordinate_lookup.get(&(left_pos_on_ref - 1)).unwrap() + 1);
+            left_pos_on_read = coordinate_lookup
+                .get(&(left_pos_on_ref - 1))
+                .copied()
+                .map(|value| value + 1);
         }
         if coordinate_lookup.contains_key(&right_pos_on_ref) {
-            right_pos_on_read = Some(*coordinate_lookup.get(&right_pos_on_ref).unwrap());
+            right_pos_on_read = coordinate_lookup.get(&right_pos_on_ref).copied();
         } else if coordinate_lookup.contains_key(&(right_pos_on_ref + 1)) {
-            right_pos_on_read = Some(*coordinate_lookup.get(&(right_pos_on_ref + 1)).unwrap() - 1);
+            right_pos_on_read = coordinate_lookup
+                .get(&(right_pos_on_ref + 1))
+                .copied()
+                .map(|value| value - 1);
         }
 
-        if left_pos_on_read.is_some() && right_pos_on_read.is_some() {
+        if let (Some(left_pos_on_read), Some(right_pos_on_read)) =
+            (left_pos_on_read, right_pos_on_read)
+        {
             let region_length_on_ref = right_pos_on_ref + 1 - left_pos_on_ref;
             let this_range = (left_pos_on_ref as usize)..(right_pos_on_ref as usize + 1);
             let ref_seq_this_range = &chrom_seq[this_range.clone()];
@@ -531,7 +570,7 @@ pub fn close_check_variant(
             let ref_seq_right = &chrom_seq[pos_usize + 1..(right_pos_on_ref as usize + 1)];
             trace!(
                 "reference sequence in this region is {:?}",
-                std::str::from_utf8(ref_seq_this_range).unwrap()
+                String::from_utf8_lossy(ref_seq_this_range)
             );
 
             let variants_in_range = variant_calls
@@ -544,15 +583,15 @@ pub fn close_check_variant(
                 .filter(|x| x.position() != pos && this_range.contains(&(x.position() as usize)))
                 .map(|x| x.get_allele1())
                 .collect::<Vec<_>>();
-            let left_pos_on_read = left_pos_on_read.unwrap() as usize;
-            let right_pos_on_read = right_pos_on_read.unwrap() as usize;
+            let left_pos_on_read = left_pos_on_read as usize;
+            let right_pos_on_read = right_pos_on_read as usize;
             let read_seq = &read_sequence[left_pos_on_read..(right_pos_on_read + 1)];
             let read_seq_len = read_seq.len() as i64;
             trace!(
                 "read sequence in this region from pos {} to pos {} is {:?}",
                 left_pos_on_read,
                 right_pos_on_read,
-                std::str::from_utf8(read_seq).unwrap()
+                String::from_utf8_lossy(read_seq)
             );
 
             // read sequence does not contain expected variant and there is no deletion in this region on the read
@@ -619,7 +658,7 @@ pub fn close_check_variant(
             );
             trace!(
                 "reference sequence in this region is {:?}",
-                std::str::from_utf8(ref_seq_this_range).unwrap()
+                String::from_utf8_lossy(ref_seq_this_range)
             );
             let bases_on_read = homopolymer_range_to_check
                 .collect::<Vec<usize>>()
@@ -628,13 +667,14 @@ pub fn close_check_variant(
                 .map(|x| coordinate_lookup[&(*x as i64)])
                 .collect::<Vec<i64>>();
             if !bases_on_read.is_empty() {
-                let read_start = bases_on_read.iter().min().unwrap();
-                let read_end = bases_on_read.iter().max().unwrap();
+                let Some(read_start) = bases_on_read.iter().min() else {
+                    return None;
+                };
+                let Some(read_end) = bases_on_read.iter().max() else {
+                    return None;
+                };
                 let bases_on_read = &read_sequence[*read_start as usize..(*read_end as usize + 1)];
-                trace!(
-                    "bases_on_read {:?}",
-                    std::str::from_utf8(&bases_on_read).unwrap()
-                );
+                trace!("bases_on_read {:?}", String::from_utf8_lossy(bases_on_read));
                 if bases_on_read.contains(&this_variant_ref[0])
                     && !bases_on_read.contains(&this_variant_allele1[0])
                 {

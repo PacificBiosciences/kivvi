@@ -13,6 +13,8 @@ use std::cmp::Reverse;
 pub enum WFAGraphError {
     #[error("Max_edit_distance ({distance}) reached during WFA solving")]
     MaxEditDistance { distance: usize },
+    #[error("Internal WFA graph invariant failed: {message}")]
+    InternalInvariant { message: String },
 }
 
 pub type NodeAlleleMap = HashMap<usize, Vec<(usize, u8)>>;
@@ -190,7 +192,12 @@ impl WFAGraph {
                 <= variant_pos
             {
                 // get the next thing that needs to reconnect before the next variant
-                let (alt_index, Reverse(alt_reconnect)) = reconnect_queue.pop().unwrap();
+                let Some((alt_index, Reverse(alt_reconnect))) = reconnect_queue.pop() else {
+                    return Err(std::io::Error::other(format!(
+                        "Reconnect queue became empty while resolving variants near position {variant_pos}"
+                    ))
+                    .into());
+                };
                 assert!(alt_reconnect > previous_end);
 
                 // first, we have to build up the reference node up until the reconnect point
@@ -213,7 +220,12 @@ impl WFAGraph {
                      .0
                     == alt_reconnect
                 {
-                    let (ai2, Reverse(ar2)) = reconnect_queue.pop().unwrap();
+                    let Some((ai2, Reverse(ar2))) = reconnect_queue.pop() else {
+                        return Err(std::io::Error::other(format!(
+                            "Reconnect queue became empty while grouping reconnections at {alt_reconnect}"
+                        ))
+                        .into());
+                    };
                     assert_eq!(alt_reconnect, ar2);
                     reference_reconnect.push(ai2);
                 }
@@ -283,7 +295,12 @@ impl WFAGraph {
 
         // reconnect everything downstream from here
         while !reconnect_queue.is_empty() {
-            let (alt_index, Reverse(alt_reconnect)) = reconnect_queue.pop().unwrap();
+            let Some((alt_index, Reverse(alt_reconnect))) = reconnect_queue.pop() else {
+                return Err(std::io::Error::other(
+                    "Reconnect queue became empty while draining downstream reconnections",
+                )
+                .into());
+            };
             assert!(alt_reconnect > previous_end);
             let ref_sequence: Vec<u8> = reference[previous_end..alt_reconnect].to_vec();
             reference_index = graph.add_node(ref_sequence, reference_reconnect)?;
@@ -302,7 +319,12 @@ impl WFAGraph {
                  .0
                 == alt_reconnect
             {
-                let (ai2, Reverse(ar2)) = reconnect_queue.pop().unwrap();
+                let Some((ai2, Reverse(ar2))) = reconnect_queue.pop() else {
+                    return Err(std::io::Error::other(format!(
+                        "Reconnect queue became empty while coalescing downstream reconnections at {alt_reconnect}"
+                    ))
+                    .into());
+                };
                 assert_eq!(alt_reconnect, ar2);
                 reference_reconnect.push(ai2);
             }
@@ -485,8 +507,15 @@ impl WFAGraph {
                 let node_length: usize = node_sequence.len();
 
                 // pull out the active wavefront for this node
-                let mut wavefront: HashMap<isize, Vec<(usize, usize)>> =
-                    active_wavefronts.remove(&node_index).unwrap();
+                let Some(mut wavefront): Option<HashMap<isize, Vec<(usize, usize)>>> =
+                    active_wavefronts.remove(&node_index)
+                else {
+                    return Err(WFAGraphError::InternalInvariant {
+                        message: format!(
+                            "Missing active wavefront for node {node_index} after presence check"
+                        ),
+                    });
+                };
                 let maxfront: &mut HashMap<isize, usize> =
                     max_wavefronts.entry(node_index).or_default();
 

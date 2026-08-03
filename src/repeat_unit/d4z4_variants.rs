@@ -36,26 +36,33 @@ pub fn update_read_with_special_calls(
 
     let mut read_segment_raw_fp_updated = BTreeMap::new();
     for (segment_name, fp) in read_segment_raw_fp {
-        if !special_calls_homopolymer.contains_key(segment_name)
-            || !special_calls_str.contains_key(segment_name)
-        {
-            error!("Segment {segment_name} not found in special calls homopolymer or str");
-        }
-        let this_call_homopolymer = special_calls_homopolymer.get(segment_name).unwrap();
-        let this_call_str = special_calls_str.get(segment_name).unwrap();
+        let this_call_homopolymer = special_calls_homopolymer
+            .get(segment_name)
+            .copied()
+            .unwrap_or_else(|| {
+                error!("Segment {segment_name} missing homopolymer special call");
+                b'-'
+            });
+        let this_call_str = special_calls_str
+            .get(segment_name)
+            .copied()
+            .unwrap_or_else(|| {
+                error!("Segment {segment_name} missing str special call");
+                b'-'
+            });
         let mut new_fp = fp.clone();
         if success_str {
             if fp.starts_with(&[b'S']) {
                 new_fp.insert(0, b'S');
             } else {
-                new_fp.insert(0, *this_call_str);
+                new_fp.insert(0, this_call_str);
             }
         }
         if success_homopolymer {
             if fp.ends_with(&[b'S']) {
                 new_fp.push(b'S');
             } else {
-                new_fp.push(*this_call_homopolymer);
+                new_fp.push(this_call_homopolymer);
             }
         }
         read_segment_raw_fp_updated.insert(segment_name.clone(), new_fp);
@@ -102,7 +109,12 @@ fn genotype_homopolymer(
     let mut bam_reader = bam::IndexedReader::from_path(realigned_bam.clone())?;
     bam_reader
         .fetch((&ref_name, 0, region_coordinates.repeat_len as i64))
-        .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
+        .map_err(|e| {
+            std::io::Error::other(format!(
+                "Failed to fetch homopolymer genotyping region 0-{} on {ref_name}: {e}",
+                region_coordinates.repeat_len
+            ))
+        })?;
     for read_entry in bam_reader.records() {
         let read = read_entry?;
         let qname = std::str::from_utf8(read.qname())?;
@@ -132,9 +144,9 @@ fn genotype_homopolymer(
                 break;
             }
         }
-        if read_start.is_some() && read_end.is_some() {
-            let read_start = read_start.unwrap() as usize;
-            let read_end = read_end.unwrap() as usize;
+        if let (Some(read_start), Some(read_end)) = (read_start, read_end) {
+            let read_start = read_start as usize;
+            let read_end = read_end as usize;
             let read_seq = read.seq().as_bytes();
             let read_seq = std::str::from_utf8(&read_seq[read_start..read_end])?;
             let read_seq_strip_c = read_seq.trim_start_matches("C").trim_end_matches("C");
@@ -260,7 +272,12 @@ fn genotype_str(
     let mut bam_reader = bam::IndexedReader::from_path(realigned_bam.clone())?;
     bam_reader
         .fetch((&ref_name, 0, region_coordinates.repeat_len as i64))
-        .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
+        .map_err(|e| {
+            std::io::Error::other(format!(
+                "Failed to fetch STR genotyping region 0-{} on {ref_name}: {e}",
+                region_coordinates.repeat_len
+            ))
+        })?;
     for read_entry in bam_reader.records() {
         let read = read_entry?;
         let qname = std::str::from_utf8(read.qname())?;
@@ -294,10 +311,12 @@ fn genotype_str(
                 break;
             }
         }
-        if read_start.is_some() && read_end.is_some() && downstream_end.is_some() {
-            let read_start = read_start.unwrap() as usize;
-            let read_end = read_end.unwrap() as usize;
-            let downstream_end = downstream_end.unwrap() as usize;
+        if let (Some(read_start), Some(read_end), Some(downstream_end)) =
+            (read_start, read_end, downstream_end)
+        {
+            let read_start = read_start as usize;
+            let read_end = read_end as usize;
+            let downstream_end = downstream_end as usize;
             let read_seq = read.seq().as_bytes();
             // check region downstream for indels
             let downstream_len_read = downstream_end as i32 - read_end as i32;

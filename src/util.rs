@@ -3,8 +3,10 @@ use log::debug;
 use rust_htslib::bam;
 use rust_htslib::bam::header::HeaderRecord;
 use std::collections::{BTreeMap, HashSet};
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::str;
+use std::str::FromStr;
 
 pub type DError = std::boxed::Box<dyn std::error::Error>;
 pub type DResult = Result<(), DError>;
@@ -71,6 +73,82 @@ pub fn resolve_chrom_name_from_header(header: &bam::HeaderView, requested: &str)
     targets
         .into_iter()
         .find(|x| normalize_chrom_name(x) == requested_normalized)
+}
+
+/// Decode embedded UTF-8 bytes into a string, falling back to lossy decoding
+/// when bundled data contains invalid UTF-8.
+fn embedded_utf8_string(bytes: &[u8], label: &str) -> String {
+    match str::from_utf8(bytes) {
+        Ok(value) => value.to_string(),
+        Err(error) => {
+            debug!("Failed to decode embedded {label} as UTF-8: {error}");
+            String::from_utf8_lossy(bytes).to_string()
+        }
+    }
+}
+
+/// Parse newline-delimited embedded values, skipping blank or malformed lines
+/// instead of aborting region initialization.
+fn parse_embedded_numeric_lines<T>(bytes: &[u8], label: &str) -> Vec<T>
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    embedded_utf8_string(bytes, label)
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            match trimmed.parse::<T>() {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    debug!("Skipping invalid {label} entry {trimmed:?}: {error}");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// Parse the last tab-delimited column from embedded BED-like data as numeric
+/// positions, skipping malformed lines.
+fn parse_embedded_last_column_i64(bytes: &[u8], label: &str) -> Vec<i64> {
+    embedded_utf8_string(bytes, label)
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let Some(last_column) = trimmed.split('\t').next_back() else {
+                debug!("Skipping malformed {label} line without tab-delimited columns: {trimmed:?}");
+                return None;
+            };
+            match last_column.parse::<i64>() {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    debug!(
+                        "Skipping invalid {label} last-column value {last_column:?} from line {trimmed:?}: {error}"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// Append a statically configured variant when it can be constructed, logging
+/// invalid embedded definitions instead of panicking.
+fn push_configured_variant<E>(target: &mut Vec<Variant>, variant: Result<Variant, E>, label: &str)
+where
+    E: Display,
+{
+    match variant {
+        Ok(variant) => target.push(variant),
+        Err(error) => debug!("Skipping invalid configured variant {label}: {error}"),
+    }
 }
 
 /// For storing starting and ending reads
@@ -145,30 +223,11 @@ pub fn kiv2_coordinates() -> RegionCoordinates {
         pub static ref GENOMESITES: &'static [u8] = std::include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/genome_region.bed"));
         pub static ref REFERENCE: &'static [u8] = std::include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/kiv2/kiv2_ref.fa"));
     }
-    let reference_seq = str::from_utf8(&REFERENCE).unwrap().to_string();
-    let type2_sites = str::from_utf8(&TYPE2SITES)
-        .unwrap()
-        .split_terminator('\n')
-        .map(std::borrow::ToOwned::to_owned)
-        .map(|x| x.parse::<i64>().unwrap())
-        .collect::<Vec<_>>();
+    let reference_seq = embedded_utf8_string(&REFERENCE, "kiv2 reference");
+    let type2_sites = parse_embedded_numeric_lines::<i64>(&TYPE2SITES, "kiv2 type2 sites");
     debug!("type2 sites are: {type2_sites:?}");
 
-    let genome_depth_sites = str::from_utf8(&GENOMESITES)
-        .unwrap()
-        .split_terminator('\n')
-        .map(std::borrow::ToOwned::to_owned)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|x| {
-            x.split_terminator('\t')
-                .collect::<Vec<_>>()
-                .last()
-                .unwrap()
-                .parse::<i64>()
-                .unwrap()
-        })
-        .collect::<Vec<_>>();
+    let genome_depth_sites = parse_embedded_last_column_i64(&GENOMESITES, "genome depth sites");
     debug!("genome_depth_sites sites are: {genome_depth_sites:?}");
 
     // here are some presets for kiv2
@@ -191,7 +250,8 @@ pub fn kiv2_coordinates() -> RegionCoordinates {
 
     let mut variants_to_call = Vec::new();
     // use 0 based coordinate here
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             193,
@@ -200,10 +260,11 @@ pub fn kiv2_coordinates() -> RegionCoordinates {
             "G".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "kiv2 deletion 193",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             1174,
@@ -212,10 +273,11 @@ pub fn kiv2_coordinates() -> RegionCoordinates {
             "T".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "kiv2 deletion 1174",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_snv(
             0,
             1533,
@@ -223,10 +285,11 @@ pub fn kiv2_coordinates() -> RegionCoordinates {
             "C".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "kiv2 snv 1533",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_snv(
             0,
             2882,
@@ -234,8 +297,8 @@ pub fn kiv2_coordinates() -> RegionCoordinates {
             "G".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "kiv2 snv 2882",
     );
     let mut genome_offset = BTreeMap::new();
     genome_offset.insert(String::from("chr6:160613619-160619170"), 160613617);
@@ -274,30 +337,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
         pub static ref GENOMESITES: &'static [u8] = std::include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/genome_region.bed"));
         pub static ref REFERENCE: &'static [u8] = std::include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/d4z4/d4z4_ref.fa"));
     }
-    let reference_seq = str::from_utf8(&REFERENCE).unwrap().to_string();
-    let methyl_sites = str::from_utf8(&METHYLSITES)
-        .unwrap()
-        .split_terminator('\n')
-        .map(std::borrow::ToOwned::to_owned)
-        .map(|x| x.parse::<usize>().unwrap())
-        .collect::<Vec<_>>();
+    let reference_seq = embedded_utf8_string(&REFERENCE, "d4z4 reference");
+    let methyl_sites = parse_embedded_numeric_lines::<usize>(&METHYLSITES, "d4z4 methyl sites");
     //debug!("methyl_sites sites are: {methyl_sites:?}");
 
-    let genome_depth_sites = str::from_utf8(&GENOMESITES)
-        .unwrap()
-        .split_terminator('\n')
-        .map(std::borrow::ToOwned::to_owned)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|x| {
-            x.split_terminator('\t')
-                .collect::<Vec<_>>()
-                .last()
-                .unwrap()
-                .parse::<i64>()
-                .unwrap()
-        })
-        .collect::<Vec<_>>();
+    let genome_depth_sites = parse_embedded_last_column_i64(&GENOMESITES, "genome depth sites");
     //debug!("genome_depth_sites sites are: {genome_depth_sites:?}");
 
     // here are some presets for kiv2
@@ -322,7 +366,8 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
 
     let mut variants_to_exclude = Vec::new();
     // use 0 based coordinate here
-    variants_to_exclude.push(
+    push_configured_variant(
+        &mut variants_to_exclude,
         Variant::new_snv(
             0,
             683,
@@ -330,10 +375,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "G".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 exclude snv 683 A>G",
     );
-    variants_to_exclude.push(
+    push_configured_variant(
+        &mut variants_to_exclude,
         Variant::new_snv(
             0,
             2115,
@@ -341,10 +387,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "A".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 exclude snv 2115 C>A",
     );
-    variants_to_exclude.push(
+    push_configured_variant(
+        &mut variants_to_exclude,
         Variant::new_snv(
             0,
             2115,
@@ -352,10 +399,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "G".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 exclude snv 2115 C>G",
     );
-    variants_to_exclude.push(
+    push_configured_variant(
+        &mut variants_to_exclude,
         Variant::new_snv(
             0,
             3105,
@@ -363,8 +411,8 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "C".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 exclude snv 3105 A>C",
     );
 
     let start_positions_flank = vec![2058];
@@ -374,7 +422,8 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
 
     let mut variants_to_call = Vec::new();
     // use 0 based coordinate here
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             215,
@@ -383,10 +432,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "G".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 deletion 215",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_insertion(
             0,
             259,
@@ -394,10 +444,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "GCCTCCGGGAGTAGCGGGACCCCCGC".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 insertion 259",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             306,
@@ -408,10 +459,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "T".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 deletion 306",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             315,
@@ -422,10 +474,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "G".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 deletion 315",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             356,
@@ -434,10 +487,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "G".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 deletion 356",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_insertion(
             0,
             1042,
@@ -445,10 +499,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "CCGCG".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 insertion 1042",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             1087,
@@ -457,10 +512,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "G".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 deletion 1087",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             1094,
@@ -469,10 +525,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "T".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 deletion 1094",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             1216,
@@ -481,10 +538,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "C".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 deletion 1216",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_insertion(
             0,
             1327,
@@ -492,10 +550,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "CGGCT".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 insertion 1327",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             1753,
@@ -504,22 +563,24 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "C".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 deletion 1753",
     );
-    variants_to_call.push(
-            Variant::new_deletion(
-                0,
-                2447,
-                326,
-                "CCGGGGCAGCTCCACCTCCCCAGCCCGCGCCCCCGGACGCCTCCGCCTCCGCGCGGCAGGGGCAGATGCAAGGCATCCCGGCGCCCTCCCAGGCGCTCCAGGAGCCGGCGCCCTGGTCTGCACTCCCCTGCGGCCTGCTGCTGGATGAGCTCCTGGCGAGCCCGGAGTTTCTGCAGCAGGCGCAACCTCTCCTAGAAACGGAGGCCCCGGGGGAGCTGGAGGCCTCGGAAGAGGCCGCCTCGCTGGAAGCACCCCTCAGCGAGGAAGAATACCGGGCTCTGCTGGAGGAGCTTTAGGACGCGGGGTTGGGACGGGGTCGGGTGGTT".as_bytes().to_vec(),
-                "C".as_bytes().to_vec(),
-                0,
-                1,
-            )
-            .unwrap(),
-        );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
+        Variant::new_deletion(
+            0,
+            2447,
+            326,
+            "CCGGGGCAGCTCCACCTCCCCAGCCCGCGCCCCCGGACGCCTCCGCCTCCGCGCGGCAGGGGCAGATGCAAGGCATCCCGGCGCCCTCCCAGGCGCTCCAGGAGCCGGCGCCCTGGTCTGCACTCCCCTGCGGCCTGCTGCTGGATGAGCTCCTGGCGAGCCCGGAGTTTCTGCAGCAGGCGCAACCTCTCCTAGAAACGGAGGCCCCGGGGGAGCTGGAGGCCTCGGAAGAGGCCGCCTCGCTGGAAGCACCCCTCAGCGAGGAAGAATACCGGGCTCTGCTGGAGGAGCTTTAGGACGCGGGGTTGGGACGGGGTCGGGTGGTT".as_bytes().to_vec(),
+            "C".as_bytes().to_vec(),
+            0,
+            1,
+        ),
+        "d4z4 deletion 2447",
+    );
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             2483,
@@ -528,22 +589,24 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "A".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 deletion 2483",
     );
-    variants_to_call.push(
-            Variant::new_deletion(
-                0,
-                2821,
-                325,
-                "CGGAGGGGCGTGTCTCCGCCCCGCCCCCTCCACCGGGCTGACCGGCCTGGGATTCCTGCCTTCTAGGTCTAGGCCCGGTGAGAGACTCCACTCCGCGGAGAACTGCCTTTCTTTCCTGGGCATCCCGGGGATCCCAGAGCCGGCCCAGGTACCAGCAGGTGGGCCGCCTACTGCGCACGCGCGGGTTTGCGGGCAGCCGCCTGGGCTGTGGGAGCAGCCCGGGCAGAGCTCTCCTGCCTCTCCACCAGCCCACCCCGCCGCCTGACCGCCCCCTCCCCACCCCCACCCCCCACCCCCGGAAAACGCGTCGTCCCCTGGGCTGGGT".as_bytes().to_vec(),
-                "C".as_bytes().to_vec(),
-                0,
-                1,
-            )
-            .unwrap(),
-        );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
+        Variant::new_deletion(
+            0,
+            2821,
+            325,
+            "CGGAGGGGCGTGTCTCCGCCCCGCCCCCTCCACCGGGCTGACCGGCCTGGGATTCCTGCCTTCTAGGTCTAGGCCCGGTGAGAGACTCCACTCCGCGGAGAACTGCCTTTCTTTCCTGGGCATCCCGGGGATCCCAGAGCCGGCCCAGGTACCAGCAGGTGGGCCGCCTACTGCGCACGCGCGGGTTTGCGGGCAGCCGCCTGGGCTGTGGGAGCAGCCCGGGCAGAGCTCTCCTGCCTCTCCACCAGCCCACCCCGCCGCCTGACCGCCCCCTCCCCACCCCCACCCCCCACCCCCGGAAAACGCGTCGTCCCCTGGGCTGGGT".as_bytes().to_vec(),
+            "C".as_bytes().to_vec(),
+            0,
+            1,
+        ),
+        "d4z4 deletion 2821",
+    );
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             3088,
@@ -552,10 +615,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "G".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 deletion 3088 len14",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_deletion(
             0,
             3088,
@@ -564,10 +628,11 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "G".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 deletion 3088 len19",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_insertion(
             0,
             3289,
@@ -575,21 +640,23 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "GCCTGGCGGCGGAACGCAGACCCCAGGCCCGGCGCACACCGGGGACGCTGAGCGTTCCAGGCGGGAGGGAAGGCGGGCAGAGATGGAGAGAGGAACGGGAGACCTAGAGGGGCGGAAGGACGGGCGGAGGGACGTTAGGAGGGAGGGAGGGAGGCAGGGAGGCAGGGAGGAACGGAGGAAAGACAGAGCGACGCAGGGACTGGGGGCGGGCGGGAGGGAGCCGGGGACGGACGGGGGGAGGAAGGCAGGGAGGAAAAGCGGTCCTCGGCCTCCGGGAGTAGCGGGACCCCCGCCCTCCGGGAAAACGGTCAGCGTCCGGCGCGGGCTGAGGGCTGGGCCCACAGCCGCCGCGCCGGCCGGCGGGGCACCACCCATTCGCCCCGGTTCCGGGGCCCAGGGAGTGGGCGGTTTCCTCCGGGACAAAAGACCGGGACTCGGGTTGCCGTCGGGTCTTCACCCGCGCGGTTCACAGACCGCACATCCCCAGGCTGAGCCCTGCAACGCGGCGCGAGGCCGACAGCCCCGGCCACGGAGGAGCCACACGCAGGACGACGGAGGCGTGATTTTGGTTTCCGCGTGGCTTTGCCCTCCGCAAGGCGGCCTGTTGCTCACGTCTCTCCGGCCCCCGAAAGGCTGGCCATGCCGACTGTTTGCTCCCGGAGCTCTGCGGGCACCCGGAAACATGCAGGGAAGGGTGCAAGCCGGCACGGTGCCTTCGCTCTCCTTGCCAGGTTCCAAACCGGCCACACTGCAGACTCCCCACGTTGCCGCACGCGGGAATCCATCGTCAGGCCATCACGCCGGGGAGGCATCTCCTCTCTGGGGTCTCGCTCTGGTCTTCTACGTGGAAATGAACGAGAGCCACACGCCTGCGTGTGCGAGACCGTCCCGGCAACGGCGACGCCCACAGGCATTGCCTCCTTCACGGAGAGAGGGCCTGGCACACTCAAGACTCCCACGGAGGTTCAGTTCCACACTCCCCTCCACCCTCCCAGGCTGGTTTCTCCCTGCTGCCGACGCGTGGGAGCCCAGAGAGCGGCTTCCCGTTCCCGCGGGATCCCTGGAGAGGTCCGGAGAGCCGGCCCCCGAAACGCGCCCCCCTCCCCCCTCCCCCCCTCCTCCCCGTTCCTCTTCGTCTGTCCGGCCCCACCACCACCACCGCCACCACGCCCTCCCCCCCCACCCCCCCCCCCCACCACCACCACCACCACCACCCCGCCGGCCGGCCCCAGGCCTCGACGCCCTGGGTCCCTTCCGGGGTGGGGCGGGCTGTCCCAGGGGGGCTCACCGCCATTCATGAAGGGGTGGAGCCTGCCTGCCTGTGGGCCTTTACAAGGGCGGCTGGCTGGCTGGCTGGCTGTCCGGGCAGGCCCCCTGGCTGCACCTGCCGCAGTGCACAGTCCGGCTGAGGTGCACGGGAGCCCGCCGGCCTCTCTCTGCCCGCGTCCGTCCGTGAAATTCCGGCCGGGGCTCACCGCGATGGCCCTCCCGACACCCTCGGACAGCACCCTCCCCGCGGAAGCCCGGGGACGAGGACGGCGACGGAGACTCGTTTGGACCCCGAGCCAAAGCGAGGCCCTGCGAGCCTGCAGCCTCCCAGCTGCCAGCGCGGAGCT".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 insertion 3289",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_insertion(
             0,
             3276,
             "G".as_bytes().to_vec(),
-    "GCCAGCACGGAGCGCCTGGCGGCGGAACGCAGACCCCAGGCCCGGCGCACACCCGGGGGACGCTGAGCGTTCCAGGCGGGAGGGAAGGCGGGCAGAGATGGAGAGAGGAACGGGAGACCTAGAGGGGCGGAAGGATGGGCGGAGGGACGTTAGGAGGGAGGGAGGGAGGCAGGGAGGCAGGGAGGAACGGAGGGAAAGACAGAGCGACGCAGGGACTGGGGGCGGGCGGGAGGGAGCCGGGGACGGGGGGAGGAAGGCAGGGAGGAAAAGCGGTCCTCGGCCTCCGGGAGTAGCGGACCCCCGCCCTCCGGGAAAACGGTCAGCGTCCGGCGCGGGCTGAGGGCTGGGCCCACAGCCGCCGCGCCGGCCGGCGGGGCACCACCCATTCGCCCCGGTTCCGGGGCCCAGGGAGTGGGCGGTTTCCTCCGGGACAAAAGACCGGGACTCGGGTTGCCGTCGGGTTTTCACCCGCGCGGTTCACAGACCGCACATCCCCAGGCTGAGCCCTGCAACGGGGCGCGAGGCCGACAGCCCCGGCCACGGAGGAGCCACACGCAGGACGACGGAGGCGTGATTTTGGTTTCCGCGTGGCTTTGCCCTCTGCAAGGCGGCCTGTTGCTCACGTCTCTCCGGCCCCCGAAAGCTGGCCATGCCGACTGTTTGCTCCCGGAGCTCTGCGGGCACCCGGAAACATGCAGGGAAGGGTGCAAGGCCCGGCACGGTGCCTTCGCTCTCCTTGCCAGGTTCCAAACCGGCCACACTGCAGACTCCCCACGTTGCCGCACGCGGGAATCCATCGTCAGGCCATCACGCCGGGGAGGCATCTCCTCTCTGGGGTCTCGCTCTGGTCTTCTACGTGGAAATGAACGAGAGCCACACGCCTGCGTGTGCGAGACCGTCCCGGCAACGGCGACGCCCACAGGCATTGCCTCCTTCACGGAGAGAGGGCCTGGCACACTCAAGACTCCCACGGAGGTTCAGTTCCACACTCCCCTCCACCCTCCCAGGCTGGTTTCTCCCTGCTGCCGACGCGTGGGAGCCCAGAGAGCGGCTTCCCGTTCCCGCGGGATCCCTGGAGAGGTCCGGAGAGCCGGCCCCCGAAACGCGCCCCCCTCCCCCCTCCCCCCTCTCCCCCTTCCTCTTCGTCTCTCCGGCCCCACCACCACCACCGCCACCACGCCCTCCCCCACCACCCCCCCCCCCCACCACCACCACCACCCCGCCGGCCGGCCCCAGGCCTCGACGCCCTGGGTCCCTTCCGGGGTGGGGCGGGCTGTCCCAGGGGGGGCTCACCGCCATTCATGAAGGGGTGGAGCCTGCCTGCCTGTGGGCCTTTACAAGGGCGGCTGGCTGGCTGGGCTGGCTGTCCGGGCAGGCCTCCCTGGCTGCACCTGCCGCAGCGCACAGTCCGGCTGAGGTGCACGGGAGCCCGCCGGCCTCTCTCTGCCCGCGTCCGTCCGTGAAATTCCGGCCGGGGCTCACCGCGATGGCCCTCCCGACACCTTCGGACAGCACCCTCCCCGCGGAAGCCCGGGGACGAGGACGGCGACGGAGACTCGTTTGGACCCCGAGCCAAAGCGAGGCCCTGCGAGCCTGCTTTGAGCGGAACCCGTACCCGGGCATCGCCACCAGAGAACGGCTGGCCCAGGCCATCGGCATTCCGGAGCCCAGGGTCCAGATTTGGTTTCAGAATGAGAGGTCACGCCAGCTGAGGCAGCACCGGCGGGAATCTCGGCCCTGGCCCGGGAGACGCGGCCCGCCAGAAGGCCGGCGAAAGCGGACCGCCGTCACCGGATCCCAGACCGCCCTGCTCCCTCCGAGCCTTTGAGAAGGATCGCTTTCCAGGCATCGCCGCCCGGGAGGAGCTGGCCAGAGAGACGGGCCTCCCGGAGTCCAGGATTCAGATCTGGTTTCAGAATCGAAGGGCCAGGCACCCGGGACAGGGTGGCAGGGCGCCCGCGCAGGCAGGCGGCCTGTGCAACGCGGCCCCCGGCGGGGGTCACCCTGCTCCCTCCGTGGGTCGCCTTCGCCCACACCGGCGCGTGGGGAACGGGGCTTCCCGCACCCCACGTGCCCTGCGCGCCTGGGGCTCTCCCACAGGGGGCTTTCGTGAGCCAGGCAGCGAGGGCCGCCCCCGCGCTGCAGCCCAGCCAGGCCGCGCCGGCAGAGGGGATCTCCCAACCTGCCCCGGCGCGCGGGGATTTCGCCTACGCCGCCCCGGCTCCTCCGGACGGGGCGCTCTCCCACCCTCAGGCTCCTCGGTGGCCTCCGCACCCGGGCAAAAGCCGGGAGGACCGGGACCCAGCAGCGCGACGGCCTGCCGGGCCCTGCGCGGTGGCACAGCCTGGGCCCGCTCAAGCGGGGCCGCAGGGCCAAGGGGTGCTTGCGCCACCCACGTCCCAGGGGAGTCCGTGGTGGGGCTGGGGCCGGGGTCCCCAGGTCGCCGGGGCGGCGTGGAACCCCAAGCCGGGGCAGCTCCACCTCCCCAGCCC".as_bytes().to_vec(),
+            "GCCAGCACGGAGCGCCTGGCGGCGGAACGCAGACCCCAGGCCCGGCGCACACCCGGGGGACGCTGAGCGTTCCAGGCGGGAGGGAAGGCGGGCAGAGATGGAGAGAGGAACGGGAGACCTAGAGGGGCGGAAGGATGGGCGGAGGGACGTTAGGAGGGAGGGAGGGAGGCAGGGAGGCAGGGAGGAACGGAGGGAAAGACAGAGCGACGCAGGGACTGGGGGCGGGCGGGAGGGAGCCGGGGACGGGGGGAGGAAGGCAGGGAGGAAAAGCGGTCCTCGGCCTCCGGGAGTAGCGGACCCCCGCCCTCCGGGAAAACGGTCAGCGTCCGGCGCGGGCTGAGGGCTGGGCCCACAGCCGCCGCGCCGGCCGGCGGGGCACCACCCATTCGCCCCGGTTCCGGGGCCCAGGGAGTGGGCGGTTTCCTCCGGGACAAAAGACCGGGACTCGGGTTGCCGTCGGGTTTTCACCCGCGCGGTTCACAGACCGCACATCCCCAGGCTGAGCCCTGCAACGGGGCGCGAGGCCGACAGCCCCGGCCACGGAGGAGCCACACGCAGGACGACGGAGGCGTGATTTTGGTTTCCGCGTGGCTTTGCCCTCTGCAAGGCGGCCTGTTGCTCACGTCTCTCCGGCCCCCGAAAGCTGGCCATGCCGACTGTTTGCTCCCGGAGCTCTGCGGGCACCCGGAAACATGCAGGGAAGGGTGCAAGGCCCGGCACGGTGCCTTCGCTCTCCTTGCCAGGTTCCAAACCGGCCACACTGCAGACTCCCCACGTTGCCGCACGCGGGAATCCATCGTCAGGCCATCACGCCGGGGAGGCATCTCCTCTCTGGGGTCTCGCTCTGGTCTTCTACGTGGAAATGAACGAGAGCCACACGCCTGCGTGTGCGAGACCGTCCCGGCAACGGCGACGCCCACAGGCATTGCCTCCTTCACGGAGAGAGGGCCTGGCACACTCAAGACTCCCACGGAGGTTCAGTTCCACACTCCCCTCCACCCTCCCAGGCTGGTTTCTCCCTGCTGCCGACGCGTGGGAGCCCAGAGAGCGGCTTCCCGTTCCCGCGGGATCCCTGGAGAGGTCCGGAGAGCCGGCCCCCGAAACGCGCCCCCCTCCCCCCTCCCCCCTCTCCCCCTTCCTCTTCGTCTCTCCGGCCCCACCACCACCACCGCCACCACGCCCTCCCCCACCACCCCCCCCCCCCACCACCACCACCACCCCGCCGGCCGGCCCCAGGCCTCGACGCCCTGGGTCCCTTCCGGGGTGGGGCGGGCTGTCCCAGGGGGGGCTCACCGCCATTCATGAAGGGGTGGAGCCTGCCTGCCTGTGGGCCTTTACAAGGGCGGCTGGCTGGCTGGGCTGGCTGTCCGGGCAGGCCTCCCTGGCTGCACCTGCCGCAGCGCACAGTCCGGCTGAGGTGCACGGGAGCCCGCCGGCCTCTCTCTGCCCGCGTCCGTCCGTGAAATTCCGGCCGGGGCTCACCGCGATGGCCCTCCCGACACCTTCGGACAGCACCCTCCCCGCGGAAGCCCGGGGACGAGGACGGCGACGGAGACTCGTTTGGACCCCGAGCCAAAGCGAGGCCCTGCGAGCCTGCTTTGAGCGGAACCCGTACCCGGGCATCGCCACCAGAGAACGGCTGGCCCAGGCCATCGGCATTCCGGAGCCCAGGGTCCAGATTTGGTTTCAGAATGAGAGGTCACGCCAGCTGAGGCAGCACCGGCGGGAATCTCGGCCCTGGCCCGGGAGACGCGGCCCGCCAGAAGGCCGGCGAAAGCGGACCGCCGTCACCGGATCCCAGACCGCCCTGCTCCCTCCGAGCCTTTGAGAAGGATCGCTTTCCAGGCATCGCCGCCCGGGAGGAGCTGGCCAGAGAGACGGGCCTCCCGGAGTCCAGGATTCAGATCTGGTTTCAGAATCGAAGGGCCAGGCACCCGGGACAGGGTGGCAGGGCGCCCGCGCAGGCAGGCGGCCTGTGCAACGCGGCCCCCGGCGGGGGTCACCCTGCTCCCTCCGTGGGTCGCCTTCGCCCACACCGGCGCGTGGGGAACGGGGCTTCCCGCACCCCACGTGCCCTGCGCGCCTGGGGCTCTCCCACAGGGGGCTTTCGTGAGCCAGGCAGCGAGGGCCGCCCCCGCGCTGCAGCCCAGCCAGGCCGCGCCGGCAGAGGGGATCTCCCAACCTGCCCCGGCGCGCGGGGATTTCGCCTACGCCGCCCCGGCTCCTCCGGACGGGGCGCTCTCCCACCCTCAGGCTCCTCGGTGGCCTCCGCACCCGGGCAAAAGCCGGGAGGACCGGGACCCAGCAGCGCGACGGCCTGCCGGGCCCTGCGCGGTGGCACAGCCTGGGCCCGCTCAAGCGGGGCCGCAGGGCCAAGGGGTGCTTGCGCCACCCACGTCCCAGGGGAGTCCGTGGTGGGGCTGGGGCCGGGGTCCCCAGGTCGCCGGGGCGGCGTGGAACCCCAAGCCGGGGCAGCTCCACCTCCCCAGCCC".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 insertion 3276",
     );
-    variants_to_call.push(
+    push_configured_variant(
+        &mut variants_to_call,
         Variant::new_insertion(
             0,
             3295,
@@ -597,8 +664,8 @@ pub fn d4z4_coordinates() -> RegionCoordinates {
             "CGCGGAACGCAGACCCCAGGCCCGGCGCACACCGGGGACGCTGAGCGTTCCAGGCGGGAGGGAAGGCGGGCAGAGATGGAGAGAGGAACGGGAGACCTAGAGGGGCGGAAGGATGGGCGGAGGGACGTTAGGAGGGAGGGAGGCAGGGAGGCAGGGAGGCAGGGAGGAACGGAGGGAAAGACAGAGCGACGCAGGGACTGGGGGCGGGCGGGAGGGAGCCGGGGACGGACGGGGGGAGGAAGGCAGGGAGGAAAAGCGGTCTTCGGCCTCCGGGAGTAGCGGGACCCCCGCCCTCCGGGAAAACGGTCAGCGTCCGGCGCGGGCTGAGGGCTGGGCCCACAGCCGCCGCGCCGGCCGGCGGGGCACCACCCATTCGCCCCGGTTCCGGGGCCCAGGGAGTGGGCGGTTTCCTCCGGGACAAAAGACCGGGACTCGGGTTGCCGTCGGGTCTTCACCCGCGCGGTTCACAGACCGCACATCCCCAGGCTGAGCCCTGCAACGCGGCGCGAGGCCGACAGCCCCGGCCACGGAGGAGCCACACGCAGGACGACGGAGGCGTGATTTTGGTTTCCGCGTGGCTTTGCCCTCCGCAAGGCGGCCTGTTGCTCACGTCTCTCCGGCCCCCGAAAGGCCGGCCATGCCGACTGTTTGCTCCCGGAGCTCTGCCGGCACCCGGAAACATGCAGGGAAGGGTGCAAGCCCGGCACGGTGCCTTCGCTCTCCTTGCCAGGTTCCAAACGGCCACACTGCAGACTCCCCACGTTGCCGCACGCGGGAATCCATCGTCAGGCCATCACGCCGGGGAGGCATCTCCTCTCTGGGGTCTCGCTCTGGTCTTCTACGTGGAAATGAACGAGAGCCACACGCCTGCGTGTGCGAGACCGTCCCGGCAACGGCGACGCCCACAGGCATTGCCTCCTTCACGGAGAGAGGGCCTGGCACACTCGAGACTCCCACGGAGGTTCAGTTCCACACTCCCCTCCACCCTCCCAGGCTGGTTTCTCCCTGCTGCCGACGCGTGGGAGCCCAGAGAGCGGCTTCCCGTTCCCGCGGGATCCCTGGAGAGGTCCGGAGAGCCGGCCCCCGAAACGCGCCCCCCCTCCCCCCTCCCCCCTCTCCCCCTTCCTCTTCGTCTCTCCGGCCCCACCACCACCACCGCCACCACGCCCTCCCCCACCACCCCCCCCCCACCACCACCACCACCACCACCACCCCGCCGGCCGGCCCCAGGCCTCGACGCCCTGGGTCCCTTCCGGGGTGGGGCGGGCTGTCCCAGGGGGGCTCACCGCCATTCATGAAGGGGTGGAGCCTGCCTGCCTGTGGGCCTTTACAAGGGCGGCTGGCTGGCTGGCTGGCTGGCTGTCCGGGCAGGCCTCCTGGCTGCACCTGCCGCAGTGCACAGTCCGGCTGAGGTGCACGGGAGCCCGCCGGCCTCTCTCTGCCCGCGTCCGTCCGTGAAATTGCGGCCGGGGCTCACCGCGATGGCCCTCCCGACACCTTCGGACAGCACCCTCCCCGCGGAAGCCCGGGGACGAGGACGGCGACGGAGACTCGTTTGGACCCCGAGCCAAAGCGAGGCCCTGCGAGCCTGCTTTGAGCGGAACCCGTACCCGGGCATCGCCACCAGAGAACGGCTGGCCCAGGCCATCGGCATTCCGGAGCCCAGGGTCCAGATTTGGTTTCAGAATGAGAGGTCACGCCAGCTGAGGCAGCACCGGCGGGAATCTCGGCCCTGGCCCGGGAGACGCGGCCCGCCAGAAGGCCCGGCGAAAGCGGACCGCCGTCACCGGATCCCAGACCGCCCTGCTCCTCCGAGCCTTTGAGAAGGATCGCTTTCCAGGCATCGCCGCCCGGGAGGAGCTGGCCAGAGAGACGGGCCTCCCGGAGTCCAGGATTCAGATCTGGTTTCAGAATCGAAGGGCCAGGCACCCGGGACAGGGTGGCAGGGCGCCCGCGCAGGCAGGCGGCCTGTGCAGCGCGGCCCCCGGCGGGGGTCACCCTGCTCCCTCGTGGGTCGCCTTCGCCCACACCGGCGCGTGGGGAACGGGGCTTCCCGCACCCCACGTGCCCTGCGCGCCTGGGGCTCTCCCACAGGGGGCTTTCGTGAGCCAGGCAGCGAGGGCCGCCCCCGCGCTGCAGCCCAGCCAGGCCGCGCCGGCAGAGGGGGTCTCCCAACCTGCCCCGGCGCGCGGGGGATTTCGCCTACGCCGCCCCGGCTCCTCCGGACGGGGCGCTCTCCCACCCTCAGGCTCCTCGGTGGCCTCCGCACCCGGCAAAAGCCGGGAGGACCGGGACCCGCAGCGCGACGGCCTGCCGGGCCCCTGCGCGGTGGCACAGCCTGGGCCCGCTCAAGCGGGGCCGCAGGGCCAAGGGGTGCTTGCGCCACCCACGTCCCAGGGGAGTCCGTGGTGGGGCTGGGGCCGGGGTCCCCCAGGTCGCCGGGGCGGCGTGGGAACCCCAAGCCGGGGCAGCTCCACCTCCCCAGCCCGCGCCCCCAGGACGCCTCCGCCTCCGCGCGGCAGGGGCAGATGCAAGGCATCCCGGCGCCCTCCCAGGCGCTCCGGGAGCCGGCGCCCTGGTCTGCACTCCCCTGCGGCCTGCTGCTGGATGAGCTCCTGGCGAGCCCGGAGTTTCTGCAGCAGGCGCAACCTCTCCTAGAAACGGAGGCCCCGGGGGAGCTGGAGGCCTCGGAAGAGGCCGCCTCGCTGGAAGCACCCCTCAGCGAGGAAGAATACCGGGCTCTGCTGGAGGAGCTTTAGGACGCGGGGTTGGGACGGGGTCGGGTGGCTCGGGGCAGGGCGGTGGCCTCTCTTTCGCGGGGAACACCTGGCTGGCTACGGAGACCCCCGTCCCGCGAAACACCGGGCCCCGCGCAGCGTCCGGGCCTGACACCGCTCCGGCGGCTCGCCTCCTCTGCGCCCCCGCGCCACCGTCGCCCGCCCGCCCGGGCCCCTGCAGCCTCCCAGCTGCCAGCAGGGAGCGCCTGGCT".as_bytes().to_vec(),
             0,
             1,
-        )
-        .unwrap(),
+        ),
+        "d4z4 insertion 3295",
     );
 
     let mut genome_offset = BTreeMap::new();

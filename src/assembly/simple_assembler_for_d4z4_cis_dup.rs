@@ -32,8 +32,7 @@ impl FpGraph {
         // forward
         let mut incomplete_haps_forward: Vec<Vec<i32>> = Vec::new();
         for starting_node in &starts {
-            if self.next_per_node.contains_key(starting_node) {
-                let starting_next_nodes = self.next_per_node.get(starting_node).unwrap();
+            if let Some(starting_next_nodes) = self.next_per_node.get(starting_node) {
                 for this_node in starting_next_nodes {
                     assembled_haps.push(vec![*starting_node, *this_node]);
                 }
@@ -83,8 +82,7 @@ impl FpGraph {
         let mut assembled_haps: Vec<Vec<i32>> = Vec::new();
         let mut incomplete_haps_backward: Vec<Vec<i32>> = Vec::new();
         for ending_node in &ends {
-            if self.previous_per_node.contains_key(ending_node) {
-                let ending_next_nodes = self.previous_per_node.get(ending_node).unwrap();
+            if let Some(ending_next_nodes) = self.previous_per_node.get(ending_node) {
                 for this_node in ending_next_nodes {
                     assembled_haps.push(vec![*this_node, *ending_node]);
                 }
@@ -151,19 +149,19 @@ impl FpGraph {
             if nodes_not_used.is_empty() || nstep > 5 {
                 break;
             }
-            let node = nodes_not_used.first().unwrap();
+            let Some(node) = nodes_not_used.first() else {
+                break;
+            };
             debug!("checking unused node {node}");
             let extended_haps = self.assemble_next_simple(vec![*node])?;
-            if !extended_haps.is_empty() {
-                let this_node_extended = extended_haps.first().unwrap();
+            if let Some(this_node_extended) = extended_haps.first() {
                 if !incomplete_haps.contains(this_node_extended) {
                     incomplete_haps.push(this_node_extended.to_vec());
                     debug!("adding {this_node_extended:?} to incomplete_haps");
                 }
             } else {
                 let extended_haps = self.assemble_prev_simple(vec![*node])?;
-                if !extended_haps.is_empty() {
-                    let this_node_extended = extended_haps.first().unwrap();
+                if let Some(this_node_extended) = extended_haps.first() {
                     if !incomplete_haps.contains(this_node_extended) {
                         incomplete_haps.push(this_node_extended.to_vec());
                         debug!("adding {this_node_extended:?} to incomplete_haps");

@@ -730,19 +730,20 @@ impl Variant {
     /// This will return the index allele for a given haplotype index.
     /// Input must always be 0 or 1, but it might get converted to something else at multi-allelic sites.
     /// # Arguments
-    /// * `index` - must be 0, 1, or 2 (unknown)
-    /// # Panics
-    /// * if anything other than 0, 1, or 2 is provided
+    /// * `index` - the allele classification to convert into a VCF allele index
+    ///
+    /// Ambiguous and no-overlap classifications are both encoded as `u8::MAX`
+    /// because they do not map to a concrete allele index.
     pub fn convert_index(&self, index: AlleleType) -> u8 {
         if index == AlleleType::Reference {
             self.index_allele0
         } else if index == AlleleType::Alternate {
             self.index_allele1
-        } else if index == AlleleType::Ambiguous {
-            // we just need some indicator that it's undetermined, this will work for now
+        } else if index == AlleleType::Ambiguous || index == AlleleType::NoOverlap {
+            // we just need some indicator that it's undetermined or absent.
             u8::MAX
         } else {
-            panic!("index must be 0, 1, or 2");
+            u8::MAX
         }
     }
 }
@@ -793,7 +794,7 @@ pub fn edit_distance(v1: &[u8], v2: &[u8]) -> usize {
             ]
             .into_iter()
             .min()
-            .unwrap();
+            .unwrap_or(usize::MAX);
         }
 
         // swap the rows at the end of each iteration
