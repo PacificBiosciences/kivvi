@@ -358,7 +358,7 @@ pub fn global_realignment(
     let wfa_result: WFAResult = match wfa_graph.edit_distance_with_pruning(read_align, 500) {
         Ok(r) => r,
         Err(_e) => {
-            debug!("realignment failed on read {segment_name}...");
+            debug!("realignment failed on read {segment_name}");
             return Ok(vec![b'x'; total_num_pos]);
         }
     };

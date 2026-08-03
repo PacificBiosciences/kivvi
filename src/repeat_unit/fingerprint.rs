@@ -145,7 +145,7 @@ pub fn get_fingerprint(
         let ref_name = ref_reader.seq_name(i as i32)?;
         let ref_len = ref_reader.fetch_seq_len(&ref_name);
         let ref_seq = ref_reader.fetch_seq(&ref_name, 0, ref_len as usize)?;
-        log::debug!("index {i} ref_len {ref_len}");
+        debug!("reference index {i} has length {ref_len}");
         if unfiltered_sites_by_tid.contains_key(&(i as i32)) {
             let unfiltered_sites = unfiltered_sites_by_tid.get(&(i as i32)).ok_or_else(|| {
                 missing_data_error("unfiltered sites for reference tid", i.to_string())

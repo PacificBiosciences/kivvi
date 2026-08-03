@@ -639,7 +639,9 @@ fn get_polya(
             } else if count_t <= 1 {
                 polya = String::from("qADisruptedPolyA");
             }
-            log::debug!("allele {allele_old:?} polyA site {common_base:?} all_count {all_count} count_t {count_t}");
+            debug!(
+                "allele {allele_old:?} polyA site {common_base:?} all_count {all_count} count_t {count_t}"
+            );
         }
     }
     Ok(polya)

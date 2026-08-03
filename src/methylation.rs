@@ -544,7 +544,7 @@ pub fn decode_on_plus(bases: &[u8], meth: &MethInfo, qname: &str) -> Result<Vec<
     }
 
     if non_cpgs_called > 0 {
-        warn!("Warning: non_cpgs_called = {non_cpgs_called}");
+        warn!("observed {non_cpgs_called} non-CpG methylation calls");
     }
 
     Ok(profile)
@@ -597,7 +597,7 @@ pub fn decode_on_minus(bases: &[u8], meth: &MethInfo, qname: &str) -> Result<Vec
     }
 
     if non_cpgs_called > 0 {
-        warn!("Warning: non_cpgs_called = {non_cpgs_called}");
+        warn!("observed {non_cpgs_called} non-CpG methylation calls");
     }
 
     Ok(profile)

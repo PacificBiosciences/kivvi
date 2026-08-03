@@ -217,7 +217,7 @@ fn prepare_d4z4_analysis(
     d4z4_graph_parameters: &GraphParameters,
     sensitive: bool,
 ) -> Result<D4z4PreparedAnalysis, DError> {
-    debug!("Realign reads to repeat unit...");
+    debug!("realigning reads to repeat unit");
     let (realn_records_unfiltered, read_length, writer, methyl_tags, methyl_probs) = realign(
         cli_settings.bam_filename.clone(),
         region_coordinates.clone(),
@@ -245,7 +245,7 @@ fn prepare_d4z4_analysis(
         repeat_records.len(),
     )?;
 
-    debug!("Get flanking reads...");
+    debug!("collecting flanking reads");
     let (flanking_reads, clipped_reads) = get_start_end_d4z4(
         realigned_bam.clone(),
         reference,
@@ -265,14 +265,14 @@ fn prepare_d4z4_analysis(
     }
 
     debug!("white_list_read_segments {:?}", white_list_read_segments);
-    debug!("Get read depth...");
+    debug!("calculating read depth");
     let depth_summary = depth_based_cn(
         cli_settings.bam_filename.clone(),
         realigned_bam.clone(),
         region_coordinates.clone(),
     )?;
 
-    debug!("Get fingerprints...");
+    debug!("building fingerprints");
     let (mut fp_info, bases_at_pivot_site, cpg_sites_per_read) = get_fingerprint(
         realigned_bam.clone(),
         reference,
@@ -287,7 +287,7 @@ fn prepare_d4z4_analysis(
         sensitive,
     )?;
 
-    debug!("Remove redundant fingerprints...");
+    debug!("removing redundant fingerprints");
     loop {
         let (new_fp_info, changed) = rm_redundant_finger_prints(
             fp_info,
@@ -326,7 +326,7 @@ fn prepare_d4z4_analysis(
     let haploid_depth = starting_reads_count / 4.0;
 
     let read_info = fp_info.clone().read_bases;
-    debug!("Tag reads with fingerprints...");
+    debug!("tagging reads with fingerprints");
     let _tag_success = tag_reads(
         repeat_records,
         fp_info.clone().grouped_reads,
@@ -412,7 +412,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     let predefined_variants = get_predefined_variants(cli_settings.variant_list.clone())?;
 
     // realign reads and filter alignments
-    debug!("Realign reads to repeat unit...");
+    debug!("realigning reads to repeat unit");
     let (realn_records_unfiltered, read_length, writer, _methyl_tags, _methyl_probs) = realign(
         cli_settings.bam_filename.clone(),
         region_coordinates.clone(),
@@ -440,7 +440,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     )?;
 
     // get flanking reads
-    debug!("Get flanking reads...");
+    debug!("collecting flanking reads");
     let flanking_reads = get_start_end_from_genome(
         cli_settings.bam_filename.clone(),
         region_coordinates.clone(),
@@ -450,7 +450,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     debug!("ending_reads_flank: {:?}", flanking_reads.end);
 
     // get genome depth and repeat depth
-    debug!("Get read depth...");
+    debug!("calculating read depth");
     let depth_summary = depth_based_cn(
         cli_settings.bam_filename.clone(),
         realigned_bam.clone(),
@@ -458,7 +458,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     )?;
 
     // get fingerprints
-    debug!("Get fingerprints...");
+    debug!("building fingerprints");
     let (mut fp_info, _bases_at_pivot_site, _cpg_sites_per_read) = get_fingerprint(
         realigned_bam.clone(),
         &reference,
@@ -474,7 +474,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     )?;
 
     // remove redundant fingerprints
-    debug!("Remove redundant fingerprints...");
+    debug!("removing redundant fingerprints");
     loop {
         let (new_fp_info, changed) = rm_redundant_finger_prints(
             fp_info,
@@ -489,7 +489,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     let read_info = fp_info.clone().read_bases;
 
     // tag reads in bam by fingerprints
-    debug!("Tag reads with fingerprints...");
+    debug!("tagging reads with fingerprints");
     let _ = tag_reads(
         repeat_records,
         fp_info.clone().grouped_reads,
@@ -500,7 +500,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     )?;
 
     // graph assembler
-    debug!("Assemble alleles...");
+    debug!("assembling alleles");
     let mut fp_graph = build_graph(
         fp_info.clone().read_edges,
         kiv2_graph_parameters.min_overlap,
@@ -512,7 +512,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     );
 
     // call variants on fingerprints
-    debug!("Call variants...");
+    debug!("calling variants");
     let variant_report = report_variants(
         fp_info.clone(),
         assembly_result.clone(),
@@ -523,7 +523,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     )?;
 
     // write to json
-    debug!("Write to json...");
+    debug!("writing JSON output");
     // convert supporting reads to renamed alleles
     let nonunique_reads: HashSet<&str> = assembly_result
         .nonunique_reads
@@ -847,7 +847,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     } = prepared;
 
     // find in-cis duplications
-    debug!("Find in-cis duplications...");
+    debug!("finding in-cis duplications");
     let all_haps = kept_starting_haps
         .iter()
         .chain(kept_ending_haps.iter())
@@ -902,7 +902,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     }
 
     // call variants on fingerprints
-    debug!("Call variants...");
+    debug!("calling variants");
     let variant_report = report_variants(
         fp_info.clone(),
         assembly_result.clone(),
@@ -963,7 +963,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     hap_backgrounds = updated_hap_backgrounds;
 
     // join partial alleles
-    debug!("Join partial alleles...");
+    debug!("joining partial alleles");
     let allele_summaries = join_partial_alleles(
         &mut all_starts_hap_backgrounds,
         &mut all_ends_hap_backgrounds,
@@ -978,7 +978,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     )?;
 
     // write to json
-    debug!("Write to json...");
+    debug!("writing JSON output");
     // convert supporting reads to renamed alleles
     let nonunique_reads: HashSet<&str> = assembly_result
         .nonunique_reads
@@ -1192,7 +1192,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     writeln!(writer, "{}", serde_json::to_string_pretty(&sample_call)?)?;
 
     // write to vcf
-    debug!("Write to VCF...");
+    debug!("writing VCF output");
     std::fs::File::create(output_vcf.clone())?;
     write_vcf(
         &output_vcf,
@@ -1203,7 +1203,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     )?;
 
     // plot
-    debug!("Plot alleles...");
+    debug!("plotting alleles");
     let alleles_for_plot = variant_report.alleles_for_plot;
     if let Some(to_plot) = alleles_for_plot {
         plot_alleles_and_reads(&output_svg, to_plot)?;

@@ -103,7 +103,7 @@ pub fn filter_complete_alleles(
         let allele_len = allele.len();
         if allele_len <= 16 {
             let repeat_pos = get_repeat(allele);
-            log::debug!("allele {allele:?} any stretch of identical units: {repeat_pos:?}");
+            debug!("allele {allele:?} has identical-unit stretches at {repeat_pos:?}");
             let mut repeat_pos_support: BTreeMap<usize, Vec<Vec<i32>>> = BTreeMap::new();
             let mut suspicious_forward: BTreeMap<usize, Vec<Vec<i32>>> = BTreeMap::new();
             let mut suspicious_reverse: BTreeMap<usize, Vec<Vec<i32>>> = BTreeMap::new();

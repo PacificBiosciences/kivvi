@@ -863,7 +863,7 @@ impl FpGraph {
                 .iter()
                 .position(|x| *x == *hap)
                 .ok_or("item not found")?;
-            log::debug!("removing redundant incomplete haplotype {hap:?}");
+            debug!("removing redundant incomplete haplotype {hap:?}");
             incomplete_haps.remove(index);
         }
         let merged_result = self.merge_two_incomplete(complete_haps, incomplete_haps)?;

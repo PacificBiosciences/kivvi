@@ -154,7 +154,7 @@ pub fn clean_up_segment_raw_fps(
         let s3: Vec<i64> = (&s1 - &s2).iter().cloned().collect::<Vec<_>>();
         if s1.len() - s3.len() > s2.len() - 10 {
             remove_type2_sites = true;
-            debug!("sample has type2 sites...removing these sites...");
+            debug!("sample has type2 sites; removing them from the candidate set");
         }
     }
 
@@ -1108,9 +1108,7 @@ pub fn rm_redundant_finger_prints(
             .filter(|x| x.contains(hap1_name))
             .collect::<Vec<_>>();
         let (hap1_prev, hap1_next) = get_prev_next(reads1.clone(), *hap1_name, true);
-        log::trace!(
-            "Evaluating {hap1_name} previous nodes {hap1_prev:?}, next nodes {hap1_next:?}"
-        );
+        trace!("Evaluating {hap1_name} previous nodes {hap1_prev:?}, next nodes {hap1_next:?}");
         // For D4Z4, do not replace if a node has no previous or next nodes
         if include_all_links && (hap1_prev.is_empty() || hap1_next.is_empty()) {
             continue;

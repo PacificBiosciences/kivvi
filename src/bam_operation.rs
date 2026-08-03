@@ -756,7 +756,7 @@ pub fn tag_reads(
                 record.push_aux(b"HP", bam::record::Aux::String(&hp_tag.to_string()))?;
             }
         } else {
-            debug!("read {new_name} has no fp mapping...");
+            debug!("read {new_name} has no fingerprint mapping");
         }
         // offset position
         let genome_position = *reference_start_pos + 1 + *this_offset as i64;

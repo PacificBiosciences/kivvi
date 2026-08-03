@@ -95,7 +95,7 @@ fn genotype_homopolymer(
     reference: &PathBuf,
     region_coordinates: &RegionCoordinates,
 ) -> Result<(BTreeMap<String, u8>, bool), DError> {
-    debug!("Genotype the homopolymer region at position 3113...");
+    debug!("genotyping the homopolymer region at position 3113");
     let mut success = false;
     let mut expected_variant: BTreeMap<String, u8> = BTreeMap::new();
     expected_variant.insert(String::from("A"), b'0');
@@ -214,7 +214,7 @@ fn genotype_str(
     reference: &PathBuf,
     region_coordinates: &RegionCoordinates,
 ) -> Result<(BTreeMap<String, u8>, bool), DError> {
-    debug!("Genotype the STR region around position 138...");
+    debug!("genotyping the STR region around position 138");
     let mut success = false;
     let mut expected_variant: BTreeMap<String, u8> = BTreeMap::new();
     expected_variant.insert(String::from("2_7_36"), b'0');
