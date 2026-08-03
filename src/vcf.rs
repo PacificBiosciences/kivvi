@@ -30,15 +30,8 @@ pub fn write_vcf(
     // sort variant_summary
     let variant_summary_pos = variant_summary
         .keys()
-        .map(|x| {
-            x.split_terminator(':')
-                .collect::<Vec<_>>()
-                .first()
-                .unwrap()
-                .parse::<i64>()
-                .unwrap()
-        })
-        .collect::<Vec<i64>>();
+        .map(|x| parse_variant_key(x).map(|parsed| parsed.position))
+        .collect::<Result<Vec<i64>, DError>>()?;
     let all_var_sorted = variant_summary
         .keys()
         .zip(variant_summary_pos.iter())
@@ -76,18 +69,13 @@ pub fn write_vcf(
     for variant in all_var_sorted {
         let variant_info = variant_summary.get(&variant).ok_or("key not found")?;
         let mut record = writer.empty_record();
+        let parsed_variant = parse_variant_key(&variant)?;
 
         let contig = region_coordinates.chromosome_output.as_bytes();
         let rid = writer.header().name2rid(contig)?;
         record.set_rid(Some(rid));
 
-        let variant_pos = variant
-            .clone()
-            .split_terminator(':')
-            .collect::<Vec<_>>()
-            .first()
-            .ok_or("first not found")?
-            .parse::<i64>()?;
+        let variant_pos = parsed_variant.position;
         record.set_pos(variant_pos - 1);
 
         // variant quality?
@@ -97,30 +85,10 @@ pub fn write_vcf(
         let (data, alleles_per_variant) = encode_ru_field(variant_info.to_vec())?;
         record.push_info_string(b"RU", &[data.as_bytes()])?;
 
-        let ref_base = variant
-            .clone()
-            .split_terminator(':')
-            .collect::<Vec<_>>()
-            .last()
-            .ok_or("last not found")?
-            .split_terminator('>')
-            .collect::<Vec<_>>()
-            .first()
-            .ok_or("first not found")?
-            .to_string();
-        let alt_base = variant
-            .clone()
-            .split_terminator(':')
-            .collect::<Vec<_>>()
-            .last()
-            .ok_or("last not found")?
-            .split_terminator('>')
-            .collect::<Vec<_>>()
-            .last()
-            .ok_or("last not found")?
-            .to_string();
-
-        let alleles: &[&[u8]] = &[ref_base.as_bytes(), alt_base.as_bytes()];
+        let alleles: &[&[u8]] = &[
+            parsed_variant.ref_base.as_bytes(),
+            parsed_variant.alt_base.as_bytes(),
+        ];
         record.set_alleles(alleles)?;
         record.set_filters(&["PASS".as_bytes()])?;
 
@@ -159,13 +127,17 @@ fn encode_ru_field(results: Vec<VariantInfoByVariant>) -> Result<(String, HashSe
         if let Some(allele_name_string) = allele_name {
             encoding += allele_name_string;
             let allele_index = allele_name_string
-                .to_string()
                 .split_terminator('.')
-                .collect::<Vec<_>>()
-                .first()
-                .ok_or("first not found")?
+                .next()
+                .ok_or_else(|| {
+                    format!("Unexpected allele name format in RU field: '{allele_name_string}'")
+                })?
                 .parse::<i64>()
-                .unwrap();
+                .map_err(|e| {
+                    format!(
+                        "Failed to parse allele index from RU field '{allele_name_string}': {e}"
+                    )
+                })?;
             alleles.insert(allele_index);
         } else {
             encoding += "Unknown";
@@ -177,4 +149,37 @@ fn encode_ru_field(results: Vec<VariantInfoByVariant>) -> Result<(String, HashSe
         encoding += &hap.nread.to_string();
     }
     Ok((encoding, alleles))
+}
+
+/// Parsed components of the internal variant key format used while building VCF
+/// records.
+struct ParsedVariantKey<'a> {
+    position: i64,
+    ref_base: &'a str,
+    alt_base: &'a str,
+}
+
+/// Parse a variant key of the form `POSITION:...:REF>ALT`.
+/// # Arguments
+/// * `variant` - internal variant identifier used by Kivvi
+/// # Returns
+/// * `ParsedVariantKey` - parsed position and allele components for VCF output
+fn parse_variant_key(variant: &str) -> Result<ParsedVariantKey<'_>, DError> {
+    let mut fields = variant.split_terminator(':');
+    let position = fields
+        .next()
+        .ok_or_else(|| format!("Variant key is missing a position: '{variant}'"))?
+        .parse::<i64>()
+        .map_err(|e| format!("Failed to parse variant position from '{variant}': {e}"))?;
+    let allele_field = fields
+        .next_back()
+        .ok_or_else(|| format!("Variant key is missing an allele field: '{variant}'"))?;
+    let (ref_base, alt_base) = allele_field
+        .split_once('>')
+        .ok_or_else(|| format!("Variant allele field is not REF>ALT in '{variant}'"))?;
+    Ok(ParsedVariantKey {
+        position,
+        ref_base,
+        alt_base,
+    })
 }

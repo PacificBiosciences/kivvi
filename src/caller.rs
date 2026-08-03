@@ -116,15 +116,18 @@ pub(crate) fn vec_to_string<T: Display>(haps: &Vec<Vec<T>>, separater: &str) -> 
         for fp in hap {
             let fp_string = fp.to_string();
             if fp_string.contains(&String::from("-")) {
-                let fp_int = fp_string.parse::<i64>().unwrap();
-                if fp_int < 0 {
-                    if fp_int > -10 {
-                        renamed_hap.push(String::from("LeftFlank"));
-                    } else if fp_int == -10 {
-                        renamed_hap.push(String::from("RightFlank"));
-                    } else {
-                        renamed_hap.push(String::from("RightFlankB"));
+                if let Ok(fp_int) = fp_string.parse::<i64>() {
+                    if fp_int < 0 {
+                        if fp_int > -10 {
+                            renamed_hap.push(String::from("LeftFlank"));
+                        } else if fp_int == -10 {
+                            renamed_hap.push(String::from("RightFlank"));
+                        } else {
+                            renamed_hap.push(String::from("RightFlankB"));
+                        }
                     }
+                } else {
+                    renamed_hap.push(fp_string);
                 }
             } else {
                 renamed_hap.push(fp_string);
@@ -311,7 +314,9 @@ fn prepare_d4z4_analysis(
         .filter(|(x, _y)| fp_info.read_edges.contains_key(*x))
         .map(|(_x, y)| *y as i32)
         .collect::<Vec<i32>>();
-    let median_read_length = median(&all_read_length).unwrap();
+    let median_read_length = median(&all_read_length).ok_or_else(|| {
+        format!("No read lengths remained for sample '{sample_id}' after fingerprint filtering")
+    })?;
     let mut starting_reads_count = 0.0;
     for read_edges in fp_info.read_edges.values() {
         if read_edges.iter().any(|x| *x < 0 && *x > -10) {
@@ -396,8 +401,12 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     let temp_dir = create_kivvi_temp_dir(output_path)?;
     // create temporary reference file
     let reference = temp_dir.path().join(format!("{sample_id}.kiv2.ref.fa"));
-    std::fs::write(&reference, region_coordinates.clone().reference_seq)
-        .expect("Unable to write temporary reference file");
+    std::fs::write(&reference, region_coordinates.clone().reference_seq).map_err(|e| {
+        format!(
+            "Unable to write temporary KIV2 reference file '{}': {e}",
+            reference.display()
+        )
+    })?;
     build_faidx(&reference)?;
     // predefined variant list
     let predefined_variants = get_predefined_variants(cli_settings.variant_list.clone())?;
@@ -557,9 +566,9 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
             .collect::<Vec<_>>();
         complete_allele_variants.insert(
             vec_to_string(&vec![allele], "-")
-                .first()
-                .unwrap()
-                .to_string(),
+                .into_iter()
+                .next()
+                .ok_or("Missing allele name after formatting complete allele variants")?,
             allele_variants_reformat,
         );
     }
@@ -642,8 +651,12 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     let temp_dir = create_kivvi_temp_dir(output_path)?;
     // create temporary reference file
     let reference = temp_dir.path().join(format!("{sample_id}.d4z4.ref.fa"));
-    std::fs::write(&reference, region_coordinates.clone().reference_seq)
-        .expect("Unable to write temporary reference file");
+    std::fs::write(&reference, region_coordinates.clone().reference_seq).map_err(|e| {
+        format!(
+            "Unable to write temporary D4Z4 reference file '{}': {e}",
+            reference.display()
+        )
+    })?;
     build_faidx(&reference)?;
     // create tempory file for the modified genome reference, specially made for d4z4
     lazy_static::lazy_static! {
@@ -655,11 +668,12 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         .target_names()
         .into_iter()
         .any(|name| name.starts_with(b"chr"));
+    let genome_reference_bytes = str::from_utf8(&GENOME_REFERENCE)
+        .map_err(|e| format!("Embedded D4Z4 genome reference is not valid UTF-8: {e}"))?;
     let d4z4_genome_reference_seq = if bam_uses_chr {
-        str::from_utf8(&GENOME_REFERENCE).unwrap().to_string()
+        genome_reference_bytes.to_string()
     } else {
-        str::from_utf8(&GENOME_REFERENCE)
-            .unwrap()
+        genome_reference_bytes
             .lines()
             .map(|line| {
                 if line.starts_with(">chr") {
@@ -672,8 +686,12 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
             .join("\n")
     };
     let genome_reference = temp_dir.path().join(format!("{sample_id}.d4z4.genome.fa"));
-    std::fs::write(&genome_reference, d4z4_genome_reference_seq)
-        .expect("Unable to write temporary genome reference file");
+    std::fs::write(&genome_reference, d4z4_genome_reference_seq).map_err(|e| {
+        format!(
+            "Unable to write temporary D4Z4 genome reference file '{}': {e}",
+            genome_reference.display()
+        )
+    })?;
     build_faidx(&genome_reference)?;
 
     // predefined variant list
@@ -721,14 +739,16 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         phasing_result.insert(String::from("DUX4p5"), dux4p5_call);
         phasing_result.insert(String::from("DUX4"), dux4_call);
         if write_paraphase_bam {
+            let dux4p5_bam = dux4p5_bam.ok_or(
+                "Paraphase did not return a DUX4p5 BAM path when BAM output was requested",
+            )?;
+            let dux4_bam = dux4_bam
+                .ok_or("Paraphase did not return a DUX4 BAM path when BAM output was requested")?;
             merge_phasing_bams(
                 sample_id,
                 output_path,
                 &cli_settings.bam_filename,
-                &[
-                    dux4p5_bam.expect("DUX4p5 bam missing"),
-                    dux4_bam.expect("DUX4 bam missing"),
-                ],
+                &[dux4p5_bam, dux4_bam],
             )?;
         } else {
             remove_phasing_bam(sample_id, output_path)?;
@@ -787,14 +807,17 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
             phasing_result.insert(String::from("DUX4"), dux4_call);
 
             if write_paraphase_bam {
+                let dux4p5_bam = dux4p5_bam.ok_or(
+                    "Paraphase did not return a DUX4p5 BAM path when BAM output was requested",
+                )?;
+                let dux4_bam = dux4_bam.ok_or(
+                    "Paraphase did not return a DUX4 BAM path when BAM output was requested",
+                )?;
                 merge_phasing_bams(
                     sample_id,
                     output_path,
                     &cli_settings.bam_filename,
-                    &[
-                        dux4p5_bam.expect("DUX4p5 bam missing"),
-                        dux4_bam.expect("DUX4 bam missing"),
-                    ],
+                    &[dux4p5_bam, dux4_bam],
                 )?;
             } else {
                 remove_phasing_bam(sample_id, output_path)?;
@@ -996,8 +1019,12 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     let final_complete = vec_to_string(&assembly_result.complete, "-");
 
     // summarize upstream/downstream haplotype backgrounds
-    let upstream_phasing_result = phasing_result.get(&String::from("DUX4p5")).unwrap();
-    let downstream_phasing_result = phasing_result.get(&String::from("DUX4")).unwrap();
+    let upstream_phasing_result = phasing_result
+        .get(&String::from("DUX4p5"))
+        .ok_or("Missing DUX4p5 phasing result after D4Z4 analysis")?;
+    let downstream_phasing_result = phasing_result
+        .get(&String::from("DUX4"))
+        .ok_or("Missing DUX4 phasing result after D4Z4 analysis")?;
     let mut flanking_phasing_info: BTreeMap<String, AlleleFlankingPhasing> = BTreeMap::new();
     let downstream_haps = &downstream_phasing_result.final_haplotypes;
     let downstream_reads = &downstream_phasing_result.unique_supporting_reads;

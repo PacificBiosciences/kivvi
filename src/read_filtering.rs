@@ -70,14 +70,7 @@ pub fn filter_realignments_hrnr(
         let reference_start_pos = realn_record.pos();
         let reference_end_pos = realn_record.reference_end();
         let alignment_len = reference_end_pos - reference_start_pos;
-        let qname = std::str::from_utf8(realn_record.qname())?.to_string();
-        let nm = realn_record.aux(b"NM");
-        if let Err(_e) = nm {
-            debug!("missing NM tag for read {qname}");
-        } else {
-            let nm = nm.expect("expect NM tag");
-            let mut nm = i32::try_from(extract_int_tag(&nm).expect("Tag was not integral."))
-                .expect("Could not store nm in i32");
+        if let Some(mut nm) = read_nm_tag(realn_record)? {
             let (longest_insertion_length, longest_deletion_length) =
                 get_longest_insertion_deletion(realn_record)?;
             if longest_insertion_length > 20 && nm > longest_insertion_length as i32 {
@@ -125,14 +118,7 @@ pub fn filter_realignments_nbpf(
         let reference_start_pos = realn_record.pos();
         let reference_end_pos = realn_record.reference_end();
         let alignment_len = reference_end_pos - reference_start_pos;
-        let qname = std::str::from_utf8(realn_record.qname())?.to_string();
-        let nm = realn_record.aux(b"NM");
-        if let Err(_e) = nm {
-            debug!("missing NM tag for read {qname}");
-        } else {
-            let nm = nm.expect("expect NM tag");
-            let mut nm = i32::try_from(extract_int_tag(&nm).expect("Tag was not integral."))
-                .expect("Could not store nm in i32");
+        if let Some(mut nm) = read_nm_tag(realn_record)? {
             let (longest_insertion_length, longest_deletion_length) =
                 get_longest_insertion_deletion(realn_record)?;
             if longest_insertion_length > 120 && nm > longest_insertion_length as i32 {
@@ -187,13 +173,7 @@ pub fn filter_realignments_d4z4(
         let alignment_len = reference_end_pos - reference_start_pos;
         let read_start_pos = start_pos_on_read(realn_record);
         let qname = std::str::from_utf8(realn_record.qname())?.to_string();
-        let nm = realn_record.aux(b"NM");
-        if let Err(_e) = nm {
-            debug!("missing NM tag for read {qname}");
-        } else {
-            let nm = nm.expect("expect NM tag");
-            let mut nm = i32::try_from(extract_int_tag(&nm).expect("Tag was not integral."))
-                .expect("Could not store nm in i32");
+        if let Some(mut nm) = read_nm_tag(realn_record)? {
             let (longest_insertion_length, longest_deletion_length) =
                 get_longest_insertion_deletion(realn_record)?;
             if longest_insertion_length > 150 && nm > longest_insertion_length as i32 {
@@ -304,7 +284,7 @@ fn interval_mismatch_p5_and_p3(
     p5_end: i64,
     p3_start: i64,
 ) -> Result<bool, DError> {
-    //let qname = std::str::from_utf8(record.qname())?;
+    let qname = std::str::from_utf8(record.qname())?;
     let mut region_match_3p = 0;
     let mut new_nm_3p = 0;
     let mut region_match_5p = 0;
@@ -319,8 +299,14 @@ fn interval_mismatch_p5_and_p3(
             let ref_pos = ref_pos as usize;
             if let Some(read_base) = seq.get(read_pos) {
                 let ref_base = ref_reader.fetch_seq(&ref_name, ref_pos, ref_pos)?;
+                let ref_base = ref_base.first().ok_or_else(|| {
+                    format!(
+                        "Reference base lookup returned empty sequence for read '{qname}' at {ref_name}:{}",
+                        ref_pos + 1
+                    )
+                })?;
                 region_match_5p += 1;
-                if read_base != ref_base.first().unwrap() {
+                if read_base != ref_base {
                     new_nm_5p += 1;
                 }
             }
@@ -330,8 +316,14 @@ fn interval_mismatch_p5_and_p3(
             let ref_pos = ref_pos as usize;
             if let Some(read_base) = seq.get(read_pos) {
                 let ref_base = ref_reader.fetch_seq(&ref_name, ref_pos, ref_pos)?;
+                let ref_base = ref_base.first().ok_or_else(|| {
+                    format!(
+                        "Reference base lookup returned empty sequence for read '{qname}' at {ref_name}:{}",
+                        ref_pos + 1
+                    )
+                })?;
                 region_match_3p += 1;
-                if read_base != ref_base.first().unwrap() {
+                if read_base != ref_base {
                     new_nm_3p += 1;
                 }
             }
@@ -370,10 +362,16 @@ fn interval_mismatch_kiv2(
             let ref_pos = ref_pos as usize;
             if let Some(read_base) = seq.get(read_pos) {
                 let ref_base = ref_reader.fetch_seq(&ref_name, ref_pos, ref_pos)?;
+                let ref_base = ref_base.first().ok_or_else(|| {
+                    format!(
+                        "Reference base lookup returned empty sequence for read '{qname}' at {ref_name}:{}",
+                        ref_pos + 1
+                    )
+                })?;
                 //debug!("read_pos {read_pos:?} ref_pos {ref_pos:?} read_base {read_base:?} ref_base {ref_base:?}");
                 region_match += 1;
                 region_match_5p += 1;
-                if read_base != ref_base.first().unwrap() {
+                if read_base != ref_base {
                     new_nm += 1;
                     if ref_pos + 1 < 3560 {
                         new_nm_5p += 1;
@@ -444,4 +442,28 @@ fn extract_int_tag(tag: &bam::record::Aux) -> Option<i64> {
         rust_htslib::bam::record::Aux::U32(tag) => Some(i64::from(*tag)),
         _ => None,
     }
+}
+
+/// Read the `NM` edit-distance tag from a BAM record.
+/// Missing `NM` tags are treated as non-fatal and return `Ok(None)` so callers
+/// can preserve the existing "skip this record" behavior. Malformed integer
+/// values return an error annotated with the read name.
+/// # Arguments
+/// * `record` - BAM record whose `NM` tag should be inspected
+/// # Returns
+/// * `Option<i32>` - parsed `NM` value when present
+fn read_nm_tag(record: &bam::Record) -> Result<Option<i32>, DError> {
+    let qname = std::str::from_utf8(record.qname())?.to_string();
+    let nm = match record.aux(b"NM") {
+        Ok(nm) => nm,
+        Err(_e) => {
+            debug!("missing NM tag for read {qname}");
+            return Ok(None);
+        }
+    };
+    let nm =
+        extract_int_tag(&nm).ok_or_else(|| format!("Read '{qname}' has a non-integer NM tag"))?;
+    let nm = i32::try_from(nm)
+        .map_err(|_| format!("Read '{qname}' has an NM tag outside the i32 range: {nm}"))?;
+    Ok(Some(nm))
 }

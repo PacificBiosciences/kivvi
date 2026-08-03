@@ -162,31 +162,37 @@ pub fn seq2seq(
     let sam_records =
         aligner.map_to_sam(&seq, Some(&qual), Some(&qname), header_view, None, None)?;
     qual.iter_mut().for_each(|x| *x -= 33);
-    let records = mappings
-        .iter_mut()
-        .zip(sam_records)
-        .map(|(mapping, sam_mapping)| {
-            let mut record = minimap2::htslib::mapping_to_record(
-                Some(mapping),
-                &seq,
-                header.clone(),
-                Some(&qual),
-                Some(&qname),
-            );
-            let query_name = std::str::from_utf8(qname).unwrap();
-            mapping.query_name = Some(query_name.to_string().into());
-            let this_ref_name = mapping.target_name.clone().unwrap();
-            let ref_index = ref_names.iter().position(|x| *x == *this_ref_name).unwrap();
-            record.set_tid(ref_index as i32);
-            for aux in sam_mapping.aux_iter() {
-                let (aux_name, aux_field) = aux.expect("Aux error");
-                record
-                    .push_aux(aux_name, aux_field)
-                    .expect("push_aux error");
-            }
-            (mapping, record)
-        })
-        .collect::<Vec<_>>();
+    let query_name = std::str::from_utf8(qname)?.to_string();
+    let mut records = Vec::with_capacity(mappings.len());
+    for (mapping, sam_mapping) in mappings.iter_mut().zip(sam_records) {
+        let mut record = minimap2::htslib::mapping_to_record(
+            Some(mapping),
+            &seq,
+            header.clone(),
+            Some(&qual),
+            Some(&qname),
+        );
+        mapping.query_name = Some(query_name.clone().into());
+        let this_ref_name = mapping.target_name.clone().ok_or_else(|| {
+            format!("Read '{query_name}' is missing a target name after remapping")
+        })?;
+        let ref_index = ref_names
+            .iter()
+            .position(|x| *x == *this_ref_name)
+            .ok_or_else(|| {
+                format!("Read '{query_name}' mapped to unknown reference '{this_ref_name}'")
+            })?;
+        record.set_tid(ref_index as i32);
+        for aux in sam_mapping.aux_iter() {
+            let (aux_name, aux_field) = aux.map_err(|e| {
+                format!("Failed to read SAM auxiliary field for '{query_name}': {e}")
+            })?;
+            record.push_aux(aux_name, aux_field).map_err(|e| {
+                format!("Failed to attach SAM auxiliary field for '{query_name}': {e}")
+            })?;
+        }
+        records.push((mapping, record));
+    }
     let mut alignments = Vec::with_capacity(records.len());
     let original_orientation_tag = if is_reverse { b'R' } else { b'F' };
     for (mapping, mut record) in records {
@@ -200,15 +206,17 @@ pub fn seq2seq(
             .alignment
             .as_ref()
             .and_then(|alignment| alignment.cigar.as_ref())
-            .unwrap()
+            .ok_or_else(|| {
+                format!("Read '{query_name}' is missing alignment cigar after remapping")
+            })?
             .to_owned();
         let mapping_to_record_cig = record.cigar().to_string();
-        let map_to_sam_cig = cigar_to_cigarstr(&cigar).to_string();
+        let map_to_sam_cig = cigar_to_cigarstr(&cigar, &query_name)?.to_string();
         if map_to_sam_cig != mapping_to_record_cig {
             warn!(
                 "Cigar for mapping_to_record: {} is different from Cigar found in map_to_sam: {}",
                 record.cigar(),
-                cigar_to_cigarstr(&cigar)
+                cigar_to_cigarstr(&cigar, &query_name)?
             );
         }
         // Now add softclips
@@ -230,7 +238,7 @@ pub fn seq2seq(
                 cigar.push((overhang as u32, SOFT_CLIP)); // soft-clip
             }
         }
-        let cigar_str = cigar_to_cigarstr(&cigar);
+        let cigar_str = cigar_to_cigarstr(&cigar, &query_name)?;
         record.set(&qname, Some(&cigar_str), &original_seq, original_qual);
         record.push_aux(b"or", bam::record::Aux::Char(original_orientation_tag))?;
         debug_assert_eq!(query_length_cigar(&cigar_str) as usize, record.seq_len(), "cigar qlen {} for cigar {cigar_str}/{cigar:?}, mapping {mapping:?} and record {record:?}", query_length_cigar(&cigar_str));
@@ -269,13 +277,13 @@ pub fn consumes_qry(x: bam::record::Cigar) -> bool {
 /// Convert minimap2-rs cigar to a cigar string.
 /// # Arguments
 /// * `cigar` - cigar vector
+/// * `query_name` - read name used to annotate any conversion error
 /// # Returns
 /// * `CigarString` - cigar string
-fn cigar_to_cigarstr(cigar: &Vec<(u32, u8)>) -> CigarString {
-    let op_vec: Vec<Cigar> = cigar
-        .to_owned()
-        .iter()
-        .map(|(len, op)| match op {
+fn cigar_to_cigarstr(cigar: &Vec<(u32, u8)>, query_name: &str) -> Result<CigarString, DError> {
+    let mut op_vec = Vec::with_capacity(cigar.len());
+    for (len, op) in cigar {
+        let cigar_op = match op {
             0 => Cigar::Match(*len),
             1 => Cigar::Ins(*len),
             2 => Cigar::Del(*len),
@@ -285,10 +293,16 @@ fn cigar_to_cigarstr(cigar: &Vec<(u32, u8)>) -> CigarString {
             6 => Cigar::Pad(*len),
             7 => Cigar::Equal(*len),
             8 => Cigar::Diff(*len),
-            _ => panic!("Unexpected cigar operation"),
-        })
-        .collect();
-    CigarString(op_vec)
+            _ => {
+                return Err(format!(
+                    "Read '{query_name}' produced an unexpected cigar opcode: {op}"
+                )
+                .into())
+            }
+        };
+        op_vec.push(cigar_op);
+    }
+    Ok(CigarString(op_vec))
 }
 
 /// Get the starting position on the read
@@ -321,11 +335,11 @@ fn interval_mismatch(
     start: i64,
     end: i64,
 ) -> Result<bool, DError> {
-    if genome_reference.is_none() {
+    let Some(genome_reference) = genome_reference else {
         return Ok(true);
-    }
-    let ref_reader = faidx::Reader::from_path(genome_reference.unwrap())?;
-    //let qname = std::str::from_utf8(record.qname())?;
+    };
+    let ref_reader = faidx::Reader::from_path(genome_reference)?;
+    let qname = std::str::from_utf8(record.qname())?;
     let mut region_match = 0;
     let mut new_nm = 0;
     let seq = record.seq().as_bytes();
@@ -338,8 +352,14 @@ fn interval_mismatch(
             let ref_pos = ref_pos as usize;
             if let Some(read_base) = seq.get(read_pos) {
                 let ref_base = ref_reader.fetch_seq(&ref_name, ref_pos, ref_pos)?;
+                let ref_base = ref_base.first().ok_or_else(|| {
+                    format!(
+                        "Reference base lookup returned empty sequence for read '{qname}' at {ref_name}:{}",
+                        ref_pos + 1
+                    )
+                })?;
                 region_match += 1;
-                if read_base != ref_base.first().unwrap() {
+                if read_base != ref_base {
                     new_nm += 1;
                 }
             }
@@ -443,7 +463,9 @@ pub fn get_clipped_reads(
         let segment_name = format!("{qname}:{}:{}", read_start_pos, alignment_len);
         // clip on p5
         if reference_start_pos >= 5 {
-            let first_cigar = record_cigar.first().unwrap();
+            let first_cigar = record_cigar.first().ok_or_else(|| {
+                format!("Read segment '{segment_name}' has an empty cigar while checking 5' clips")
+            })?;
             match first_cigar {
                 Cigar::SoftClip(softclip_len) => {
                     if *softclip_len > 100 {
@@ -458,7 +480,9 @@ pub fn get_clipped_reads(
         }
         // clip on p3
         if reference_end_pos < ref_len as i64 - 5 {
-            let last_cigar = record_cigar.last().unwrap();
+            let last_cigar = record_cigar.last().ok_or_else(|| {
+                format!("Read segment '{segment_name}' has an empty cigar while checking 3' clips")
+            })?;
             match last_cigar {
                 Cigar::SoftClip(softclip_len) => {
                     if *softclip_len > 100 {
@@ -531,8 +555,12 @@ pub fn get_start_end_d4z4(
     let mut starting_segments_flank = HashSet::new();
     let mut ending_segments_flank = HashSet::new();
     let mut bam_reader = bam::IndexedReader::from_path(bam_name)?;
-    let start_positions_flank = region_coordinates.start_positions_flank.unwrap();
-    let end_positions_flank = region_coordinates.end_positions_flank.unwrap();
+    let start_positions_flank = region_coordinates.start_positions_flank.ok_or(
+        "D4Z4 region is missing configured start flank positions for clipped-read detection",
+    )?;
+    let end_positions_flank = region_coordinates.end_positions_flank.ok_or(
+        "D4Z4 region is missing configured end flank positions for clipped-read detection",
+    )?;
     let ref_reader = faidx::Reader::from_path(reference)?;
     let ref_name = ref_reader.seq_name(0)?;
 
@@ -564,7 +592,9 @@ pub fn get_start_end_d4z4(
         if reference_start_pos >= 8
             && reference_start_pos < region_coordinates.repeat_len as i64 - 50
         {
-            let first_cigar = record_cigar.first().unwrap();
+            let first_cigar = record_cigar.first().ok_or_else(|| {
+                format!("Read segment '{segment_name}' has an empty cigar while checking 5' clips")
+            })?;
             match first_cigar {
                 Cigar::SoftClip(softclip_len) => {
                     if *softclip_len > 100 {
@@ -586,7 +616,9 @@ pub fn get_start_end_d4z4(
         }
         // clip on p3
         if reference_end_pos > 50 && reference_end_pos < region_coordinates.repeat_len as i64 - 50 {
-            let last_cigar = record_cigar.last().unwrap();
+            let last_cigar = record_cigar.last().ok_or_else(|| {
+                format!("Read segment '{segment_name}' has an empty cigar while checking 3' clips")
+            })?;
             match last_cigar {
                 Cigar::SoftClip(softclip_len) => {
                     if *softclip_len > 100 {
@@ -691,7 +723,12 @@ pub fn tag_reads(
         let read_name = std::str::from_utf8(record.clone().qname())?.to_string();
         let tid = record.tid();
         let ref_name = ref_reader.seq_name(tid as i32)?;
-        let this_offset = region_coordinates.genome_offset.get(&ref_name).unwrap();
+        let this_offset = region_coordinates
+            .genome_offset
+            .get(&ref_name)
+            .ok_or_else(|| {
+                format!("No genome offset configured for repeat reference '{ref_name}'")
+            })?;
         let read_start_pos = start_pos_on_read(&record);
         let reference_start_pos = &record.pos();
         let reference_end_pos = &record.reference_end();
@@ -729,8 +766,14 @@ pub fn tag_reads(
                             let mut new_sa_record: Vec<String> = Vec::new();
                             new_sa_record.push(chr_name.clone());
                             let this_sa_chr = parts[0];
-                            let this_sa_offset =
-                                region_coordinates.genome_offset.get(this_sa_chr).unwrap();
+                            let this_sa_offset = region_coordinates
+                                .genome_offset
+                                .get(this_sa_chr)
+                                .ok_or_else(|| {
+                                    format!(
+                                        "No genome offset configured for supplementary alignment reference '{this_sa_chr}'"
+                                    )
+                                })?;
                             let this_sa_position =
                                 parts[1].parse::<i64>()? + 1 + *this_sa_offset as i64;
                             new_sa_record.push(this_sa_position.to_string());
