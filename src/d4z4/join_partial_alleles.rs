@@ -1773,6 +1773,17 @@ mod tests {
     }
 
     #[test]
+    fn test_get_methylation_value_missing_allele_returns_nan() {
+        let methyl_values = BTreeMap::new();
+        let allele = "missing-allele".to_string();
+        let result = get_methylation_value(&allele, &methyl_values, None).unwrap();
+        assert!(
+            result.is_nan(),
+            "missing methylation values should return NaN"
+        );
+    }
+
+    #[test]
     fn test_get_methylation_value_mixed_nan_and_numeric() {
         let parts = vec![
             vec![0; 5],

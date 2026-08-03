@@ -198,7 +198,11 @@ impl WFAGraph {
                         "reconnect queue became empty while resolving variants near position {variant_pos}"
                     )));
                 };
-                assert!(alt_reconnect > previous_end);
+                if alt_reconnect <= previous_end {
+                    return Err(invalid_data_error(format!(
+                        "Reconnect position {alt_reconnect} does not advance beyond previous reference end {previous_end}"
+                    )));
+                }
 
                 // first, we have to build up the reference node up until the reconnect point
                 let ref_sequence: Vec<u8> = reference[previous_end..alt_reconnect].to_vec();
@@ -225,7 +229,14 @@ impl WFAGraph {
                             "reconnect queue became empty while grouping reconnections at {alt_reconnect}"
                         )));
                     };
-                    assert_eq!(alt_reconnect, ar2);
+                    if alt_reconnect != ar2 {
+                        return Err(WFAGraphError::InternalInvariant {
+                            message: format!(
+                                "Reconnect queue yielded mismatched positions {alt_reconnect} and {ar2} while grouping reconnections"
+                            ),
+                        }
+                        .into());
+                    }
                     reference_reconnect.push(ai2);
                 }
             }
@@ -248,8 +259,11 @@ impl WFAGraph {
                 // set these fields for the next reference node that gets added
                 reference_reconnect = vec![reference_index];
                 previous_end = variant_pos;
+            } else if previous_end > variant_pos {
+                return Err(invalid_data_error(format!(
+                    "Variant at position {variant_pos} overlaps previously consumed reference ending at {previous_end}"
+                )));
             } else {
-                assert!(previous_end == variant_pos);
                 // in this situation, we have already generated the sequence up to this variant, likely because two variants start at the same location
                 // we should not have to do anything special because we already know the upstream index
             }
@@ -299,7 +313,11 @@ impl WFAGraph {
                     "reconnect queue became empty while draining downstream reconnections",
                 ));
             };
-            assert!(alt_reconnect > previous_end);
+            if alt_reconnect <= previous_end {
+                return Err(invalid_data_error(format!(
+                    "Reconnect position {alt_reconnect} does not advance beyond previous reference end {previous_end}"
+                )));
+            }
             let ref_sequence: Vec<u8> = reference[previous_end..alt_reconnect].to_vec();
             reference_index = graph.add_node(ref_sequence, reference_reconnect)?;
             if !reference_alleles.is_empty() {
@@ -322,18 +340,36 @@ impl WFAGraph {
                         "reconnect queue became empty while coalescing downstream reconnections at {alt_reconnect}"
                     )));
                 };
-                assert_eq!(alt_reconnect, ar2);
+                if alt_reconnect != ar2 {
+                    return Err(WFAGraphError::InternalInvariant {
+                        message: format!(
+                            "Reconnect queue yielded mismatched positions {alt_reconnect} and {ar2} while coalescing downstream reconnections"
+                        ),
+                    }
+                    .into());
+                }
                 reference_reconnect.push(ai2);
             }
         }
 
         // now we just have one last reference node to add
-        assert!(previous_end <= ref_end);
+        if previous_end > ref_end {
+            return Err(invalid_data_error(format!(
+                "Graph construction advanced past reference end: previous_end={previous_end}, ref_end={ref_end}"
+            )));
+        }
         let ref_sequence: Vec<u8> = reference[previous_end..ref_end].to_vec();
         graph.add_node(ref_sequence, reference_reconnect)?;
 
         // make sure we didn't have any loose reference alleles hanging about, I don't think this can happen unless users enter weird stuff
-        assert!(reference_alleles.is_empty());
+        if !reference_alleles.is_empty() {
+            return Err(WFAGraphError::InternalInvariant {
+                message: format!(
+                    "Reference allele assignments remained pending after graph construction: {reference_alleles:?}"
+                ),
+            }
+            .into());
+        }
 
         Ok((graph, node_to_alleles))
     }
@@ -431,7 +467,12 @@ impl WFAGraph {
         // we always start in node 0, so make that set
         let mut base_bitvec: BitVec = BitVec::from_elem(self.nodes.len(), false);
         base_bitvec.set(0, true);
-        assert!(treeset_to_index.insert(base_bitvec.clone(), 0).is_none());
+        if treeset_to_index.insert(base_bitvec.clone(), 0).is_some() {
+            return Err(WFAGraphError::InternalInvariant {
+                message: "Duplicate base traversal set inserted at WFA initialization".to_string(),
+            }
+            .into());
+        }
         index_to_treeset.push(base_bitvec);
 
         let base_hashset_index: usize = 0;
@@ -527,7 +568,14 @@ impl WFAGraph {
                     let mut max_offset: usize = 0;
                     for (offset, _hashset_index) in vec_waves.iter_mut() {
                         // get the position in `other_sequence` we are currently comparing against
-                        assert!(other_start + *offset as isize >= 0);
+                        if *other_start + (*offset as isize) < 0 {
+                            return Err(WFAGraphError::InternalInvariant {
+                                message: format!(
+                                    "Negative sequence position encountered while extending node {node_index}: diagonal_start={other_start}, offset={offset}"
+                                ),
+                            }
+                            .into());
+                        }
                         let mut other_position: usize = (other_start + *offset as isize) as usize;
 
                         // now extend as far as we can, making sure to check for boundaries and inequality in bases
@@ -553,7 +601,14 @@ impl WFAGraph {
                     *maxfront_record = max_offset;
 
                     // double check this truth
-                    assert!(other_start + max_offset as isize >= 0);
+                    if *other_start + (max_offset as isize) < 0 {
+                        return Err(WFAGraphError::InternalInvariant {
+                            message: format!(
+                                "Negative farthest progression encountered in node {node_index}: diagonal_start={other_start}, offset={max_offset}"
+                            ),
+                        }
+                        .into());
+                    }
                     farthest_progression =
                         farthest_progression.max((other_start + max_offset as isize) as usize);
 
@@ -596,7 +651,14 @@ impl WFAGraph {
                     if max_offset == node_length {
                         // we are at the end of this node, do different things depending on if this is the final node or not
                         if node_index == self.nodes.len() - 1 {
-                            assert!(other_start + max_offset as isize >= 0);
+                            if *other_start + (max_offset as isize) < 0 {
+                                return Err(WFAGraphError::InternalInvariant {
+                                    message: format!(
+                                        "Negative terminal sequence position encountered in node {node_index}: diagonal_start={other_start}, offset={max_offset}"
+                                    ),
+                                }
+                                .into());
+                            }
                             if ((other_start + max_offset as isize) as usize) < other_sequence.len()
                             {
                                 // we are *not* at the end of other sequence, but we *are* at the end of the graph
@@ -612,7 +674,14 @@ impl WFAGraph {
                                 // we will handle anything below
                             }
                         } else {
-                            assert!(other_start + max_offset as isize >= 0);
+                            if *other_start + (max_offset as isize) < 0 {
+                                return Err(WFAGraphError::InternalInvariant {
+                                    message: format!(
+                                        "Negative successor sequence position encountered in node {node_index}: diagonal_start={other_start}, offset={max_offset}"
+                                    ),
+                                }
+                                .into());
+                            }
 
                             // we are not in the final node, so we need to push this to successor nodes for more extension
                             // the `new_offset` tells our algorithm which base we're comparing and orients us to a diagonal
@@ -653,7 +722,14 @@ impl WFAGraph {
                         minus_diagonal.push((max_offset + 1, best_set));
 
                         // these two can only happen if sequence remains in other
-                        assert!(*other_start + max_offset as isize >= 0);
+                        if *other_start + (max_offset as isize) < 0 {
+                            return Err(WFAGraphError::InternalInvariant {
+                                message: format!(
+                                    "Negative split sequence position encountered in node {node_index}: diagonal_start={other_start}, offset={max_offset}"
+                                ),
+                            }
+                            .into());
+                        }
                         if ((*other_start + max_offset as isize) as usize) < other_sequence.len() {
                             // +0 on diagonal - both node and other advance with mismatch; other_start does not change, but offset increases +1
                             let zero_diagonal: &mut Vec<(usize, usize)> =
@@ -675,7 +751,14 @@ impl WFAGraph {
                     for (other_start, vec_waves) in wavefront.iter() {
                         for &(offset, hashset_index) in vec_waves.iter() {
                             // if we are at the end of the node AND our sequence
-                            assert!(other_start + offset as isize >= 0);
+                            if *other_start + (offset as isize) < 0 {
+                                return Err(WFAGraphError::InternalInvariant {
+                                    message: format!(
+                                        "Negative final sequence position encountered in node {node_index}: diagonal_start={other_start}, offset={offset}"
+                                    ),
+                                }
+                                .into());
+                            }
                             if offset == node_length
                                 && (other_start + offset as isize) as usize == other_sequence.len()
                             {

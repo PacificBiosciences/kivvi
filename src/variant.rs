@@ -1232,4 +1232,30 @@ mod tests {
             "unexpected error: {error}"
         );
     }
+
+    #[test]
+    fn test_parse_variant_position_errors_on_missing_position() {
+        let error = parse_variant_position(":A>G")
+            .expect_err("variant names without a position should error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid data: variant name has an empty position field"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_parse_variant_alleles_errors_on_invalid_format() {
+        let error = parse_variant_alleles("123:A/G")
+            .expect_err("variant allele fields without REF>ALT should error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid data: variant allele field is not REF>ALT"),
+            "unexpected error: {error}"
+        );
+    }
 }
