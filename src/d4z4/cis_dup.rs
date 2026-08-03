@@ -232,23 +232,27 @@ pub fn process_alleles(
     let mut all_starting_haps = HashSet::new();
     let mut all_ending_haps = HashSet::new();
     for hap in &assembly_result.complete {
-        let hap_first = hap.first().unwrap();
-        if *hap_first < 0 && *hap_first > -10 {
-            all_starting_haps.insert(hap.clone());
+        if let Some(hap_first) = hap.first() {
+            if *hap_first < 0 && *hap_first > -10 {
+                all_starting_haps.insert(hap.clone());
+            }
         }
-        let hap_end = hap.last().unwrap();
-        if *hap_end <= -10 {
-            all_ending_haps.insert(hap.clone());
+        if let Some(hap_end) = hap.last() {
+            if *hap_end <= -10 {
+                all_ending_haps.insert(hap.clone());
+            }
         }
     }
     for hap in &assembly_result.incomplete {
-        let hap_first = hap.first().unwrap();
-        if *hap_first < 0 && *hap_first > -10 {
-            all_starting_haps.insert(hap.clone());
+        if let Some(hap_first) = hap.first() {
+            if *hap_first < 0 && *hap_first > -10 {
+                all_starting_haps.insert(hap.clone());
+            }
         }
-        let hap_end = hap.last().unwrap();
-        if *hap_end <= -10 {
-            all_ending_haps.insert(hap.clone());
+        if let Some(hap_end) = hap.last() {
+            if *hap_end <= -10 {
+                all_ending_haps.insert(hap.clone());
+            }
         }
     }
     debug!("all_starting_haps before removing redundant {all_starting_haps:?}");
@@ -473,19 +477,38 @@ fn linked_repeat_haps_for_downstream_haplotype(
     for downstream_hap_read in downstream_hap_reads {
         let fields = downstream_hap_read.split("_sup_").collect::<Vec<_>>();
         let downstream_hap_read_name = fields[0];
-        let aln_pos = fields[1]
+        let aln_pos = fields
+            .get(1)
+            .ok_or_else(|| {
+                format!(
+                    "Downstream haplotype read annotation is missing a '_sup_' position suffix: '{downstream_hap_read}'"
+                )
+            })?
             .split('_')
             .next()
             .ok_or("next not found")?
             .parse::<i32>()?;
         trace!("downstream_hap_read {downstream_hap_read} downstream_hap_read_name {downstream_hap_read_name} pos {aln_pos}");
         if all_haps_support.contains_key(downstream_hap_read_name) {
-            let this_read_repeat_support = all_haps_support.get(downstream_hap_read_name).unwrap();
-            let this_read_repeat_edges = fp_info.read_edges.get(downstream_hap_read_name).unwrap();
+            let this_read_repeat_support = all_haps_support
+                .get(downstream_hap_read_name)
+                .ok_or_else(|| {
+                    format!(
+                        "Missing repeat-support haplotypes for read '{downstream_hap_read_name}'"
+                    )
+                })?;
+            let this_read_repeat_edges = fp_info
+                .read_edges
+                .get(downstream_hap_read_name)
+                .ok_or_else(|| {
+                    format!("Missing repeat-edge path for read '{downstream_hap_read_name}'")
+                })?;
             let this_read_repeat_positions = fp_info
                 .read_positions
                 .get(downstream_hap_read_name)
-                .unwrap();
+                .ok_or_else(|| {
+                format!("Missing repeat-position path for read '{downstream_hap_read_name}'")
+            })?;
             trace!("this_read_repeat_edges {this_read_repeat_edges:?}");
             trace!("this_read_repeat_positions {this_read_repeat_positions:?}");
             for repeat_hap in this_read_repeat_support {
@@ -543,11 +566,12 @@ fn add_paraphase_supported_links(
     // one upstream array linked to one downstream array
     // array1 -> paraphase hap -> array2
     if upstream_haps.len() == 1 && downstream_haps.len() == 1 {
-        let path = vec![
-            upstream_haps.iter().next().unwrap().to_vec(),
-            downstream_haps.iter().next().unwrap().to_vec(),
-        ];
-        add_linear_path(allele_links, state, downstream_hap, &path);
+        if let (Some(upstream), Some(downstream)) =
+            (upstream_haps.iter().next(), downstream_haps.iter().next())
+        {
+            let path = vec![upstream.to_vec(), downstream.to_vec()];
+            add_linear_path(allele_links, state, downstream_hap, &path);
+        }
         return;
     }
     // three arrays in a row, linked to the same paraphase haplotype
@@ -559,24 +583,20 @@ fn add_paraphase_supported_links(
             .cloned()
             .collect::<Vec<_>>();
         if overlap.len() == 1 {
-            let middle = overlap.into_iter().next().unwrap();
+            let middle = overlap[0].clone();
             let first = upstream_haps
                 .iter()
                 .filter(|hap| **hap != middle)
                 .cloned()
-                .collect::<Vec<_>>()
-                .first()
-                .unwrap()
-                .to_vec();
+                .next();
             let last = downstream_haps
                 .iter()
                 .filter(|hap| **hap != middle)
                 .cloned()
-                .collect::<Vec<_>>()
-                .first()
-                .unwrap()
-                .to_vec();
-            add_linear_path(allele_links, state, downstream_hap, &[first, middle, last]);
+                .next();
+            if let (Some(first), Some(last)) = (first, last) {
+                add_linear_path(allele_links, state, downstream_hap, &[first, middle, last]);
+            }
         }
         return;
     }
@@ -589,16 +609,15 @@ fn add_paraphase_supported_links(
             .cloned()
             .collect::<Vec<_>>();
         if overlap.len() == 1 {
-            let downstream = overlap.into_iter().next().unwrap();
+            let downstream = overlap[0].clone();
             let upstream = upstream_haps
                 .iter()
                 .filter(|hap| **hap != downstream)
                 .cloned()
-                .collect::<Vec<_>>()
-                .first()
-                .unwrap()
-                .to_vec();
-            add_linear_path(allele_links, state, downstream_hap, &[upstream, downstream]);
+                .next();
+            if let Some(upstream) = upstream {
+                add_linear_path(allele_links, state, downstream_hap, &[upstream, downstream]);
+            }
         }
         return;
     }
@@ -651,11 +670,13 @@ fn add_paraphase_supported_links(
     // There is more that one upstream array, but only one of them is qal.
     // Then we think we see a link between the qal upstream array and qal downstream array
     if downstream_haps.len() == 1 {
-        let path = vec![
-            upstream_not_cis_dup_and_qal.iter().next().unwrap().to_vec(),
-            downstream_haps.iter().next().unwrap().to_vec(),
-        ];
-        add_linear_path(allele_links, state, downstream_hap, &path);
+        if let (Some(upstream), Some(downstream)) = (
+            upstream_not_cis_dup_and_qal.iter().next(),
+            downstream_haps.iter().next(),
+        ) {
+            let path = vec![upstream.to_vec(), downstream.to_vec()];
+            add_linear_path(allele_links, state, downstream_hap, &path);
+        }
     } else if downstream_haps.len() == 2 {
         // if there are two downstream arrays, we sort them by size
         // note that here the order is not supported by reads. we should flag that - TODO
@@ -664,12 +685,14 @@ fn add_paraphase_supported_links(
             .cloned()
             .sorted_by_key(|hap| std::cmp::Reverse(hap.len()))
             .collect::<Vec<_>>();
-        let path = vec![
-            upstream_not_cis_dup_and_qal.iter().next().unwrap().to_vec(),
-            downstream_sorted.first().unwrap().to_vec(),
-            downstream_sorted.last().unwrap().to_vec(),
-        ];
-        add_linear_path(allele_links, state, downstream_hap, &path);
+        if let (Some(upstream), Some(first), Some(last)) = (
+            upstream_not_cis_dup_and_qal.iter().next(),
+            downstream_sorted.first(),
+            downstream_sorted.last(),
+        ) {
+            let path = vec![upstream.to_vec(), first.to_vec(), last.to_vec()];
+            add_linear_path(allele_links, state, downstream_hap, &path);
+        }
     }
 }
 
@@ -718,19 +741,19 @@ fn matching_allele_for_segment(
                     return true;
                 }
                 let node_index = match_read_allele_first_node_index(&segment.to_vec(), candidate);
-                node_index.is_some()
-                    && node_index.unwrap().0 == 0
-                    && (first_read_position < 2000 || node_index.unwrap().1 == 0)
+                node_index.is_some_and(|node_index| {
+                    node_index.0 == 0 && (first_read_position < 2000 || node_index.1 == 0)
+                })
             } else {
                 let node_index = match_read_allele_first_node_index(&segment.to_vec(), candidate);
-                node_index.is_some() && node_index.unwrap().0 == 0 && node_index.unwrap().1 == 0
+                node_index.is_some_and(|node_index| node_index.0 == 0 && node_index.1 == 0)
             }
         })
         .cloned()
         .collect::<Vec<_>>();
 
     if qualifying_matches.len() == 1 {
-        qualifying_matches.first().unwrap().to_vec()
+        qualifying_matches[0].to_vec()
     } else {
         vec![]
     }
@@ -743,9 +766,14 @@ fn normalized_match_index(
     matched_hap: &[i32],
     prev_segments_len: usize,
     extra_offset: usize,
-) -> (Vec<i32>, (String, i32)) {
-    let node_index =
-        match_read_allele_first_node_index(&segment.to_vec(), &matched_hap.to_vec()).unwrap();
+) -> Result<(Vec<i32>, (String, i32)), DError> {
+    let node_index = match_read_allele_first_node_index(&segment.to_vec(), &matched_hap.to_vec())
+        .ok_or_else(|| {
+        format!(
+            "Could not determine the first matching node index between segment {:?} and hap {:?}",
+            segment, matched_hap
+        )
+    })?;
     let mut index_on_read = if node_index.1 > 0 {
         node_index.1 as i32
     } else {
@@ -761,7 +789,7 @@ fn normalized_match_index(
         match_seg.copy_from_slice(&matched_hap[(match_len - 6)..]);
         index_on_read -= match_len as i32 - 6;
     }
-    (match_seg, (read_name.to_string(), index_on_read))
+    Ok((match_seg, (read_name.to_string(), index_on_read)))
 }
 
 /// Add cis-dup links inferred directly from multi-segment reads and record their match offsets.
@@ -784,8 +812,14 @@ fn add_read_supported_links(
         if end_index == read_nodes.len() - 1 {
             continue;
         }
-        let this_read_repeat_positions = fp_info.read_positions.get(read).unwrap();
-        let this_read_first_position = *this_read_repeat_positions.first().unwrap();
+        let this_read_repeat_positions = fp_info.read_positions.get(read).ok_or_else(|| {
+            format!(
+                "Missing repeat-position path for read '{read}' while adding read-supported links"
+            )
+        })?;
+        let this_read_first_position = *this_read_repeat_positions.first().ok_or_else(|| {
+            format!("Read '{read}' has no repeat positions while adding read-supported links")
+        })?;
         let segments = split_read_segments(read_nodes);
         // we have separated the two or more segments of a read
         // now we want to identify which d4z4 array each segment unambiguously map to
@@ -827,7 +861,7 @@ fn add_read_supported_links(
                 match1,
                 prev_segments_len,
                 0,
-            );
+            )?;
             match_index_on_read
                 .entry(match1_seg)
                 .or_default()
@@ -839,7 +873,7 @@ fn add_read_supported_links(
                 match2,
                 prev_segments_len,
                 segments[segment_index].len(),
-            );
+            )?;
             match_index_on_read
                 .entry(match2_seg)
                 .or_default()
@@ -874,12 +908,16 @@ fn assemble_cis_dup_paths(
         .map(|cis_dup| {
             let cis_dup_assembled = cis_dup
                 .iter()
-                .map(|x| node_names_to_haps.get(x).unwrap().to_vec())
-                .collect::<Vec<_>>();
+                .map(|x| {
+                    node_names_to_haps.get(x).cloned().ok_or_else(|| {
+                        format!("Missing haplotype for temporary cis-dup node '{x}'")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             debug!("graph assembled allele: {cis_dup_assembled:?}");
-            cis_dup_assembled
+            Ok(cis_dup_assembled)
         })
-        .collect())
+        .collect::<Result<Vec<_>, DError>>()?)
 }
 
 pub fn find_cis_dup(
@@ -905,7 +943,9 @@ pub fn find_cis_dup(
         .process_complete_haps(all_haps.clone(), Some(1), true, false)?
         .support_by_read;
     let mut allele_links: BTreeMap<Vec<i32>, Vec<Vec<i32>>> = BTreeMap::new();
-    let downstream_phasing_result = phasing_result.get(&String::from("DUX4")).unwrap();
+    let downstream_phasing_result = phasing_result
+        .get(&String::from("DUX4"))
+        .ok_or("Missing DUX4 phasing result while finding cis-dup alleles")?;
     let downstream_reads = &downstream_phasing_result.unique_supporting_reads;
     for (downstream_hap, downstream_hap_reads) in downstream_reads {
         trace!("checking reads for downstream_hap {downstream_hap}");

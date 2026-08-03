@@ -147,7 +147,9 @@ pub fn get_fingerprint(
         let ref_seq = ref_reader.fetch_seq(&ref_name, 0, ref_len as usize)?;
         log::debug!("index {i} ref_len {ref_len}");
         if unfiltered_sites_by_tid.contains_key(&(i as i32)) {
-            let unfiltered_sites = unfiltered_sites_by_tid.get(&(i as i32)).unwrap();
+            let unfiltered_sites = unfiltered_sites_by_tid
+                .get(&(i as i32))
+                .ok_or_else(|| format!("Missing unfiltered sites for reference tid {i}"))?;
 
             let variant_calls =
                 get_good_variants(&region_coordinates, unfiltered_sites, &ref_seq, is_d4z4)?;
@@ -241,30 +243,22 @@ pub fn get_fingerprint(
                         if !seg1.fingerprint.contains(&b'x') && !seg2.fingerprint.contains(&b'x') {
                             let seg1_fp = seg1.fp_index;
                             let seg2_fp = seg2.fp_index;
-                            if !seg1_fp.is_none() {
-                                let seg1_fp = seg1_fp.unwrap();
+                            if let Some(seg1_fp) = seg1_fp {
                                 next_segs
                                     .entry(seg1_fp)
                                     .or_default()
                                     .insert(seg2.fingerprint.clone());
-                                if !seg2_fp.is_none() {
-                                    next_nodes
-                                        .entry(seg1_fp)
-                                        .or_default()
-                                        .push(seg2_fp.unwrap());
+                                if let Some(seg2_fp) = seg2_fp {
+                                    next_nodes.entry(seg1_fp).or_default().push(seg2_fp);
                                 }
                             }
-                            if !seg2_fp.is_none() {
-                                let seg2_fp = seg2_fp.unwrap();
+                            if let Some(seg2_fp) = seg2_fp {
                                 prev_segs
                                     .entry(seg2_fp)
                                     .or_default()
                                     .insert(seg1.fingerprint.clone());
-                                if !seg1_fp.is_none() {
-                                    prev_nodes
-                                        .entry(seg2_fp)
-                                        .or_default()
-                                        .push(seg1_fp.unwrap());
+                                if let Some(seg1_fp) = seg1_fp {
+                                    prev_nodes.entry(seg2_fp).or_default().push(seg1_fp);
                                 }
                             }
                         }
@@ -275,7 +269,9 @@ pub fn get_fingerprint(
                     if !next_nodes.contains_key(&node) {
                         if segs_next.len() == 1 {
                             let next_seg_vec = segs_next.into_iter().collect::<Vec<Vec<u8>>>();
-                            let next_seg_seq = next_seg_vec.first().unwrap();
+                            let next_seg_seq = next_seg_vec.first().ok_or_else(|| {
+                                format!("Expected one successor segment for fingerprint {node}")
+                            })?;
                             fps_to_add.insert(next_seg_seq.to_vec());
                             debug!(
                                 "for fp {node}, the only next segment is {:?}",
@@ -288,7 +284,9 @@ pub fn get_fingerprint(
                     if !prev_nodes.contains_key(&node) {
                         if segs_prev.len() == 1 {
                             let prev_seg_vec = segs_prev.into_iter().collect::<Vec<Vec<u8>>>();
-                            let prev_seg_seq = prev_seg_vec.first().unwrap();
+                            let prev_seg_seq = prev_seg_vec.first().ok_or_else(|| {
+                                format!("Expected one predecessor segment for fingerprint {node}")
+                            })?;
                             fps_to_add.insert(prev_seg_seq.to_vec());
                             debug!(
                                 "for fp {node}, the only prev segment is {:?}",
@@ -344,7 +342,9 @@ pub fn get_fingerprint(
 
         let mut this_read_edges: Vec<i32> = Vec::new();
         let mut this_read_positions: Vec<i32> = Vec::new();
-        let first_seg = &each_read_info[0];
+        let first_seg = each_read_info.first().ok_or_else(|| {
+            format!("Read '{each_read}' has no aligned segments after fingerprinting")
+        })?;
         // starts
         if first_seg.is_start && first_seg.pos > 1000 {
             this_read_edges.push(-1);
@@ -356,7 +356,7 @@ pub fn get_fingerprint(
 
         for (segment_index, each_read_segment) in each_read_info.clone().into_iter().enumerate() {
             let current_position = each_read_segment.pos;
-            let segment_name = each_read_segment.name;
+            let segment_name = each_read_segment.name.clone();
             let name_fields = segment_name.split_terminator(':').collect::<Vec<_>>();
             let full_read_name = name_fields[0].to_string();
             let pos_on_read = name_fields[1].parse::<i32>()?;
@@ -407,7 +407,13 @@ pub fn get_fingerprint(
                                 + (k * region_coordinates.repeat_len);
                             let n2 = n1 + region_coordinates.repeat_len;
                             let unknown_fp_seq = std::str::from_utf8(
-                                &read_seq_full.get(&segment_name_short).unwrap()[n1..n2],
+                                &read_seq_full
+                                    .get(&segment_name_short)
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "Missing full read sequence for segment '{segment_name_short}' while inferring unknown fingerprints"
+                                        )
+                                    })?[n1..n2],
                             )?;
                             debug!(">{each_read}_unknown_fp_{n1} {unknown_fp_seq}");
                         }
@@ -423,7 +429,12 @@ pub fn get_fingerprint(
                 this_read_edges.push(0);
                 grouped_reads.entry(segment_name_short).or_insert(0);
             } else {
-                let fp_name = each_read_segment.fp_index.unwrap();
+                let fp_name = each_read_segment.fp_index.ok_or_else(|| {
+                    format!(
+                        "Read segment '{}' is missing a fingerprint index after classification",
+                        each_read_segment.name
+                    )
+                })?;
                 this_read_edges.push(fp_name);
                 grouped_reads.entry(segment_name_short).or_insert(fp_name);
             }
@@ -1015,7 +1026,11 @@ pub fn get_cpg_sites(
                 let qname_new = format!("{qname}:{}", read_start_pos);
                 if aln2seq.contains_key(&qname_new) {
                     // && aln2seq_full.contains_key(qname) {
-                    let seq = aln2seq.get(&qname_new).unwrap();
+                    let seq = aln2seq.get(&qname_new).ok_or_else(|| {
+                        format!(
+                            "Missing aligned read sequence for segment '{qname_new}' while collecting CpG sites"
+                        )
+                    })?;
                     // seq is full_seq
                     //let full_seq = aln2seq_full.get(qname).unwrap();
                     if !aln.is_del() && query_pos_raw + 1 < seq.len() {

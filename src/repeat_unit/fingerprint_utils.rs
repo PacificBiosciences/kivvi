@@ -163,7 +163,9 @@ pub fn clean_up_segment_raw_fps(
     for (read_segment, raw_fp) in &mut *read_segment_raw_fp {
         assert_eq!(raw_fp.len(), num_pos);
         if reads_clipped.contains_key(read_segment) {
-            let this_read_clips = reads_clipped.get(read_segment).unwrap();
+            let this_read_clips = reads_clipped.get(read_segment).ok_or_else(|| {
+                format!("Missing clipped-read metadata for segment '{read_segment}'")
+            })?;
             for (clip_side, tid, clip_pos) in this_read_clips {
                 if clip_side == "p5" {
                     if good_clips_p5.contains(&(*tid, *clip_pos))
@@ -297,8 +299,14 @@ pub fn get_good_variants(
                         std::str::from_utf8(&[ref_base])?,
                         std::str::from_utf8(base)?
                     );
-                    let variant =
-                        Variant::new_snv(0, *pos, vec![ref_base], base.to_vec(), 0, 1).unwrap();
+                    let variant = Variant::new_snv(0, *pos, vec![ref_base], base.to_vec(), 0, 1)
+                        .map_err(|e| {
+                            format!(
+                                "Failed to build SNV at position {} from base {:?}: {e}",
+                                *pos + 1,
+                                std::str::from_utf8(base).unwrap_or("<non-utf8>")
+                            )
+                        })?;
                     if region_coordinates.variants_to_exclude.contains(&variant) {
                         debug!(
                             "filtered site at pos {}, ref_base {}, alt base {:?}",
@@ -333,7 +341,9 @@ pub fn get_good_variants(
                                 0,
                                 1,
                             )
-                            .unwrap();
+                            .map_err(|e| {
+                                format!("Failed to build insertion at position {}: {e}", *pos + 1)
+                            })?;
                             indels.push(variant);
                         }
                     }
@@ -354,7 +364,9 @@ pub fn get_good_variants(
                                 0,
                                 1,
                             )
-                            .unwrap();
+                            .map_err(|e| {
+                                format!("Failed to build deletion at position {}: {e}", *pos + 1)
+                            })?;
                             indels.push(variant);
                         }
                     }
@@ -634,7 +646,9 @@ pub fn select_fps(
                     .or_insert_with(|| fp_index);
                 fp_index += 1;
             } else {
-                let start_end_fp_index = start_end_fps.get(&fp).unwrap();
+                let start_end_fp_index = start_end_fps.get(&fp).ok_or_else(|| {
+                    format!("Missing start/end fingerprint index for sequence {:?}", fp)
+                })?;
                 debug!("{fp_seq_string:?}, read count {count:?}, partial_count {partial_count:?}, index {start_end_fp_index:?}");
                 good_name_to_seq
                     .entry(*start_end_fp_index)
@@ -746,7 +760,9 @@ fn rescue_complete_fp(full_unknown: Vec<Vec<u8>>) -> Result<HashSet<Vec<u8>>, DE
             hap_candidates_set.len()
         );
         if hap_candidates_set.len() == 1 {
-            let hap_candidate = hap_candidates.first().unwrap();
+            let hap_candidate = hap_candidates
+                .first()
+                .ok_or("Missing rescued fingerprint candidate")?;
             rescued_fps.insert(hap_candidate.to_vec());
         }
     }
@@ -1038,7 +1054,9 @@ pub fn handle_last_d4z4_long_insertion(
                 let matching_unit_fps =
                     find_matching_units_for_insertion(&fp_info, unit_fp, *index);
                 if matching_unit_fps.len() == 1 {
-                    let matching_unit_fp = matching_unit_fps.first().unwrap();
+                    let matching_unit_fp = matching_unit_fps
+                        .first()
+                        .ok_or("Expected exactly one matching unit fingerprint")?;
                     debug!("Found matching unit {matching_unit_fp:?} for {unit_name:?}");
                     new_replace.entry(*unit_name).or_insert(*matching_unit_fp);
                 }
@@ -1296,8 +1314,12 @@ pub fn infer_unknown_fingerprints(
                     && previous_nodes.contains_key(&next_node)
                     && next_nodes.contains_key(&prev_node)
                 {
-                    let prev_node_next = next_nodes.get(&prev_node).unwrap();
-                    let next_node_prev = previous_nodes.get(&next_node).unwrap();
+                    let Some(prev_node_next) = next_nodes.get(&prev_node) else {
+                        continue;
+                    };
+                    let Some(next_node_prev) = previous_nodes.get(&next_node) else {
+                        continue;
+                    };
                     if prev_node_next.len() > 1 && next_node_prev.len() > 1 {
                         let prev_node_next_set: HashSet<i32> =
                             prev_node_next.iter().cloned().collect();
@@ -1309,9 +1331,11 @@ pub fn infer_unknown_fingerprints(
                         {
                             let prev_node_next_set_vec: Vec<i32> =
                                 prev_node_next_set.iter().cloned().collect_vec();
-                            let prev_node_next_set_vec_node =
-                                prev_node_next_set_vec.first().unwrap();
-                            to_update.entry(i).or_insert(*prev_node_next_set_vec_node);
+                            if let Some(prev_node_next_set_vec_node) =
+                                prev_node_next_set_vec.first()
+                            {
+                                to_update.entry(i).or_insert(*prev_node_next_set_vec_node);
+                            }
                         }
                     }
                 }
@@ -1325,7 +1349,7 @@ pub fn infer_unknown_fingerprints(
             let mut new_edge = Vec::new();
             for j in 0..edges_len {
                 let j_node = if to_update.contains_key(&j) {
-                    *to_update.get(&j).unwrap()
+                    *to_update.get(&j).unwrap_or(&edges[j])
                 } else {
                     edges[j]
                 };
@@ -1358,7 +1382,7 @@ pub fn update_fps(
     //BTreeMap<Vec<u8>, i32>,
     //BTreeMap<i32, Vec<u8>>,
     let mut partial_fps = HashSet::new();
-    let mut fp_index = good_seq_to_name.values().max().unwrap() + 1;
+    let mut fp_index = good_seq_to_name.values().max().copied().unwrap_or(1) + 1;
     for (fp, _count) in fp_count {
         if !good_seq_to_name.contains_key(fp) {
             if fps_to_add.contains(fp) {
