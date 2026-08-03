@@ -1009,4 +1009,10 @@ mod tests {
             (AlleleType::Ambiguous, 1, 1)
         );
     }
+
+    #[test]
+    fn test_convert_index_returns_unknown_for_no_overlap() {
+        let variant = Variant::new_snv(0, 1, b"A".to_vec(), b"C".to_vec(), 0, 1).unwrap();
+        assert_eq!(variant.convert_index(AlleleType::NoOverlap), u8::MAX);
+    }
 }

@@ -1479,6 +1479,7 @@ fn map_partial_to_full(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bam_operation::ClippedReads;
     use crate::repeat_unit::fingerprint::FingerprintInfo;
     use std::collections::{BTreeMap, HashSet};
 
@@ -1918,5 +1919,40 @@ mod tests {
         assert_eq!(updated.read_edges.get("read1"), Some(&vec![8, -10]));
         assert_eq!(updated.grouped_reads.get("read1:0"), Some(&8));
         assert_eq!(qal_units, vec![7, 8]);
+    }
+
+    #[test]
+    fn test_clean_up_segment_raw_fps_errors_on_width_mismatch() {
+        let mut read_segment_raw_fp = BTreeMap::from([(String::from("read1:0:10"), vec![b'0'])]);
+        let clipped_reads = ClippedReads {
+            good_clips_p5: vec![],
+            good_clips_p3: vec![],
+            clipped_reads: BTreeMap::new(),
+        };
+        let flanking_reads = FlankReads {
+            start: HashSet::new(),
+            end: HashSet::new(),
+            start_segment: HashSet::new(),
+            end_segment: HashSet::new(),
+            good_clips_p5: vec![],
+            good_clips_p3: vec![],
+        };
+
+        let error = clean_up_segment_raw_fps(
+            &mut read_segment_raw_fp,
+            &vec![],
+            &flanking_reads,
+            &clipped_reads,
+            &d4z4_coordinates(),
+            1,
+        )
+        .expect_err("mismatched fingerprint width should error");
+
+        assert!(
+            error.to_string().contains(
+                "invalid data: Read segment 'read1:0:10' has fingerprint width 1 but expected 0 variant positions during clip-aware cleanup"
+            ),
+            "unexpected error: {error}"
+        );
     }
 }

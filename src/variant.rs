@@ -1207,4 +1207,29 @@ mod tests {
         assert_eq!(consensus_var.base, None);
         */
     }
+
+    #[test]
+    fn test_get_fp_bases_errors_on_mismatched_read_lengths() {
+        let read_edges = BTreeMap::from([(String::from("read1"), vec![1, 2])]);
+        let read_positions = BTreeMap::from([(String::from("read1"), vec![100])]);
+        let reads_match_allele_index =
+            BTreeMap::from([(vec![0, 1, 2, 0], vec![(String::from("read1"), 0)])]);
+        let read_info: BTreeMap<String, BTreeMap<(i32, i64), Vec<u8>>> = BTreeMap::new();
+
+        let error = get_fp_bases(
+            read_edges,
+            read_positions,
+            reads_match_allele_index,
+            read_info,
+            vec![],
+        )
+        .expect_err("mismatched read node/position counts should error");
+
+        assert!(
+            error.to_string().contains(
+                "invalid data: Read 'read1' has 1 fingerprint positions but 2 fingerprint nodes"
+            ),
+            "unexpected error: {error}"
+        );
+    }
 }
