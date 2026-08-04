@@ -41,7 +41,7 @@ pub(crate) fn handle_deletion_units(
         .collect::<HashSet<_>>();
     debug!("blacklist fingerprints: {:?}", blacklist_fingerprints);
     debug!(
-        "segment_names_to_zero_short: {:?}",
+        "segments containing blacklisted deletions: {:?}",
         segment_names_to_zero_short
     );
 
@@ -1018,7 +1018,7 @@ pub fn handle_qal_units(
             }
         }
     }
-    debug!("new_replace: {new_replace:?}");
+    debug!("candidate long insertion fingerprint replacements: {new_replace:?}");
 
     if new_replace.is_empty() || !rename_long_insertion_fingerprint {
         debug!("no need to rename long insertion fingerprints");

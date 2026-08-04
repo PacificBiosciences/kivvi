@@ -1,9 +1,7 @@
 use crate::assembly::assembler::{
     build_graph, match_reads_and_haplotypes, AssemblyResult, FpGraph,
 };
-use crate::assembly::assembler_utils::{
-    compare_two_haps_same_length, find_overlapping_alleles, redundant_haplotype_allowed,
-};
+use crate::assembly::assembler_utils::{compare_two_haps_same_length, find_overlapping_alleles};
 use crate::caller::vec_to_string;
 use crate::d4z4::join_partial_alleles::is_cis_dup_by_read_start_offset;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
@@ -13,73 +11,6 @@ use log::{debug, trace};
 use paraphase::io::json::GeneCall;
 use std::cmp;
 use std::collections::{BTreeMap, HashSet};
-
-#[allow(dead_code)]
-fn remove_redundant_haps(
-    haps_to_assess: &Vec<Vec<i32>>,
-    assembly_result: &AssemblyResult,
-) -> Result<Vec<Vec<i32>>, DError> {
-    let complete = &assembly_result.complete;
-    if haps_to_assess.len() <= 4 {
-        return Ok(haps_to_assess.clone());
-    }
-    let overlapping_haps = find_overlapping_alleles(haps_to_assess.clone(), Some(5))?.1;
-    let mut redundant_haps = Vec::new();
-    for (hap1, hap1_overlaps) in overlapping_haps.iter() {
-        let hap1_len = hap1.len();
-        for (hap2, overlap_len) in hap1_overlaps.iter() {
-            let hap2_len = hap2.len();
-            if hap1_len == hap2_len && redundant_haps.contains(hap1) {
-                continue;
-            }
-            if complete.contains(hap1) {
-                if hap2_len == *overlap_len {
-                    redundant_haps.push(hap2.clone());
-                } else if redundant_haplotype_allowed(hap1, hap2, overlap_len)? {
-                    redundant_haps.push(hap2.clone());
-                }
-            } else if hap1_len >= hap2_len {
-                if hap2_len == *overlap_len {
-                    redundant_haps.push(hap2.clone());
-                } else if redundant_haplotype_allowed(hap1, hap2, overlap_len)? {
-                    redundant_haps.push(hap2.clone());
-                }
-            }
-        }
-    }
-    for hap1 in haps_to_assess {
-        for hap2 in haps_to_assess {
-            if hap1 != hap2 {
-                let hap1_len = hap1.len();
-                let hap2_len = hap2.len();
-                if hap1_len == hap2_len && redundant_haps.contains(hap1) {
-                    continue;
-                }
-                if hap1_len >= hap2_len && hap2_len > 5 && hap1[1..hap2_len] == hap2[1..hap2_len] {
-                    if !redundant_haps.contains(hap2) {
-                        redundant_haps.push(hap2.clone());
-                        debug!("{hap2:?} is redundant with {hap1:?}");
-                    }
-                }
-            }
-        }
-    }
-    let redundant_haps = redundant_haps
-        .iter()
-        .filter(|x| !complete.contains(x))
-        .cloned()
-        .collect::<Vec<_>>();
-    debug!("redundant_haps {redundant_haps:?}");
-    let haps_to_return: Vec<Vec<i32>> = haps_to_assess
-        .iter()
-        .filter(|x| !redundant_haps.contains(x))
-        .cloned()
-        .collect();
-    if haps_to_return.len() < 4 {
-        return Ok(haps_to_assess.clone());
-    }
-    Ok(haps_to_return)
-}
 
 fn is_cis_dup_hap(hap: &[i32], fp_info: &FingerprintInfo) -> Result<bool, DError> {
     let Some(&first_node) = hap.first() else {
@@ -229,6 +160,7 @@ pub fn process_alleles(
     assembly_result: &AssemblyResult,
     fp_info: &FingerprintInfo,
 ) -> Result<(Vec<Vec<i32>>, Vec<Vec<i32>>, Vec<Vec<i32>>), DError> {
+    debug!("Identify proximal and distal alleles and remove redundant ones...");
     let mut all_starting_haps = HashSet::new();
     let mut all_ending_haps = HashSet::new();
     for hap in &assembly_result.complete {

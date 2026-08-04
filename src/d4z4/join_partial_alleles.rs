@@ -1,5 +1,4 @@
 use crate::assembly::assembler::FpGraph;
-use crate::assembly::assembler_utils::find_overlapping_alleles;
 use crate::d4z4::cis_dup::is_cis_dup_nodes;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
 use crate::util::RegionCoordinates;
@@ -118,7 +117,7 @@ pub(crate) fn is_cis_dup_by_read_start_offset(
     allele: &str,
     fp_info: &FingerprintInfo,
 ) -> Result<bool, DError> {
-    debug!("checking cis dup by read start offset for allele {allele}");
+    // debug!("checking cis dup by read start offset for allele {allele}");
     let allele_nodes = allele
         .split('-')
         .filter(|node| !node.contains("Flank"))
@@ -489,7 +488,7 @@ fn merge_two_partial_alleles(
         return (ovl_len, alleles.join("..."), format!(">={allele_size}"));
     }
     let ovl_region = &ct2[..ovl_len];
-    debug!("ovl_len {ovl_len} ovl_region {ovl_region:?}");
+    debug!("ovl_len between {allele1:?} and {allele2:?}: {ovl_len} ovl_region {ovl_region:?}");
     let counter = ovl_region
         .iter()
         .map(|x| *x)
@@ -758,81 +757,6 @@ fn get_methylation_value(
     Ok(methylation_value)
 }
 
-/// Remove redundant alleles
-/// # Arguments
-/// * `alleles_to_check` - alleles to check
-/// * `num_turns` - number of turns to remove redundant alleles
-/// # Returns
-/// * `Vec<String>` - remaining alleles
-#[allow(dead_code)]
-pub(crate) fn remove_redundant_alleles(
-    alleles_to_check: &Vec<String>,
-    num_turns: usize,
-) -> Result<BTreeMap<String, String>, DError> {
-    let mut alleles_to_remove: BTreeMap<String, String> = BTreeMap::new();
-    for turn_index in 0..num_turns {
-        debug!("Turn {turn_index}");
-        let alleles_to_check = alleles_to_check
-            .iter()
-            .filter(|x| !alleles_to_remove.contains_key(*x))
-            .map(|x| x.clone())
-            .collect::<Vec<String>>();
-        let alleles_to_check_haps: BTreeMap<Vec<i32>, String> = alleles_to_check
-            .iter()
-            .map(|x| {
-                (
-                    x.split("-")
-                        .filter(|x| !x.contains("Flank"))
-                        .filter_map(|x| x.parse::<i32>().ok())
-                        .collect::<Vec<i32>>(),
-                    x.clone(),
-                )
-            })
-            .collect::<BTreeMap<Vec<i32>, String>>();
-        debug!("Find overlapping alleles in alleles to check: {alleles_to_check_haps:?}");
-        let (_overlapping_alleles, overlapping_alleles_match) = find_overlapping_alleles(
-            alleles_to_check_haps
-                .keys()
-                .cloned()
-                .collect::<Vec<Vec<i32>>>(),
-            None,
-        )?;
-        let mut removed_one_redundant = false;
-        for (allele, allele_match_info) in overlapping_alleles_match.iter() {
-            let allele_name = alleles_to_check_haps.get(allele).ok_or_else(|| {
-                missing_data_error("allele string for overlap candidate", format!("{allele:?}"))
-            })?;
-            let allele_size = allele.len();
-            for (matching_allele, overlap_len) in allele_match_info.iter() {
-                let matching_allele_name =
-                    alleles_to_check_haps.get(matching_allele).ok_or_else(|| {
-                        missing_data_error(
-                            "allele string for overlap candidate",
-                            format!("{matching_allele:?}"),
-                        )
-                    })?;
-                let matching_allele_size = matching_allele.len();
-                debug!("Checking if {allele_name} is redundant with {matching_allele_name}: overlap length {overlap_len}, allele size {allele_size}, matching allele size {matching_allele_size}");
-                if allele_size < matching_allele_size
-                    && *overlap_len >= 4
-                    && *overlap_len >= allele_size / 2
-                {
-                    if !alleles_to_remove.contains_key(allele_name) {
-                        alleles_to_remove.insert(allele_name.clone(), matching_allele_name.clone());
-                        debug!("remove redundant allele: {allele_name}, redundant with {matching_allele_name}");
-                        removed_one_redundant = true;
-                        break;
-                    }
-                }
-            }
-            if removed_one_redundant {
-                break;
-            }
-        }
-    }
-    Ok(alleles_to_remove)
-}
-
 #[derive(Default)]
 /// Tracks assembled output plus which proximal and distal alleles have already
 /// been consumed while building final summaries.
@@ -883,6 +807,7 @@ fn classify_partial_allele(
     variants: &BTreeMap<i32, Vec<String>>,
     region_coordinates: &RegionCoordinates,
 ) -> Result<String, DError> {
+    debug!("Classify partial allele based on variants for {allele}");
     let mut this_allele_fps_classified = Vec::new();
     for node in allele.split('-') {
         if !node.contains("Flank") {
@@ -1210,7 +1135,7 @@ fn handle_four_partial_alleles_group(
     }
 
     debug!(
-        "evaluating four partial alleles of the same type {allele_type}: {left_flanks:?} and {right_flanks:?}"
+        "Evaluating four partial alleles of the same type {allele_type}: {left_flanks:?} and {right_flanks:?}"
     );
     let left_flank1 = left_flanks
         .first()
@@ -1298,6 +1223,8 @@ fn handle_four_partial_alleles_group(
             methyl_values,
             qal_units,
         )?;
+    } else {
+        debug!("No overlaps found between the four partial alleles of the same type {allele_type}");
     }
 
     let left_flank_size_short = left_flanks
@@ -1493,7 +1420,10 @@ fn handle_remaining_distal_alleles(
         "remaining_proximal_alleles: {:?}",
         context.remaining_proximal_alleles
     );
-    debug!("all_start_min_size: {}", context.all_start_min_size);
+    debug!(
+        "minimum size of all distal alleles: {}",
+        context.all_start_min_size
+    );
 
     for (allele, background) in all_ends_hap_backgrounds {
         if state.distal_alleles_handled.contains(allele)
@@ -1582,6 +1512,7 @@ fn append_cis_dup_summaries(
     methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
     qal_units: &[i32],
 ) -> Result<(), DError> {
+    debug!("Determining chromosome for cis-duplication alleles...");
     debug!(
         "distal_allele_chrom_map {:?}",
         state.distal_allele_chrom_map

@@ -648,7 +648,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     //let output_methyl_svg = output_path.join(format!("{sample_id}.kivvi.d4z4.methyl.svg"));
     // other region specific resources
     let region_coordinates = d4z4_coordinates();
-    debug!("region_coordinates: {:?}", region_coordinates);
+    // debug!("region_coordinates: {:?}", region_coordinates);
     let temp_dir = create_kivvi_temp_dir(output_path)?;
     // create temporary reference file
     let reference = temp_dir.path().join(format!("{sample_id}.d4z4.ref.fa"));
