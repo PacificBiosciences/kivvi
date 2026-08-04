@@ -736,7 +736,7 @@ fn get_methylation_value(
     let last_n_sites = last_n_sites.unwrap_or(3);
     let methylation: Vec<Vec<i32>> = methyl_values
         .get(allele)
-        .ok_or("allele not in methyl_values")?
+        .ok_or_else(|| missing_data_error("allele in methyl values", allele.to_string()))?
         .clone();
     let start_site = methylation.len().saturating_sub(last_n_sites);
     let last_n = &methylation[start_site..].to_vec();
@@ -799,14 +799,17 @@ pub(crate) fn remove_redundant_alleles(
         )?;
         let mut removed_one_redundant = false;
         for (allele, allele_match_info) in overlapping_alleles_match.iter() {
-            let allele_name = alleles_to_check_haps
-                .get(allele)
-                .ok_or_else(|| format!("Missing allele string for overlap candidate {allele:?}"))?;
+            let allele_name = alleles_to_check_haps.get(allele).ok_or_else(|| {
+                missing_data_error("allele string for overlap candidate", format!("{allele:?}"))
+            })?;
             let allele_size = allele.len();
             for (matching_allele, overlap_len) in allele_match_info.iter() {
                 let matching_allele_name =
                     alleles_to_check_haps.get(matching_allele).ok_or_else(|| {
-                        format!("Missing allele string for overlap candidate {matching_allele:?}")
+                        missing_data_error(
+                            "allele string for overlap candidate",
+                            format!("{matching_allele:?}"),
+                        )
                     })?;
                 let matching_allele_size = matching_allele.len();
                 debug!("Checking if {allele_name} is redundant with {matching_allele_name}: overlap length {overlap_len}, allele size {allele_size}, matching allele size {matching_allele_size}");
@@ -1139,13 +1142,19 @@ fn try_add_four_way_merge(
     let chr_info = all_starts_hap_backgrounds
         .get(proximal_allele)
         .ok_or_else(|| {
-            format!("Missing start-haplotype background for proximal allele '{proximal_allele}'")
+            missing_data_error(
+                "start-haplotype background for proximal allele",
+                proximal_allele.to_string(),
+            )
         })?
         .clone();
     let background = all_ends_hap_backgrounds
         .get(distal_allele)
         .ok_or_else(|| {
-            format!("Missing end-haplotype background for distal allele '{distal_allele}'")
+            missing_data_error(
+                "end-haplotype background for distal allele",
+                distal_allele.to_string(),
+            )
         })?
         .clone();
     let methylation_value = get_methylation_value(&distal_allele.to_string(), methyl_values, None)?;
@@ -1206,19 +1215,16 @@ fn handle_four_partial_alleles_group(
     let left_flank1 = left_flanks
         .first()
         .cloned()
-        .ok_or("Missing first left-flank allele")?;
-    let left_flank2 = left_flanks
-        .last()
-        .cloned()
-        .ok_or("Missing second left-flank allele")?;
-    let right_flank1 = right_flanks
-        .first()
-        .cloned()
-        .ok_or("Missing first right-flank allele")?;
-    let right_flank2 = right_flanks
-        .last()
-        .cloned()
-        .ok_or("Missing second right-flank allele")?;
+        .ok_or_else(|| missing_data_error("first left-flank allele", format!("{left_flanks:?}")))?;
+    let left_flank2 = left_flanks.last().cloned().ok_or_else(|| {
+        missing_data_error("second left-flank allele", format!("{left_flanks:?}"))
+    })?;
+    let right_flank1 = right_flanks.first().cloned().ok_or_else(|| {
+        missing_data_error("first right-flank allele", format!("{right_flanks:?}"))
+    })?;
+    let right_flank2 = right_flanks.last().cloned().ok_or_else(|| {
+        missing_data_error("second right-flank allele", format!("{right_flanks:?}"))
+    })?;
 
     let (ovl_len1, allele_name1, allele_size1) = merge_two_partial_alleles(
         &vec![left_flank1.clone(), right_flank1.clone()],
@@ -1780,6 +1786,36 @@ mod tests {
         assert!(
             result.is_nan(),
             "missing methylation values should return NaN"
+        );
+    }
+
+    #[test]
+    fn test_try_add_four_way_merge_errors_on_missing_proximal_background() {
+        let mut state = JoinPartialAllelesState {
+            distal_allele_chrom_map: BTreeMap::new(),
+            merged_allele_summary: vec![],
+            distal_alleles_handled: vec![],
+            proximal_alleles_handled: vec![],
+        };
+
+        let error = try_add_four_way_merge(
+            &mut state,
+            "LeftFlank-1",
+            "1-RightFlank",
+            "merged",
+            ">=1",
+            &BTreeMap::new(),
+            &BTreeMap::from([(String::from("1-RightFlank"), String::from("qA"))]),
+            &BTreeMap::new(),
+            &[],
+        )
+        .expect_err("missing proximal backgrounds should error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing start-haplotype background for proximal allele: LeftFlank-1"),
+            "unexpected error: {error}"
         );
     }
 

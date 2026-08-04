@@ -1,7 +1,7 @@
 use crate::assembly::assembler::FpGraph;
 use crate::caller::vec_to_string;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
-use crate::util::{create_kivvi_temp_dir, DError};
+use crate::util::{create_kivvi_temp_dir, invalid_data_error, missing_data_error, DError};
 use crate::variant::get_read_position_in_allele;
 use log::{debug, trace};
 use paraphase::config::region::try_load;
@@ -85,7 +85,7 @@ fn get_paraphase_gene_call<'a>(
 ) -> Result<&'a GeneCall, DError> {
     phasing_result
         .get(gene)
-        .ok_or_else(|| format!("Missing Paraphase result for gene '{gene}'").into())
+        .ok_or_else(|| missing_data_error("Paraphase result for gene", gene))
 }
 
 pub fn phase_flanking_gene(
@@ -219,9 +219,9 @@ pub fn phase_flanking(
     ret.insert(String::from("DUX4"), dux4);
     if write_bam {
         let dux4p5_bam = dux4p5_bam
-            .ok_or("Paraphase did not return a DUX4p5 BAM path when BAM output was requested")?;
+            .ok_or_else(|| missing_data_error("DUX4p5 Paraphase BAM path", "BAM output request"))?;
         let dux4_bam = dux4_bam
-            .ok_or("Paraphase did not return a DUX4 BAM path when BAM output was requested")?;
+            .ok_or_else(|| missing_data_error("DUX4 Paraphase BAM path", "BAM output request"))?;
         merge_phasing_bams(sample, output_path, wgs_bam, &[dux4p5_bam, dux4_bam])?;
     } else {
         remove_phasing_bam(sample, output_path)?;
@@ -307,7 +307,9 @@ pub fn haplotype_background(
             if supporting_reads.contains_key(allele) {
                 reads = supporting_reads
                     .get(allele)
-                    .ok_or("hap not in assembly_result.supporting_reads.")?
+                    .ok_or_else(|| {
+                        missing_data_error("supporting reads for allele", format!("{allele:?}"))
+                    })?
                     .iter()
                     .map(|x| x.to_string())
                     .collect::<Vec<_>>();
@@ -320,10 +322,7 @@ pub fn haplotype_background(
                     .iter()
                     .map(|x| {
                         paraphase_read_to_hap.get(*x).cloned().ok_or_else(|| {
-                            format!(
-                                "Read '{}' was expected in the Paraphase read-to-haplotype map",
-                                x
-                            )
+                            missing_data_error("Paraphase read-to-haplotype entry", x.to_string())
                         })
                     })
                     .collect::<Result<Vec<String>, _>>()?;
@@ -347,9 +346,9 @@ pub fn haplotype_background(
                                     .split_terminator(':')
                                     .next()
                                     .ok_or_else(|| {
-                                        format!(
+                                        invalid_data_error(format!(
                                             "Read segment key is missing a read name prefix: '{read}'"
-                                        )
+                                        ))
                                     })?
                                     .to_string();
                                 reads.push(read_name);
@@ -361,9 +360,9 @@ pub fn haplotype_background(
                         .filter(|x| paraphase_read_to_hap.contains_key(*x))
                         .map(|x| {
                             paraphase_read_to_hap.get(x).cloned().ok_or_else(|| {
-                                format!(
-                                    "Read '{}' was expected in the Paraphase read-to-haplotype map",
-                                    x
+                                missing_data_error(
+                                    "Paraphase read-to-haplotype entry",
+                                    x.to_string(),
                                 )
                             })
                         })
@@ -405,7 +404,10 @@ pub fn haplotype_background(
                         .get(x)
                         .cloned()
                         .ok_or_else(|| {
-                            format!("Missing chromosome assignment for Paraphase haplotype '{x}'")
+                            missing_data_error(
+                                "chromosome assignment for Paraphase haplotype",
+                                x.to_string(),
+                            )
                         })
                 })
                 .collect::<Result<Vec<String>, _>>()?
@@ -437,8 +439,9 @@ pub fn haplotype_background(
                     if paraphase_reads_nonunique.contains_key(read) {
                         let mut this_read_assignment_nonunique = Vec::new();
                         let nonunique = paraphase_reads_nonunique.get(read).ok_or_else(|| {
-                            format!(
-                                "Read '{read}' was expected in Paraphase nonunique supporting reads"
+                            missing_data_error(
+                                "Paraphase nonunique supporting reads for read",
+                                read.to_string(),
                             )
                         })?;
                         for hap in nonunique {
@@ -446,8 +449,9 @@ pub fn haplotype_background(
                                 .get(hap)
                                 .cloned()
                                 .ok_or_else(|| {
-                                    format!(
-                                        "Missing chromosome assignment for Paraphase haplotype '{hap}'"
+                                    missing_data_error(
+                                        "chromosome assignment for Paraphase haplotype",
+                                        hap.to_string(),
                                     )
                                 })?;
                             this_allele_paraphase_haps.insert(hap.clone());
@@ -506,7 +510,12 @@ pub fn haplotype_background(
         if all_ends_reads_match_allele_index.contains_key(allele) {
             let reads = all_ends_reads_match_allele_index
                 .get(allele)
-                .ok_or("hap not in assembly_result.supporting_reads.")?;
+                .ok_or_else(|| {
+                    missing_data_error(
+                        "reads matching allele index for allele",
+                        format!("{allele:?}"),
+                    )
+                })?;
             if let Some(fp_info) = fp_info {
                 polya = get_polya(allele, reads, bases_at_pivot_site, fp_info)?;
             }
@@ -545,7 +554,9 @@ fn get_polya(
     bases_at_pivot_site: &BTreeMap<String, String>,
     fp_info: &FingerprintInfo,
 ) -> Result<String, DError> {
-    let hap_last = allele_old.last().ok_or("last not in allele_old")?;
+    let hap_last = allele_old
+        .last()
+        .ok_or_else(|| missing_data_error("last node of allele", format!("{allele_old:?}")))?;
     if *hap_last < -10 {
         return Ok(String::from("qB"));
     }
@@ -556,10 +567,16 @@ fn get_polya(
     let read_nodes = &fp_info.read_edges;
     for (read, index) in reads {
         let this_read_nodes = read_nodes.get(read).ok_or_else(|| {
-            format!("Missing read-node path for read '{read}' while inferring polyA status")
+            missing_data_error(
+                "read-node path while inferring polyA status",
+                read.to_string(),
+            )
         })?;
         let this_read_positions = read_positions.get(read).ok_or_else(|| {
-            format!("Missing read-position path for read '{read}' while inferring polyA status")
+            missing_data_error(
+                "read-position path while inferring polyA status",
+                read.to_string(),
+            )
         })?;
         let end_index_on_read = allele_old.len() as i32 - 2 - *index;
         trace!(
@@ -571,9 +588,9 @@ fn get_polya(
             let segment_name = format!("{read}:{end_position_on_read}");
             trace!("{allele_old:?} {read} {this_read_nodes:?} {this_read_positions:?} {} {end_index_on_read} {end_position_on_read}", *index);
             if bases_at_pivot_site.contains_key(&segment_name) {
-                let read_base = bases_at_pivot_site
-                    .get(&segment_name)
-                    .ok_or("segment_name not in bases_at_pivot_site")?;
+                let read_base = bases_at_pivot_site.get(&segment_name).ok_or_else(|| {
+                    missing_data_error("pivot-site base for read segment", segment_name.to_string())
+                })?;
                 polya_site_this_allele.push(read_base);
             }
         }
@@ -598,17 +615,21 @@ fn get_polya(
             }
             if found_ending_node {
                 let this_read_positions = read_positions.get(read).ok_or_else(|| {
-                    format!(
-                        "Missing read-position path for read '{read}' while inferring polyA status"
+                    missing_data_error(
+                        "read-position path while inferring polyA status",
+                        read.to_string(),
                     )
                 })?;
                 let end_position_on_read = this_read_positions[ending_node_index as usize];
                 let segment_name = format!("{read}:{end_position_on_read}");
                 trace!("{allele_old:?} {read} {this_read_nodes:?} {this_read_positions:?} {ending_node_index} {end_position_on_read}");
                 if bases_at_pivot_site.contains_key(&segment_name) {
-                    let read_base = bases_at_pivot_site
-                        .get(&segment_name)
-                        .ok_or("segment_name not in bases_at_pivot_site")?;
+                    let read_base = bases_at_pivot_site.get(&segment_name).ok_or_else(|| {
+                        missing_data_error(
+                            "pivot-site base for read segment",
+                            segment_name.to_string(),
+                        )
+                    })?;
                     polya_site_this_allele.push(read_base);
                 }
             }
@@ -667,10 +688,11 @@ fn assign_paraphase_haplotypes_to_chromsome(
     let mut chromosome_assignment = BTreeMap::new();
     for (hap_seq, hap_name) in &phasing_result.final_haplotypes {
         let mut assignment = String::from("chromosome_unknown");
-        let first_site = hap_seq
-            .as_bytes()
-            .first()
-            .ok_or_else(|| format!("Paraphase haplotype sequence is empty for hap '{hap_name}'"))?;
+        let first_site = hap_seq.as_bytes().first().ok_or_else(|| {
+            invalid_data_error(format!(
+                "Paraphase haplotype sequence is empty for hap '{hap_name}'"
+            ))
+        })?;
         if *first_site != b'x' {
             if *first_site == b'0' {
                 assignment = String::from("chr10");
@@ -681,7 +703,9 @@ fn assign_paraphase_haplotypes_to_chromsome(
             let hap_detail = &phasing_result
                 .haplotype_details
                 .get(hap_name)
-                .ok_or("hap_name not in haplotype_details")?;
+                .ok_or_else(|| {
+                    missing_data_error("Paraphase haplotype details", hap_name.to_string())
+                })?;
             let hap_boundary = &hap_detail.boundary;
             let bounds = hap_boundary
                 .split_terminator('-')
@@ -745,7 +769,12 @@ fn assign_paraphase_haplotypes_to_chromsome(
             .iter()
             .filter(|(_x, y)| *y == "chromosome_unknown")
             .next()
-            .ok_or("Expected exactly one unknown chromosome assignment but none were found")?
+            .ok_or_else(|| {
+                missing_data_error(
+                    "unknown chromosome assignment entry",
+                    "exactly one unresolved Paraphase haplotype",
+                )
+            })?
             .0
             .clone();
         debug!("unknown_hap {unknown_hap}");
@@ -759,6 +788,53 @@ fn assign_paraphase_haplotypes_to_chromsome(
         }
     }
     Ok(chromosome_assignment)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_paraphase_gene_call_errors_on_missing_gene() {
+        let error = get_paraphase_gene_call(&BTreeMap::new(), "DUX4p5")
+            .expect_err("missing Paraphase genes should error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing Paraphase result for gene: DUX4p5"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_get_polya_errors_on_missing_read_nodes() {
+        let fp_info = FingerprintInfo {
+            read_edges: BTreeMap::new(),
+            grouped_reads: BTreeMap::new(),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::new(),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+
+        let error = get_polya(
+            &vec![1, 2, 3],
+            &vec![(String::from("read1"), 0)],
+            &BTreeMap::new(),
+            &fp_info,
+        )
+        .expect_err("missing read paths should error while inferring polyA");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing read-node path while inferring polyA status: read1"),
+            "unexpected error: {error}"
+        );
+    }
 }
 
 /// Remove redundant haps from a list of haps

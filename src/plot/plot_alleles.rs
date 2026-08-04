@@ -2,7 +2,7 @@ use crate::plot::{
     pipe_plot::{Beta, Color, Legend, Pipe, PipePlot, PipeSeg, Shape},
     svg,
 };
-use crate::util::DResult;
+use crate::util::{invalid_data_error, missing_data_error, DResult};
 use crate::variant::{AlleleInfoForPlotting, ReadInfoForPlotting};
 use log::trace;
 use std::{collections::BTreeMap, path::PathBuf};
@@ -147,7 +147,11 @@ pub fn plot_alleles_and_reads(
         let mut panel: Vec<Pipe> = Vec::new();
         // get the scale for the allele
         let mut scale = Vec::new();
-        let total_len = allele_reads.first().ok_or("first not found")?.bases.len() as i64;
+        let total_len = allele_reads
+            .first()
+            .ok_or_else(|| missing_data_error("first allele plot row", "empty allele read set"))?
+            .bases
+            .len() as i64;
         let cn_max: i64 = total_len / nvar;
         for j in 0..cn_max {
             let this_scale = (FLANK_WIDTH + (j * nvar) as u32, Some((j + 1) as u32));
@@ -162,7 +166,11 @@ pub fn plot_alleles_and_reads(
             let read = &this_read.bases;
             let read_isnonuniq = &this_read.is_nonuniq;
             // preprare segs
-            if *read.first().ok_or("first not found in read")? != 4 {
+            if *read
+                .first()
+                .ok_or_else(|| missing_data_error("first plotted read base", format!("{read:?}")))?
+                != 4
+            {
                 segs.push(PipeSeg {
                     width: FLANK_WIDTH - 1 + read_start as u32,
                     color: Color::White,
@@ -170,7 +178,10 @@ pub fn plot_alleles_and_reads(
                 });
             }
             let mut this_width = 0;
-            let mut prev_color = match read.first().ok_or("first not found")? {
+            let mut prev_color = match read
+                .first()
+                .ok_or_else(|| missing_data_error("first plotted read base", format!("{read:?}")))?
+            {
                 0 => Color::Yellow,
                 1 => Color::Black,
                 2 => Color::Pink,
@@ -218,12 +229,21 @@ pub fn plot_alleles_and_reads(
 
             // prepare outlines
             let mut this_width = 0;
-            let mut prev_color = match read_isnonuniq.first().ok_or("first not found")? {
+            let mut prev_color = match read_isnonuniq.first().ok_or_else(|| {
+                missing_data_error(
+                    "first plotted nonunique marker",
+                    format!("{read_isnonuniq:?}"),
+                )
+            })? {
                 0 => Color::White,
                 1 => Color::Red,
                 _ => Color::LightGray,
             };
-            if *read.first().ok_or("first not found in read")? != 4 {
+            if *read
+                .first()
+                .ok_or_else(|| missing_data_error("first plotted read base", format!("{read:?}")))?
+                != 4
+            {
                 outlines.push(PipeSeg {
                     width: FLANK_WIDTH - 1 + read_start as u32,
                     color: Color::White,
@@ -256,7 +276,11 @@ pub fn plot_alleles_and_reads(
                 }
             }
             // last seg
-            if *read.last().ok_or("last not found in read")? == 4 {
+            if *read
+                .last()
+                .ok_or_else(|| missing_data_error("last plotted read base", format!("{read:?}")))?
+                == 4
+            {
                 this_width += FLANK_WIDTH - 1;
             }
             let seg_width = this_width;
@@ -290,7 +314,15 @@ pub fn plot_alleles_and_reads(
         panels.push(panel);
     }
     let pipe_plot: PipePlot = PipePlot { panels, legend };
-    svg::generate(&pipe_plot, out_file_name.to_str().ok_or("to_str failure")?);
+    svg::generate(
+        &pipe_plot,
+        out_file_name.to_str().ok_or_else(|| {
+            invalid_data_error(format!(
+                "Plot output path is not valid UTF-8: {}",
+                out_file_name.display()
+            ))
+        })?,
+    );
     Ok(())
 }
 
@@ -366,7 +398,13 @@ pub fn plot_methyl(
                 .map(|x| *x as usize)
                 .collect::<Vec<usize>>();
             if !bases.is_empty() {
-                while *bases.last().ok_or("last not found in read_line_new")? == 400 {
+                while *bases.last().ok_or_else(|| {
+                    missing_data_error(
+                        "last methylation base in plotted read",
+                        format!("{bases:?}"),
+                    )
+                })? == 400
+                {
                     bases.pop();
                 }
                 let this_read = ReadInfoForPlotting {
@@ -444,6 +482,7 @@ pub fn plot_methyl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     #[test]
     fn test_partition_reads() {
@@ -525,6 +564,25 @@ mod tests {
                 bases: vec![1, 1, 1, 3, 1, 1, 1],
                 is_nonuniq: vec![0, 0, 0, 0, 1, 1, 1],
             }]
+        );
+    }
+
+    #[test]
+    fn test_plot_alleles_and_reads_errors_on_empty_allele_read_set() {
+        let error = plot_alleles_and_reads(
+            &env::temp_dir().join("kivvi-empty-allele-plot.svg"),
+            AlleleInfoForPlotting {
+                reads: vec![vec![]],
+                variant_count_per_copy: 1,
+            },
+        )
+        .expect_err("empty allele plot rows should error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing first allele plot row: empty allele read set"),
+            "unexpected error: {error}"
         );
     }
 }

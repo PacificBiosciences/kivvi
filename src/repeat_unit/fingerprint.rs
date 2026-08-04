@@ -276,7 +276,10 @@ pub fn get_fingerprint(
                         if segs_next.len() == 1 {
                             let next_seg_vec = segs_next.into_iter().collect::<Vec<Vec<u8>>>();
                             let next_seg_seq = next_seg_vec.first().ok_or_else(|| {
-                                format!("Expected one successor segment for fingerprint {node}")
+                                missing_data_error(
+                                    "only successor segment for fingerprint",
+                                    node.to_string(),
+                                )
                             })?;
                             fps_to_add.insert(next_seg_seq.to_vec());
                             debug!(
@@ -291,7 +294,10 @@ pub fn get_fingerprint(
                         if segs_prev.len() == 1 {
                             let prev_seg_vec = segs_prev.into_iter().collect::<Vec<Vec<u8>>>();
                             let prev_seg_seq = prev_seg_vec.first().ok_or_else(|| {
-                                format!("Expected one predecessor segment for fingerprint {node}")
+                                missing_data_error(
+                                    "only predecessor segment for fingerprint",
+                                    node.to_string(),
+                                )
                             })?;
                             fps_to_add.insert(prev_seg_seq.to_vec());
                             debug!(
@@ -352,7 +358,10 @@ pub fn get_fingerprint(
         let mut this_read_edges: Vec<i32> = Vec::new();
         let mut this_read_positions: Vec<i32> = Vec::new();
         let first_seg = each_read_info.first().ok_or_else(|| {
-            format!("Read '{each_read}' has no aligned segments after fingerprinting")
+            missing_data_error(
+                "first aligned segment after fingerprinting",
+                each_read.to_string(),
+            )
         })?;
         // starts
         if first_seg.is_start && first_seg.pos > 1000 {
@@ -416,13 +425,12 @@ pub fn get_fingerprint(
                                 + (k * region_coordinates.repeat_len);
                             let n2 = n1 + region_coordinates.repeat_len;
                             let unknown_fp_seq = std::str::from_utf8(
-                                &read_seq_full
-                                    .get(&segment_name_short)
-                                    .ok_or_else(|| {
-                                        format!(
-                                            "Missing full read sequence for segment '{segment_name_short}' while inferring unknown fingerprints"
-                                        )
-                                    })?[n1..n2],
+                                &read_seq_full.get(&segment_name_short).ok_or_else(|| {
+                                    missing_data_error(
+                                        "full read sequence while inferring unknown fingerprints",
+                                        segment_name_short.to_string(),
+                                    )
+                                })?[n1..n2],
                             )?;
                             debug!(">{each_read}_unknown_fp_{n1} {unknown_fp_seq}");
                         }
@@ -439,9 +447,9 @@ pub fn get_fingerprint(
                 grouped_reads.entry(segment_name_short).or_insert(0);
             } else {
                 let fp_name = each_read_segment.fp_index.ok_or_else(|| {
-                    format!(
-                        "Read segment '{}' is missing a fingerprint index after classification",
-                        each_read_segment.name
+                    missing_data_error(
+                        "fingerprint index after classification",
+                        each_read_segment.name.to_string(),
                     )
                 })?;
                 this_read_edges.push(fp_name);
@@ -903,9 +911,12 @@ fn query_seq_counter_at_clip_site(
     let this_pos = pos as i64;
     let variant_pos = this_pos + 1;
     let adj_pos = this_pos + 2;
-    let expected_base = clip_variant_sites
-        .get(&adj_pos)
-        .ok_or("adj_pos not in clip_variant_sites")?;
+    let expected_base = clip_variant_sites.get(&adj_pos).ok_or_else(|| {
+        missing_data_error(
+            "clip-variant site base",
+            format!("adjusted position {adj_pos}"),
+        )
+    })?;
     for aln in x.alignments() {
         let query_pos_raw = raw_qpos(&aln);
         let record = aln.record();
@@ -1002,7 +1013,9 @@ pub fn check_pivot_site(
                 let read_start_pos = start_pos_on_read(&record);
                 let qname = std::str::from_utf8(record.qname())?;
                 let qname_new = format!("{qname}:{}", read_start_pos);
-                let seq = aln2seq.get(&qname_new).ok_or("qname_new not in aln2seq")?;
+                let seq = aln2seq.get(&qname_new).ok_or_else(|| {
+                    missing_data_error("aligned read sequence for pivot-site read", &qname_new)
+                })?;
                 if seq.len() > query_pos_raw + 6 {
                     let base = std::str::from_utf8(&seq[query_pos_raw..(query_pos_raw + 6)])?;
                     bases_at_special_site.insert(qname_new.to_string(), base.to_string());
@@ -1044,8 +1057,9 @@ pub fn get_cpg_sites(
                 if aln2seq.contains_key(&qname_new) {
                     // && aln2seq_full.contains_key(qname) {
                     let seq = aln2seq.get(&qname_new).ok_or_else(|| {
-                        format!(
-                            "Missing aligned read sequence for segment '{qname_new}' while collecting CpG sites"
+                        missing_data_error(
+                            "aligned read sequence while collecting CpG sites",
+                            qname_new.to_string(),
                         )
                     })?;
                     // seq is full_seq

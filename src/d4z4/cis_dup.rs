@@ -7,7 +7,7 @@ use crate::assembly::assembler_utils::{
 use crate::caller::vec_to_string;
 use crate::d4z4::join_partial_alleles::is_cis_dup_by_read_start_offset;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
-use crate::util::DError;
+use crate::util::{invalid_data_error, missing_data_error, DError};
 use itertools::Itertools;
 use log::{debug, trace};
 use paraphase::io::json::GeneCall;
@@ -480,34 +480,45 @@ fn linked_repeat_haps_for_downstream_haplotype(
         let aln_pos = fields
             .get(1)
             .ok_or_else(|| {
-                format!(
+                invalid_data_error(format!(
                     "Downstream haplotype read annotation is missing a '_sup_' position suffix: '{downstream_hap_read}'"
-                )
+                ))
             })?
             .split('_')
             .next()
-            .ok_or("next not found")?
+            .ok_or_else(|| {
+                invalid_data_error(format!(
+                    "Downstream haplotype read annotation has an empty '_sup_' position field: '{downstream_hap_read}'"
+                ))
+            })?
             .parse::<i32>()?;
         trace!("downstream_hap_read {downstream_hap_read} downstream_hap_read_name {downstream_hap_read_name} pos {aln_pos}");
         if all_haps_support.contains_key(downstream_hap_read_name) {
             let this_read_repeat_support = all_haps_support
                 .get(downstream_hap_read_name)
                 .ok_or_else(|| {
-                    format!(
-                        "Missing repeat-support haplotypes for read '{downstream_hap_read_name}'"
+                    missing_data_error(
+                        "repeat-support haplotypes for read",
+                        downstream_hap_read_name.to_string(),
                     )
                 })?;
             let this_read_repeat_edges = fp_info
                 .read_edges
                 .get(downstream_hap_read_name)
                 .ok_or_else(|| {
-                    format!("Missing repeat-edge path for read '{downstream_hap_read_name}'")
+                    missing_data_error(
+                        "repeat-edge path for read",
+                        downstream_hap_read_name.to_string(),
+                    )
                 })?;
             let this_read_repeat_positions = fp_info
                 .read_positions
                 .get(downstream_hap_read_name)
                 .ok_or_else(|| {
-                format!("Missing repeat-position path for read '{downstream_hap_read_name}'")
+                missing_data_error(
+                    "repeat-position path for read",
+                    downstream_hap_read_name.to_string(),
+                )
             })?;
             trace!("this_read_repeat_edges {this_read_repeat_edges:?}");
             trace!("this_read_repeat_positions {this_read_repeat_positions:?}");
@@ -769,10 +780,10 @@ fn normalized_match_index(
 ) -> Result<(Vec<i32>, (String, i32)), DError> {
     let node_index = match_read_allele_first_node_index(&segment.to_vec(), &matched_hap.to_vec())
         .ok_or_else(|| {
-        format!(
+        invalid_data_error(format!(
             "Could not determine the first matching node index between segment {:?} and hap {:?}",
             segment, matched_hap
-        )
+        ))
     })?;
     let mut index_on_read = if node_index.1 > 0 {
         node_index.1 as i32
@@ -805,20 +816,23 @@ fn add_read_supported_links(
         if !read_nodes.contains(&-10) {
             continue;
         }
-        let end_index = read_nodes
-            .iter()
-            .position(|x| *x == -10)
-            .ok_or("end (-10) not found")?;
+        let end_index = read_nodes.iter().position(|x| *x == -10).ok_or_else(|| {
+            missing_data_error("end (-10) node in read", format!("{read_nodes:?}"))
+        })?;
         if end_index == read_nodes.len() - 1 {
             continue;
         }
         let this_read_repeat_positions = fp_info.read_positions.get(read).ok_or_else(|| {
-            format!(
-                "Missing repeat-position path for read '{read}' while adding read-supported links"
+            missing_data_error(
+                "repeat-position path while adding read-supported links",
+                read.to_string(),
             )
         })?;
         let this_read_first_position = *this_read_repeat_positions.first().ok_or_else(|| {
-            format!("Read '{read}' has no repeat positions while adding read-supported links")
+            missing_data_error(
+                "first repeat position while adding read-supported links",
+                read.to_string(),
+            )
         })?;
         let segments = split_read_segments(read_nodes);
         // we have separated the two or more segments of a read
@@ -910,7 +924,7 @@ fn assemble_cis_dup_paths(
                 .iter()
                 .map(|x| {
                     node_names_to_haps.get(x).cloned().ok_or_else(|| {
-                        format!("Missing haplotype for temporary cis-dup node '{x}'")
+                        missing_data_error("haplotype for temporary cis-dup node", x.to_string())
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -943,9 +957,9 @@ pub fn find_cis_dup(
         .process_complete_haps(all_haps.clone(), Some(1), true, false)?
         .support_by_read;
     let mut allele_links: BTreeMap<Vec<i32>, Vec<Vec<i32>>> = BTreeMap::new();
-    let downstream_phasing_result = phasing_result
-        .get(&String::from("DUX4"))
-        .ok_or("Missing DUX4 phasing result while finding cis-dup alleles")?;
+    let downstream_phasing_result = phasing_result.get(&String::from("DUX4")).ok_or_else(|| {
+        missing_data_error("DUX4 phasing result while finding cis-dup alleles", "DUX4")
+    })?;
     let downstream_reads = &downstream_phasing_result.unique_supporting_reads;
     for (downstream_hap, downstream_hap_reads) in downstream_reads {
         trace!("checking reads for downstream_hap {downstream_hap}");
@@ -1024,6 +1038,7 @@ pub fn match_read_allele_first_node_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn test_split_read_segments() {
@@ -1052,5 +1067,63 @@ mod tests {
         let hap = vec![1, 2, 3, 0, 4, 5, 6];
         let res = match_read_allele_first_node_index(&read, &hap);
         assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_linked_repeat_haps_for_downstream_haplotype_errors_on_missing_sup_suffix() {
+        let error = linked_repeat_haps_for_downstream_haplotype(
+            &[String::from("read1")],
+            &BTreeMap::new(),
+            &FingerprintInfo {
+                read_edges: BTreeMap::new(),
+                grouped_reads: BTreeMap::new(),
+                fp_count: BTreeMap::new(),
+                good_name_to_seq: BTreeMap::new(),
+                read_positions: BTreeMap::new(),
+                read_bases: BTreeMap::new(),
+                fp_to_tid: BTreeMap::new(),
+                variants_by_position: BTreeMap::new(),
+            },
+        )
+        .expect_err("downstream read annotations without _sup_ suffix should error");
+
+        assert!(
+            error.to_string().contains(
+                "invalid data: Downstream haplotype read annotation is missing a '_sup_' position suffix: 'read1'"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_find_cis_dup_errors_on_missing_dux4_phasing_result() {
+        let fp_graph = build_graph(BTreeMap::new(), 2);
+        let fp_info = FingerprintInfo {
+            read_edges: BTreeMap::new(),
+            grouped_reads: BTreeMap::new(),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::new(),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+
+        let error = find_cis_dup(
+            &vec![],
+            &fp_graph,
+            &fp_info,
+            &BTreeMap::new(),
+            vec![],
+            &vec![],
+        )
+        .expect_err("missing DUX4 phasing results should error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing DUX4 phasing result while finding cis-dup alleles: DUX4"),
+            "unexpected error: {error}"
+        );
     }
 }
