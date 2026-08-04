@@ -914,9 +914,9 @@ pub fn get_background_for_allele_ends(
     debug!("all_ending_read_support {:?}", all_ending_read_support);
     // find index on reads
     let mut all_ends_reads_match_allele_index = get_read_position_in_allele(
-        fp_info.read_edges.clone(),
-        kept_ending_haps.to_vec(),
-        all_ending_read_support.clone(),
+        &fp_info.read_edges,
+        kept_ending_haps,
+        &all_ending_read_support,
         true,
     )?;
     for (allele, reads) in cis_dups_match_index {

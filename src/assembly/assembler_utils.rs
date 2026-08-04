@@ -494,8 +494,8 @@ pub fn check_spanning(read_nodes: &Vec<i32>) -> bool {
 /// # Returns
 /// * `bool` - true if matching, false otherwise
 pub fn two_haplotypes_are_matching(
-    hap1: Vec<i32>,
-    hap2: Vec<i32>,
+    hap1: &[i32],
+    hap2: &[i32],
     key_site: Option<(usize, usize)>,
 ) -> bool {
     let hap1_len = hap1.len();
@@ -754,97 +754,97 @@ mod tests {
     fn test_two_haplotypes_are_matching() {
         let hap1 = vec![4, 5, 6];
         let hap2 = vec![1, 2, 3, 0, 4, 5, 6];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, Some((4, 7)));
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, Some((4, 7)));
         assert!(is_matching);
 
         let hap1 = vec![4, 5, 6];
         let hap2 = vec![1, 2, 3, 0, 4, 5, 6];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, Some((5, 7)));
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, Some((5, 7)));
         assert!(is_matching);
 
         let hap1 = vec![4, 5, 6];
         let hap2 = vec![1, 2, 3, 0, 4, 5, 6];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, Some((3, 7)));
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, Some((3, 7)));
         assert!(!is_matching);
 
         let hap1 = vec![3, 4, 5, 6];
         let hap2 = vec![1, 2, 3, 0, 4, 5, 6];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, Some((3, 7)));
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, Some((3, 7)));
         assert!(!is_matching);
 
         let hap1 = vec![3, 4, 5, 6];
         let hap2 = vec![1, 2, 3, 2, 4, 5, 6];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, Some((3, 7)));
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, Some((3, 7)));
         assert!(!is_matching);
 
         let hap1 = vec![4, 5, 6, 7, 8];
         let hap2 = vec![1, 2, 3, 0, 4, 5, 6];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, Some((4, 7)));
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, Some((4, 7)));
         assert!(is_matching);
 
         let hap1 = vec![4, 5, 6, 7, 8];
         let hap2 = vec![5, 6];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, Some((0, 2)));
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, Some((0, 2)));
         assert!(is_matching);
 
         let hap1 = vec![4, 5, 6, 7, 8];
         let hap2 = vec![7, 8, 1, 2];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, Some((0, 4)));
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, Some((0, 4)));
         assert!(!is_matching);
 
         let hap1 = vec![4, 5, 6, 7, 8];
         let hap2 = vec![6, 7, 8, 1, 2, 3];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, Some((0, 3)));
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, Some((0, 3)));
         assert!(is_matching);
 
         let hap1 = vec![4, 5, 6, 7, 8];
         let hap2 = vec![4, 7, 8, 1, 2, 3];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, Some((0, 3)));
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, Some((0, 3)));
         assert!(!is_matching);
 
         let hap1 = vec![4, 7, 8];
         let hap2 = vec![4, 7, 8, 1, 2, 3];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, None);
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, None);
         assert!(is_matching);
 
         let hap1 = vec![4, 6, 8];
         let hap2 = vec![4, 7, 8, 1, 2, 3];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, None);
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, None);
         assert!(!is_matching);
 
         let hap1 = vec![4, 0, 8];
         let hap2 = vec![4, 7, 8, 1, 2, 3];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, None);
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, None);
         assert!(is_matching);
 
         let hap1 = vec![0, 8];
         let hap2 = vec![4, 7, 8, 1, 2, 3];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, None);
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, None);
         assert!(!is_matching);
 
         let hap1 = vec![4];
         let hap2 = vec![4, 7, 8, 1, 2, 3];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, None);
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, None);
         assert!(!is_matching);
 
         let hap1 = vec![-2];
         let hap2 = vec![-2, 1, 2, 3];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, None);
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, None);
         assert!(is_matching);
 
         let hap1 = vec![-2, 0];
         let hap2 = vec![-2, 1, 2, 3];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, None);
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, None);
         assert!(is_matching);
 
         let hap1 = vec![-10];
         let hap2 = vec![1, 2, 3, -10];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, None);
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, None);
         assert!(!is_matching);
 
         let hap1 = vec![-10];
         let hap2 = vec![-10, 1, 2, 3];
-        let is_matching = two_haplotypes_are_matching(hap1, hap2, None);
+        let is_matching = two_haplotypes_are_matching(&hap1, &hap2, None);
         assert!(!is_matching);
     }
 

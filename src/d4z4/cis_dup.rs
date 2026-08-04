@@ -735,10 +735,9 @@ fn matching_allele_for_segment(
     let mut dummy_read = BTreeMap::new();
     dummy_read.insert(String::from("read"), segment.to_vec());
     let segment_match = if segment_index == 0 {
-        match_reads_and_haplotypes(dummy_read, all_haps.to_vec(), None, false).by_read
+        match_reads_and_haplotypes(&dummy_read, all_haps, None, false).by_read
     } else {
-        match_reads_and_haplotypes(dummy_read, special_incomplete_haps.to_vec(), None, false)
-            .by_read
+        match_reads_and_haplotypes(&dummy_read, special_incomplete_haps, None, false).by_read
     };
     let Some(dummy_read_matches) = segment_match.get("read") else {
         return vec![];

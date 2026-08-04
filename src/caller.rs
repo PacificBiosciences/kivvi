@@ -141,16 +141,17 @@ pub(crate) fn vec_to_string<T: Display>(haps: &Vec<Vec<T>>, separater: &str) -> 
 
 /// Convert read edge vectors to joined strings for JSON output
 pub fn read_info_to_string(read_edges: &BTreeMap<String, Vec<i32>>) -> BTreeMap<String, String> {
-    let mut read_edges_string = BTreeMap::new();
-    for (read_name, edges) in read_edges {
-        let edge_string = edges
-            .iter()
-            .map(|edge| edge.to_string())
-            .collect::<Vec<_>>()
-            .join("-");
-        read_edges_string.insert(read_name.clone(), edge_string);
-    }
-    read_edges_string
+    read_edges
+        .iter()
+        .map(|(read_name, edges)| {
+            let edge_string = edges
+                .iter()
+                .map(|edge| edge.to_string())
+                .collect::<Vec<_>>()
+                .join("-");
+            (read_name.clone(), edge_string)
+        })
+        .collect()
 }
 
 /// Remove a file if it exists

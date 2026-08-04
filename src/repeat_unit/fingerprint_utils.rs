@@ -530,20 +530,18 @@ pub fn select_fps(
     // complete fp seq -> name
     let mut good_seq_to_name: BTreeMap<Vec<u8>, i32> = BTreeMap::new();
     // first round, very loose criteria
-    for (fp, count) in fp_count.clone().into_iter() {
+    for (fp, count) in &fp_count {
         let fp_seq = std::str::from_utf8(&fp)?;
         let fp_seq_string = fp_seq.to_string();
         if !fp.contains(&b'x')
             && !fp.contains(&b'-')
-            && (count >= read_parameters.min_fingerprint_support - 1 || fp_whitelist.contains(&fp))
+            && (*count >= read_parameters.min_fingerprint_support - 1 || fp_whitelist.contains(fp))
         {
             debug!("{fp_seq_string:?}, read count {count:?}, index {fp_index:?}");
             good_name_to_seq
                 .entry(fp_index)
                 .or_insert_with(|| fp.clone());
-            good_seq_to_name
-                .entry(fp.clone())
-                .or_insert_with(|| fp_index);
+            good_seq_to_name.entry(fp.clone()).or_insert(fp_index);
             fp_index += 1;
         } else {
             trace!("{fp_seq_string:?} is filtered, read count {count:?}");
@@ -630,31 +628,29 @@ pub fn select_fps(
     let mut good_name_to_seq = BTreeMap::new();
     // complete fp seq -> name
     let mut good_seq_to_name: BTreeMap<Vec<u8>, i32> = BTreeMap::new();
-    for (fp, count) in fp_count.clone().into_iter() {
+    for (fp, count) in &fp_count {
         let fp_seq = std::str::from_utf8(&fp)?;
         let fp_seq_string = fp_seq.to_string();
         let mut partial_count = 0;
-        if to_replace_reverse.contains_key(&fp) {
-            partial_count = to_replace_reverse.get(&fp).ok_or("err")?.len() as i32;
+        if to_replace_reverse.contains_key(fp) {
+            partial_count = to_replace_reverse.get(fp).ok_or("err")?.len() as i32;
         }
         if !fp.contains(&b'x')
             && (!fp.contains(&b'-') || full_unknown_no_match_considered.contains(&fp))
-            && (count >= read_parameters.min_fingerprint_support
-                || fp_whitelist.contains(&fp)
+            && (*count >= read_parameters.min_fingerprint_support
+                || fp_whitelist.contains(fp)
                 || (!sensitive && partial_count >= read_parameters.min_fingerprint_support)
-                || (sensitive && partial_count + count >= read_parameters.min_fingerprint_support))
+                || (sensitive && partial_count + *count >= read_parameters.min_fingerprint_support))
         {
-            if !start_end_fps.contains_key(&fp) {
+            if !start_end_fps.contains_key(fp) {
                 debug!("{fp_seq_string:?}, read count {count:?}, partial_count {partial_count:?}, index {fp_index:?}");
                 good_name_to_seq
                     .entry(fp_index)
                     .or_insert_with(|| fp.clone());
-                good_seq_to_name
-                    .entry(fp.clone())
-                    .or_insert_with(|| fp_index);
+                good_seq_to_name.entry(fp.clone()).or_insert(fp_index);
                 fp_index += 1;
             } else {
-                let start_end_fp_index = start_end_fps.get(&fp).ok_or_else(|| {
+                let start_end_fp_index = start_end_fps.get(fp).ok_or_else(|| {
                     format!("Missing start/end fingerprint index for sequence {:?}", fp)
                 })?;
                 debug!("{fp_seq_string:?}, read count {count:?}, partial_count {partial_count:?}, index {start_end_fp_index:?}");
@@ -663,7 +659,7 @@ pub fn select_fps(
                     .or_insert_with(|| fp.clone());
                 good_seq_to_name
                     .entry(fp.clone())
-                    .or_insert_with(|| *start_end_fp_index);
+                    .or_insert(*start_end_fp_index);
             }
         } else {
             trace!("{fp_seq_string:?} is filtered, read count {count:?}");
@@ -821,11 +817,11 @@ pub fn get_start_end_fps(
     let mut starting_fps = BTreeMap::<Vec<u8>, i32>::new();
     let mut ending_fps = BTreeMap::<Vec<u8>, i32>::new();
 
-    for (read_segment, fp) in read_segment_raw_fp.clone().into_iter() {
-        if flanking_reads.start_segment.contains(&read_segment) {
+    for (read_segment, fp) in read_segment_raw_fp {
+        if flanking_reads.start_segment.contains(read_segment.as_str()) {
             *starting_fps.entry(fp.clone()).or_default() += 1;
         }
-        if flanking_reads.end_segment.contains(&read_segment) {
+        if flanking_reads.end_segment.contains(read_segment.as_str()) {
             *ending_fps.entry(fp.clone()).or_default() += 1;
         }
     }
@@ -1211,12 +1207,10 @@ pub fn rm_redundant_finger_prints(
                 new_fps.push(*fp);
             }
         }
-        if new_fps != read_fps.to_vec() {
+        if new_fps != *read_fps {
             debug!("updated edges {each_read}: from {read_fps:?} to {new_fps:?}");
         }
-        new_read_edges
-            .entry(each_read.to_string())
-            .or_insert(new_fps);
+        new_read_edges.entry(each_read.clone()).or_insert(new_fps);
     }
 
     for (each_segment, fp) in fp_info.grouped_reads.iter() {
@@ -1225,12 +1219,10 @@ pub fn rm_redundant_finger_prints(
                 .get(fp)
                 .ok_or_else(|| missing_data_error("fingerprint replacement", fp.to_string()))?;
             new_grouped_reads
-                .entry(each_segment.to_string())
+                .entry(each_segment.clone())
                 .or_insert(*to_replace);
         } else {
-            new_grouped_reads
-                .entry(each_segment.to_string())
-                .or_insert(*fp);
+            new_grouped_reads.entry(each_segment.clone()).or_insert(*fp);
         }
     }
 

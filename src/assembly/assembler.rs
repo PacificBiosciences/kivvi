@@ -435,29 +435,26 @@ impl FpGraph {
                 remaining_haps.push(hap);
             }
         }
-        let read_support =
-            match_reads_and_haplotypes(self.reads.clone(), remaining_haps, None, false);
+        let read_support = match_reads_and_haplotypes(&self.reads, &remaining_haps, None, false);
         let good_reads = read_support.unique;
         let mut final_supporting_reads = BTreeMap::<Vec<i32>, HashSet<String>>::new();
         for (test_hap, test_hap_support) in good_reads.iter() {
-            let mut test_hap_support_filtered = Vec::new();
-            for read in test_hap_support {
-                let read_num_known_nodes = read.iter().filter(|x| **x != 0).count();
-                if get_supporting_reads_only || read_num_known_nodes > 1 {
-                    test_hap_support_filtered.push(read.to_vec());
-                }
-            }
-            let nread = test_hap_support_filtered.len();
+            let nread = test_hap_support
+                .iter()
+                .filter(|read| {
+                    get_supporting_reads_only || read.iter().filter(|x| **x != 0).count() > 1
+                })
+                .count();
             debug!("{test_hap:?} has {nread} supporting reads.");
             if nread >= min_support {
-                for partial_hap in &test_hap_support_filtered {
+                let supporting_reads = final_supporting_reads.entry(test_hap.clone()).or_default();
+                for partial_hap in test_hap_support.iter().filter(|read| {
+                    get_supporting_reads_only || read.iter().filter(|x| **x != 0).count() > 1
+                }) {
                     for read in self.back_to_reads.get(partial_hap).ok_or_else(|| {
                         missing_data_error("read names for haplotype", format!("{partial_hap:?}"))
                     })? {
-                        final_supporting_reads
-                            .entry(test_hap.to_vec())
-                            .or_default()
-                            .insert(read.to_string());
+                        supporting_reads.insert(read.clone());
                     }
                 }
             } else {
@@ -482,14 +479,14 @@ impl FpGraph {
         candidates: Vec<Vec<i32>>,
     ) -> Result<(Vec<i32>, bool), DError> {
         let candidates_read_support =
-            match_reads_and_haplotypes(self.reads.clone(), candidates.clone(), None, false);
+            match_reads_and_haplotypes(&self.reads, &candidates, None, false);
         let mut has_support = false;
         let candidates_read_support_uniq = candidates_read_support.unique;
         if !candidates_read_support_uniq.is_empty() {
             // sort by number of supporting reads
             let mut hap_reads: Vec<(Vec<i32>, usize)> = candidates_read_support_uniq
                 .iter()
-                .map(|(x, y)| (x.to_vec(), y.len()))
+                .map(|(x, y)| (x.clone(), y.len()))
                 .collect::<Vec<(Vec<i32>, usize)>>();
             // reverse sort
             hap_reads.sort_by(|a, b| b.1.cmp(&a.1));
@@ -499,7 +496,7 @@ impl FpGraph {
                 })?;
             if *most_supported_nread >= MIN_ALLELE_SUPPORT {
                 has_support = true;
-                return Ok((most_supported_hap.to_vec(), has_support));
+                return Ok((most_supported_hap.clone(), has_support));
             }
         }
         // sort by haplotype length
@@ -512,7 +509,7 @@ impl FpGraph {
                 format!("{candidates_sort:?}"),
             )
         })?;
-        Ok((shortest.to_vec(), has_support))
+        Ok((shortest.clone(), has_support))
     }
 
     /// Get edges from reads
@@ -1164,8 +1161,8 @@ impl FpGraph {
         }
         debug!("check positions n={check_overlap_length}");
         let read_support = match_reads_and_haplotypes(
-            self.reads.clone(),
-            haps_candidates.clone(),
+            &self.reads,
+            &haps_candidates,
             Some(check_overlap_length),
             false,
         );
@@ -1184,8 +1181,8 @@ impl FpGraph {
         let n_max = cmp::min(10, candidate_len - check_overlap_length + 1);
         for n in 0..n_max {
             let read_support_stringent = match_reads_and_haplotypes(
-                self.reads.clone(),
-                haps_candidates.clone(),
+                &self.reads,
+                &haps_candidates,
                 Some(check_overlap_length + n),
                 false,
             );
@@ -1322,8 +1319,8 @@ impl FpGraph {
         }
         debug!("check positions n={check_overlap_length}");
         let read_support = match_reads_and_haplotypes(
-            self.reads.clone(),
-            haps_candidates.clone(),
+            &self.reads,
+            &haps_candidates,
             Some(check_overlap_length),
             true,
         );
@@ -1342,8 +1339,8 @@ impl FpGraph {
         let n_max = cmp::min(10, candidate_len - check_overlap_length + 1);
         for n in 0..n_max {
             let read_support_stringent = match_reads_and_haplotypes(
-                self.reads.clone(),
-                haps_candidates.clone(),
+                &self.reads,
+                &haps_candidates,
                 Some(check_overlap_length + n),
                 true,
             );
@@ -1944,16 +1941,16 @@ pub fn filter_assembled_candidates(
 /// # Returns
 /// * `HaplotypeReads` - haplotype reads
 pub fn match_reads_and_haplotypes(
-    haplotype_per_read: BTreeMap<String, Vec<i32>>,
-    hap_list: Vec<Vec<i32>>,
+    haplotype_per_read: &BTreeMap<String, Vec<i32>>,
+    hap_list: &[Vec<i32>],
     req_overlap_len: Option<usize>,
     reverse: bool,
 ) -> HaplotypeReads {
     let mut support_reads: BTreeMap<Vec<i32>, Vec<Vec<i32>>> = BTreeMap::new();
     let mut supporting_haps_per_read = BTreeMap::new();
-    for (read_name, read_hap) in haplotype_per_read.iter() {
+    for (read_name, read_hap) in haplotype_per_read {
         let mut matching_haplotypes = Vec::new();
-        for haplotype_to_extend in &hap_list {
+        for haplotype_to_extend in hap_list {
             let is_match: bool = if let Some(overlap_len) = req_overlap_len {
                 if haplotype_to_extend.len() < overlap_len {
                     false
@@ -1961,8 +1958,8 @@ pub fn match_reads_and_haplotypes(
                     let haplotype_to_extend_len = haplotype_to_extend.len();
                     trace!("haplotype_to_extend_len {haplotype_to_extend_len} overlap_len {overlap_len}");
                     two_haplotypes_are_matching(
-                        read_hap.to_vec(),
-                        haplotype_to_extend.clone(),
+                        read_hap,
+                        haplotype_to_extend,
                         Some((
                             haplotype_to_extend_len - overlap_len,
                             haplotype_to_extend_len,
@@ -1972,26 +1969,29 @@ pub fn match_reads_and_haplotypes(
                     let haplotype_to_extend_len = haplotype_to_extend.len();
                     trace!("haplotype_to_extend_len {haplotype_to_extend_len} overlap_len {overlap_len}");
                     two_haplotypes_are_matching(
-                        read_hap.to_vec(),
-                        haplotype_to_extend.clone(),
+                        read_hap,
+                        haplotype_to_extend,
                         Some((0, overlap_len)),
                     )
                 }
             } else {
-                two_haplotypes_are_matching(read_hap.to_vec(), haplotype_to_extend.clone(), None)
+                two_haplotypes_are_matching(read_hap, haplotype_to_extend, None)
             };
             if is_match {
                 matching_haplotypes.push(haplotype_to_extend.clone());
             }
         }
-        supporting_haps_per_read
-            .entry(read_name.to_string())
-            .or_insert(matching_haplotypes.clone());
-        if matching_haplotypes.len() == 1 {
+        let unique_haplotype = if matching_haplotypes.len() == 1 {
+            matching_haplotypes.first().cloned()
+        } else {
+            None
+        };
+        supporting_haps_per_read.insert(read_name.clone(), matching_haplotypes);
+        if let Some(unique_haplotype) = unique_haplotype {
             support_reads
-                .entry(matching_haplotypes[0].clone())
+                .entry(unique_haplotype)
                 .or_default()
-                .push(read_hap.to_vec());
+                .push(read_hap.clone());
         }
     }
     HaplotypeReads {
