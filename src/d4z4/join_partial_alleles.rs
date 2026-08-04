@@ -75,7 +75,7 @@ pub(crate) fn classify_fingerprint(
 /// * `this_allele_fps_classified` - classified fingerprints on the allele
 /// # Returns
 /// * `String` - the allele type
-pub(crate) fn classify_allele(this_allele_fps_classified: &Vec<String>) -> String {
+pub(crate) fn classify_allele(this_allele_fps_classified: &[String]) -> String {
     let allele_cn = this_allele_fps_classified.len();
     if allele_cn >= 2 {
         let counter = this_allele_fps_classified
@@ -151,7 +151,7 @@ pub(crate) fn is_cis_dup(allele: &str, fp_info: &FingerprintInfo) -> Result<bool
 /// * `alleles` - two partial alleles to merge
 /// # Returns
 /// * `bool` - true if one allele has a left flank and the other has a right flank, false otherwise
-fn check_flank_presence(alleles: &Vec<String>) -> bool {
+fn check_flank_presence(alleles: &[String]) -> bool {
     let mut has_left = false;
     let mut has_right = false;
     for allele in alleles.iter() {
@@ -545,7 +545,7 @@ fn merge_two_partial_alleles(
     return (ovl_len, alleles.join("..."), format!(">={allele_size}"));
 }
 
-fn is_qal_allele(allele: &String, qal_units: &Vec<i32>) -> bool {
+fn is_qal_allele(allele: &str, qal_units: &[i32]) -> bool {
     if !allele.contains("RightFlank") {
         return false;
     }

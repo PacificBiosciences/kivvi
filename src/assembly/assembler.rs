@@ -1148,7 +1148,7 @@ impl FpGraph {
             }
         }
         let mut check_overlap_length: usize = (self
-            .require_overlap_length_check_backward(this_hap.clone(), strict_for_cyclic_nodes)?
+            .require_overlap_length_check_backward(&this_hap, strict_for_cyclic_nodes)?
             as usize)
             + 2;
         if check_overlap_length < (self.min_overlap as usize) {
@@ -1297,7 +1297,7 @@ impl FpGraph {
             }
         }
         let mut check_overlap_length: usize = (self
-            .require_overlap_length_check_forward(this_hap.clone(), strict_for_cyclic_nodes)?
+            .require_overlap_length_check_forward(&this_hap, strict_for_cyclic_nodes)?
             as usize)
             + 2;
         if check_overlap_length < (self.min_overlap as usize) {
@@ -1368,7 +1368,7 @@ impl FpGraph {
     /// * `i32` - needed overlap length
     pub fn require_overlap_length_check_backward(
         &self,
-        this_hap: Vec<i32>,
+        this_hap: &[i32],
         strict_for_cyclic_nodes: bool,
     ) -> Result<i32, DError> {
         let hap_len = this_hap.len();
@@ -1437,7 +1437,7 @@ impl FpGraph {
     /// * `i32` - needed overlap length
     pub fn require_overlap_length_check_forward(
         &self,
-        this_hap: Vec<i32>,
+        this_hap: &[i32],
         strict_for_cyclic_nodes: bool,
     ) -> Result<i32, DError> {
         let hap_len = this_hap.len();
@@ -1604,7 +1604,7 @@ impl FpGraph {
 /// let test_hap_has_start = has_start(&test_hap);
 /// assert!(test_hap_has_start);
 /// ```
-pub fn has_start(hap: &Vec<i32>) -> bool {
+pub fn has_start(hap: &[i32]) -> bool {
     for node in hap {
         if *node > -10 && *node < 0 {
             return true;
@@ -1628,7 +1628,7 @@ pub fn has_start(hap: &Vec<i32>) -> bool {
 /// let test_hap_has_end = has_end(&test_hap);
 /// assert!(test_hap_has_end);
 /// ```
-pub fn has_end(hap: &Vec<i32>) -> bool {
+pub fn has_end(hap: &[i32]) -> bool {
     for node in hap {
         if *node <= -10 {
             return true;
@@ -2306,9 +2306,7 @@ mod tests {
             .or_insert(vec![1, 2, 3]);
         let mut graph = build_graph(read_edges, 2);
         graph.cyclic_nodes.entry(1).or_insert(vec![1, 2]);
-        let to_include = graph
-            .include_cyclic_node_forward(1, 1, &[2, 1, 1])
-            .unwrap();
+        let to_include = graph.include_cyclic_node_forward(1, 1, &[2, 1, 1]).unwrap();
         assert_eq!(to_include, true);
         let to_include = graph
             .include_cyclic_node_forward(1, 1, &[2, 1, 1, 1])
@@ -2347,13 +2345,13 @@ mod tests {
         graph.clean_reads = graph.reads.clone();
         let this_hap = vec![2, 3, 4, 5, 6];
         let ovl_len = graph
-            .require_overlap_length_check_forward(this_hap, false)
+            .require_overlap_length_check_forward(&this_hap, false)
             .unwrap();
         assert_eq!(ovl_len, 3);
 
         let this_hap = vec![1, 2, 3, 5, 6];
         let ovl_len = graph
-            .require_overlap_length_check_forward(this_hap, false)
+            .require_overlap_length_check_forward(&this_hap, false)
             .unwrap();
         assert_eq!(ovl_len, 0);
     }
@@ -2371,13 +2369,13 @@ mod tests {
         graph.clean_reads = graph.reads.clone();
         let this_hap = vec![3, 3, 2];
         let ovl_len = graph
-            .require_overlap_length_check_forward(this_hap, true)
+            .require_overlap_length_check_forward(&this_hap, true)
             .unwrap();
         assert_eq!(ovl_len, 1);
 
         let this_hap = vec![3, 3, 2];
         let ovl_len = graph
-            .require_overlap_length_check_forward(this_hap, false)
+            .require_overlap_length_check_forward(&this_hap, false)
             .unwrap();
         assert_eq!(ovl_len, 1);
     }
@@ -2395,13 +2393,13 @@ mod tests {
         graph.clean_reads = graph.reads.clone();
         let this_hap = vec![3, 3, 3, 2];
         let ovl_len = graph
-            .require_overlap_length_check_forward(this_hap, true)
+            .require_overlap_length_check_forward(&this_hap, true)
             .unwrap();
         assert_eq!(ovl_len, 3);
 
         let this_hap = vec![3, 3, 3, 2];
         let ovl_len = graph
-            .require_overlap_length_check_forward(this_hap, false)
+            .require_overlap_length_check_forward(&this_hap, false)
             .unwrap();
         assert_eq!(ovl_len, 1);
     }
@@ -2419,13 +2417,13 @@ mod tests {
         graph.clean_reads = graph.reads.clone();
         let this_hap = vec![1, 2, 3, 4];
         let ovl_len = graph
-            .require_overlap_length_check_backward(this_hap, false)
+            .require_overlap_length_check_backward(&this_hap, false)
             .unwrap();
         assert_eq!(ovl_len, 2);
 
         let this_hap = vec![1, 2, 3, 4, 6];
         let ovl_len = graph
-            .require_overlap_length_check_backward(this_hap, false)
+            .require_overlap_length_check_backward(&this_hap, false)
             .unwrap();
         assert_eq!(ovl_len, 0);
     }
@@ -2443,13 +2441,13 @@ mod tests {
         graph.clean_reads = graph.reads.clone();
         let this_hap = vec![1, 3, 3];
         let ovl_len = graph
-            .require_overlap_length_check_backward(this_hap, true)
+            .require_overlap_length_check_backward(&this_hap, true)
             .unwrap();
         assert_eq!(ovl_len, 1);
 
         let this_hap = vec![1, 3, 3];
         let ovl_len = graph
-            .require_overlap_length_check_backward(this_hap, false)
+            .require_overlap_length_check_backward(&this_hap, false)
             .unwrap();
         assert_eq!(ovl_len, 1);
     }
@@ -2467,13 +2465,13 @@ mod tests {
         graph.clean_reads = graph.reads.clone();
         let this_hap = vec![1, 3, 3, 3];
         let ovl_len = graph
-            .require_overlap_length_check_backward(this_hap, true)
+            .require_overlap_length_check_backward(&this_hap, true)
             .unwrap();
         assert_eq!(ovl_len, 3);
 
         let this_hap = vec![1, 3, 3, 3];
         let ovl_len = graph
-            .require_overlap_length_check_backward(this_hap, false)
+            .require_overlap_length_check_backward(&this_hap, false)
             .unwrap();
         assert_eq!(ovl_len, 1);
     }

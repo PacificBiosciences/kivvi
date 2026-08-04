@@ -109,7 +109,7 @@ struct D4z4PreparedAnalysis {
 /// * `separater` - symbol to join fingerprints
 /// # Returns
 /// * `Vec<String>` - alleles represented as strings
-pub(crate) fn vec_to_string<T: Display>(haps: &Vec<Vec<T>>, separater: &str) -> Vec<String> {
+pub(crate) fn vec_to_string<T: Display>(haps: &[Vec<T>], separater: &str) -> Vec<String> {
     let mut haps_string = Vec::new();
     for hap in haps {
         let mut renamed_hap = Vec::new();

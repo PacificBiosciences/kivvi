@@ -451,7 +451,7 @@ pub fn redundant_haplotype_allowed(
 /// * `allele` - allele
 /// # Returns
 /// * `BTreeMap<usize, usize>` - starting index of the identical stretch, length of the stretch
-pub fn get_repeat(allele: &Vec<i32>) -> BTreeMap<usize, usize> {
+pub fn get_repeat(allele: &[i32]) -> BTreeMap<usize, usize> {
     let mut repeat_pos = BTreeMap::new();
     let allele_len = allele.len();
     for i in 0..(allele_len - 1) {
@@ -477,7 +477,7 @@ pub fn get_repeat(allele: &Vec<i32>) -> BTreeMap<usize, usize> {
 /// * `read_nodes` - read nodes
 /// # Returns
 /// * `bool` - true if spanning, false otherwise
-pub fn check_spanning(read_nodes: &Vec<i32>) -> bool {
+pub fn check_spanning(read_nodes: &[i32]) -> bool {
     let (Some(first_node), Some(last_node)) = (read_nodes.first(), read_nodes.last()) else {
         return false;
     };

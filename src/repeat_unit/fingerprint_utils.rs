@@ -437,7 +437,7 @@ pub fn get_good_variants(
 /// * `var_len` - variant length
 /// # Returns
 /// * `bool` - true if a match is found
-fn match_existing_indels(known_sites: &Vec<(i64, usize)>, pos: &i64, var_len: usize) -> bool {
+fn match_existing_indels(known_sites: &[(i64, usize)], pos: &i64, var_len: usize) -> bool {
     let mut found_match = Vec::new();
     let position_buffer = if var_len < 20 { var_len as i64 } else { 5 };
     let length_buffer = if var_len < 500 {

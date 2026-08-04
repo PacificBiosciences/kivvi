@@ -280,7 +280,7 @@ pub fn consumes_qry(x: bam::record::Cigar) -> bool {
 /// * `query_name` - read name used to annotate any conversion error
 /// # Returns
 /// * `CigarString` - cigar string
-fn cigar_to_cigarstr(cigar: &Vec<(u32, u8)>, query_name: &str) -> Result<CigarString, DError> {
+fn cigar_to_cigarstr(cigar: &[(u32, u8)], query_name: &str) -> Result<CigarString, DError> {
     let mut op_vec = Vec::with_capacity(cigar.len());
     for (len, op) in cigar {
         let cigar_op = match op {
