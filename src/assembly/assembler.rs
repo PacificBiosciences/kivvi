@@ -685,6 +685,7 @@ impl FpGraph {
                     debug!("extend node {this_hap:?}");
                     let extended_haps =
                         self.assemble_next(this_hap.clone(), strict_for_cyclic_nodes)?;
+                    let number_of_extended_haps = extended_haps.len();
                     debug!("extended {:?} to {:?}", this_hap, extended_haps);
                     let first_unit = this_hap.first().ok_or_else(|| {
                         missing_data_error("first haplotype node", format!("{this_hap:?}"))
@@ -721,14 +722,8 @@ impl FpGraph {
                                 && *last_unit <= -10
                                 && !complete_haps_forward.contains(&each_extended_hap)
                             {
-                                if !complete_haps_forward.contains(&each_extended_hap)
-                                    && !incomplete_haps_forward.contains(&each_extended_hap)
-                                {
-                                    if complete_haps_forward.is_empty()
-                                        || !complete_haps_forward.contains(&each_extended_hap)
-                                    {
-                                        complete_haps_forward.push(each_extended_hap);
-                                    }
+                                if number_of_extended_haps == 1 {
+                                    complete_haps_forward.push(each_extended_hap);
                                 } else {
                                     incomplete_haps_forward.push(each_extended_hap);
                                 }
@@ -786,6 +781,7 @@ impl FpGraph {
                     debug!("extend node {this_hap:?}");
                     let extended_haps =
                         self.assemble_prev(this_hap.clone(), strict_for_cyclic_nodes)?;
+                    let number_of_extended_haps = extended_haps.len();
                     debug!("extended {:?} to {:?}", this_hap, extended_haps);
                     let first_unit = this_hap.first().ok_or_else(|| {
                         missing_data_error("first haplotype node", format!("{this_hap:?}"))
@@ -822,9 +818,7 @@ impl FpGraph {
                                 && *last_unit <= -10
                                 && !complete_haps_backward.contains(&each_extended_hap)
                             {
-                                if complete_haps_backward.is_empty()
-                                    || !complete_haps_backward.contains(&each_extended_hap)
-                                {
+                                if number_of_extended_haps == 1 {
                                     complete_haps_backward.push(each_extended_hap);
                                 } else {
                                     incomplete_haps_backward.push(each_extended_hap);
