@@ -203,7 +203,7 @@ impl FpGraph {
             let mut extended_hap = this_hap.clone();
             extended_hap.push(*next_node);
             let to_include =
-                self.include_cyclic_node_forward(*last_unit, *next_node, extended_hap.clone())?;
+                self.include_cyclic_node_forward(*last_unit, *next_node, &extended_hap)?;
             if to_include {
                 haps_candidates.push(extended_hap);
             }
@@ -242,7 +242,7 @@ impl FpGraph {
             let mut extended_hap = this_hap.clone();
             extended_hap.insert(0, *prev_node);
             let to_include =
-                self.include_cyclic_node_backward(*first_unit, *prev_node, extended_hap.clone())?;
+                self.include_cyclic_node_backward(*first_unit, *prev_node, &extended_hap)?;
             if to_include {
                 haps_candidates.push(extended_hap);
             }

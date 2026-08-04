@@ -257,8 +257,8 @@ pub fn report_variants(
                                         original_base
                                     );
                                     variant_name_old_format
-                                        .entry(variant_name_old.clone())
-                                        .or_insert(variant_name.clone());
+                                        .entry(variant_name_old)
+                                        .or_insert_with(|| variant_name.clone());
 
                                     fp_var.push(variant_name.clone());
                                     let this_var = VariantInfoByVariant {
@@ -268,7 +268,7 @@ pub fn report_variants(
                                         nread: fp_base_consensus.nread,
                                     };
                                     variant_summary
-                                        .entry(variant_name.clone())
+                                        .entry(variant_name)
                                         .or_default()
                                         .push(this_var);
                                 }
@@ -276,9 +276,9 @@ pub fn report_variants(
                         }
                     } else {
                         debug!(
-                        "this_fp_bases_all not found for fp {original_fp_name} fp_name_on_allele {}",
-                        fp_name_on_allele.clone()
-                    );
+                            "this_fp_bases_all not found for fp {original_fp_name} fp_name_on_allele {}",
+                            fp_name_on_allele
+                        );
                     }
                     let mut fp_var_with_pos = fp_var
                         .into_iter()
@@ -349,8 +349,8 @@ pub fn report_variants(
                         let variant_name_old =
                             format!("{}-{}:{}>{}", tid, (*pos).1, ref_base_string, original_base);
                         variant_name_old_format
-                            .entry(variant_name_old.clone())
-                            .or_insert(variant_name.clone());
+                            .entry(variant_name_old)
+                            .or_insert_with(|| variant_name.clone());
                         fp_var.push(variant_name.clone());
                         let this_var = VariantInfoByVariant {
                             fingerprint: *fp_name,
@@ -359,7 +359,7 @@ pub fn report_variants(
                             nread: fp_base_consensus.nread,
                         };
                         variant_summary
-                            .entry(variant_name.clone())
+                            .entry(variant_name)
                             .or_default()
                             .push(this_var);
                     }
@@ -536,7 +536,7 @@ fn get_consensus_var(
             });
         }
     }
-    Ok(none_var.clone())
+    Ok(none_var)
 }
 
 /// Get the supporting reads and all bases of each fingerprint on each allele
@@ -589,24 +589,16 @@ fn get_fp_bases(
                             .entry(uniq_fp_name.clone())
                             .or_default()
                             .insert(read_new_name.clone());
+                        let fp_bases_unique = bases.entry(uniq_fp_name.clone()).or_default();
+                        let fp_bases_all = bases_all.entry(uniq_fp_name).or_default();
                         if let Some(read_bases) = read_info.get(&read_new_name) {
                             if !nonunique_reads.contains(read) {
                                 for (pos, base) in read_bases.iter() {
-                                    bases
-                                        .entry(uniq_fp_name.clone())
-                                        .or_default()
-                                        .entry(*pos)
-                                        .or_default()
-                                        .push(base.to_vec());
+                                    fp_bases_unique.entry(*pos).or_default().push(base.to_vec());
                                 }
                             }
                             for (pos, base) in read_bases.iter() {
-                                bases_all
-                                    .entry(uniq_fp_name.clone())
-                                    .or_default()
-                                    .entry(*pos)
-                                    .or_default()
-                                    .push(base.to_vec());
+                                fp_bases_all.entry(*pos).or_default().push(base.to_vec());
                             }
                         }
                     }
@@ -758,7 +750,7 @@ pub fn make_data_for_alleles(
     let mut out_vec = Vec::new();
     let read_edges = &fp_info.read_edges;
     let read_positions = &fp_info.read_positions;
-    let alleles = reads_match_allele_index.keys();
+    let alleles = reads_match_allele_index.keys().collect::<Vec<_>>();
     let mut all_var_original = Vec::new();
     if let Some(variant_list) = variant_list {
         all_var_original = variant_list;
@@ -821,23 +813,23 @@ pub fn make_data_for_alleles(
 
     let nvar = all_var_sorted.len() as i64;
     let mut allele_lens = Vec::new();
-    for allele in alleles.clone() {
-        let allele_len = allele.len() - 2;
-        allele_lens.push(allele_len);
+    for allele in &alleles {
+        let allele = *allele;
+        allele_lens.push(allele.len() - 2);
     }
     let allele_len_max = *allele_lens
         .iter()
         .max()
         .ok_or("cannot find max of allele_lens")? as i64;
     // go through each allele
-    for allele in alleles.clone() {
+    for allele in &alleles {
+        let allele = *allele;
         if complete_allele_variants.contains_key(allele) {
             let this_allele_variants = complete_allele_variants
                 .get(allele)
                 .ok_or("key not found: allele in complete_allele_variants")?;
             let mut out_vec_allele = Vec::new();
             let allele_len = allele.len() - 2;
-            let allele2 = allele.to_vec();
             // first the allele itself
             let mut allele_line: Vec<usize> = Vec::new();
             // add left flank
@@ -845,7 +837,7 @@ pub fn make_data_for_alleles(
             for repeat_index in 0..allele_len_max {
                 if repeat_index < allele_len as i64 {
                     let mut fp_var = &vec![];
-                    let node_name = allele2[repeat_index as usize + 1];
+                    let node_name = allele[repeat_index as usize + 1];
                     let node_on_allele = (repeat_index as usize + 1, node_name);
                     if this_allele_variants.contains_key(&node_on_allele) {
                         fp_var = this_allele_variants.get(&node_on_allele).ok_or_else(|| {
@@ -890,8 +882,8 @@ pub fn make_data_for_alleles(
                     *read_index_on_allele as i64 - 1
                 };
 
-                let this_read_nodes = read_edges[read].clone();
-                let this_read_positions = read_positions[read].clone();
+                let this_read_nodes = &read_edges[read];
+                let this_read_positions = &read_positions[read];
                 if this_read_nodes.len() != this_read_positions.len() {
                     return Err(invalid_data_error(format!(
                         "Read '{read}' has {} fingerprint nodes but {} fingerprint positions while mapping variant support onto alleles",
@@ -990,7 +982,7 @@ pub fn make_data_for_alleles(
                     }
                 }
                 let start_position = nvar * n_copy_before + beginning_unknown as i64;
-                let mut read_line_new = read_line[beginning_unknown..].to_vec();
+                let mut read_line_new = read_line.split_off(beginning_unknown);
                 // add left and right flanks
                 if start_position == 0 {
                     let first_node = this_read_nodes

@@ -932,7 +932,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     // haplotype backgrounds
     let complete_haps = kept_complete.clone();
     let complete_read_support = fp_graph
-        .process_complete_haps(complete_haps, None, false, false)?
+        .process_complete_haps(&complete_haps, None, false, false)?
         .supporting_reads;
     let (mut hap_backgrounds, _upstream_haplotypes) = haplotype_background(
         &kept_complete,

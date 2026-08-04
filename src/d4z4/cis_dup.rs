@@ -953,7 +953,7 @@ pub fn find_cis_dup(
     let cis_dup_alleles = identify_cis_dup_alleles(all_haps, fp_info)?;
     debug!("cis_dup_alleles identified by read start offset {cis_dup_alleles:?}");
     let all_haps_support = fp_graph
-        .process_complete_haps(all_haps.clone(), Some(1), true, false)?
+        .process_complete_haps(&all_haps, Some(1), true, false)?
         .support_by_read;
     let mut allele_links: BTreeMap<Vec<i32>, Vec<Vec<i32>>> = BTreeMap::new();
     let downstream_phasing_result = phasing_result.get(&String::from("DUX4")).ok_or_else(|| {

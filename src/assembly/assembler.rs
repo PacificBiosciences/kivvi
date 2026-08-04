@@ -149,7 +149,7 @@ impl FpGraph {
         let mut complete_haps = assembly_result.complete;
         let mut incomplete_haps = assembly_result.incomplete;
         let mut check_complete_haps = self.process_complete_haps(
-            complete_haps.clone(),
+            &complete_haps,
             None,
             false,
             graph_parameters.less_filtering,
@@ -172,7 +172,7 @@ impl FpGraph {
                     .map(|i| i.to_string())
                     .collect::<Vec<_>>()
                     .join(",");
-                self.clean_reads.entry(hap_string).or_insert(hap.to_vec());
+                self.clean_reads.entry(hap_string).or_insert(hap.clone());
                 debug!("adding complete allele to read");
             }
             for hap in &incomplete_haps {
@@ -181,7 +181,7 @@ impl FpGraph {
                     .map(|i| i.to_string())
                     .collect::<Vec<_>>()
                     .join(",");
-                self.clean_reads.entry(hap_string).or_insert(hap.to_vec());
+                self.clean_reads.entry(hap_string).or_insert(hap.clone());
                 debug!("adding incomplete allele to read");
             }
             debug!("new reads with newly assembled contigs incorporated.");
@@ -190,7 +190,7 @@ impl FpGraph {
             complete_haps = assembly_result.complete;
             incomplete_haps = assembly_result.incomplete;
             check_complete_haps = self.process_complete_haps(
-                complete_haps.clone(),
+                &complete_haps,
                 None,
                 false,
                 graph_parameters.less_filtering,
@@ -283,7 +283,7 @@ impl FpGraph {
         }
 
         check_complete_haps = self.process_complete_haps(
-            complete_haps.clone(),
+            &complete_haps,
             None,
             false,
             graph_parameters.less_filtering,
@@ -293,7 +293,7 @@ impl FpGraph {
         let mut supporting_including_nonuniq = check_complete_haps.supporting_reads.clone();
         for (read, supported_haps) in check_complete_haps.support_by_read.iter() {
             if supported_haps.len() > 1 {
-                nonunique_reads.push(read.to_string());
+                nonunique_reads.push(read.clone());
                 let support_hap_picked = pick_supported_hap_with_seed(&mut rng, supported_haps)
                     .ok_or_else(|| {
                         invalid_data_error(format!(
@@ -302,14 +302,14 @@ impl FpGraph {
                     })?;
                 trace!(
                     "nonunique read {:?} haps {:?} picked {:?}",
-                    read.to_string(),
+                    read,
                     supported_haps,
                     support_hap_picked
                 );
                 supporting_including_nonuniq
                     .entry(support_hap_picked)
                     .or_default()
-                    .insert(read.to_string());
+                    .insert(read.clone());
             }
         }
 
@@ -380,7 +380,7 @@ impl FpGraph {
     /// * `ProcessCompleteHaplotypesResult` - result of processing complete haplotypes
     pub fn process_complete_haps(
         &self,
-        haps_to_assess: Vec<Vec<i32>>,
+        haps_to_assess: &[Vec<i32>],
         min_read_support: Option<usize>,
         get_supporting_reads_only: bool,
         less_filtering: bool,
@@ -390,16 +390,16 @@ impl FpGraph {
         let mut need_for_2nd_run = true;
         let mut remaining_haps = Vec::new();
         if !get_supporting_reads_only {
-            let nodes_not_used = self.get_unused_nodes(haps_to_assess.clone());
+            let nodes_not_used = self.get_unused_nodes(haps_to_assess.to_vec());
             // find overlapping haplotypes
             let overlapping_haps = if less_filtering {
                 vec![]
             } else {
-                find_overlapping_alleles(haps_to_assess.clone(), None)?.0
+                find_overlapping_alleles(haps_to_assess.to_vec(), None)?.0
             };
-            for hap in &haps_to_assess {
+            for hap in haps_to_assess {
                 if !overlapping_haps.contains(hap) {
-                    remaining_haps.push(hap.to_vec());
+                    remaining_haps.push(hap.clone());
                 }
             }
 
@@ -414,7 +414,7 @@ impl FpGraph {
                         need_for_2nd_run = false;
                         for hap in overlapping_haps {
                             if hap != picked_hap {
-                                haps_to_remove.insert(hap.to_vec());
+                                haps_to_remove.insert(hap);
                             }
                         }
                     } else {
@@ -431,8 +431,8 @@ impl FpGraph {
         // get supporting reads
         remaining_haps = Vec::new();
         for hap in haps_to_assess {
-            if !haps_to_remove.contains(&hap) {
-                remaining_haps.push(hap);
+            if !haps_to_remove.contains(hap) {
+                remaining_haps.push(hap.clone());
             }
         }
         let read_support = match_reads_and_haplotypes(&self.reads, &remaining_haps, None, false);
@@ -515,32 +515,31 @@ impl FpGraph {
     /// Get edges from reads
     pub fn get_edges(&mut self) {
         for (read, read_nodes) in self.reads.iter() {
+            let read_name = read.clone();
             self.back_to_reads
                 .entry(read_nodes.clone())
                 .or_default()
-                .push(read.to_string());
+                .push(read_name.clone());
             if read_nodes.len() > 1 {
-                let read_nodes_clone = read_nodes.clone();
-                let adjacent_pairs = read_nodes.iter().zip(read_nodes_clone.iter().skip(1));
-                for (node1, node2) in adjacent_pairs {
+                for (&node1, &node2) in read_nodes.iter().zip(read_nodes.iter().skip(1)) {
                     // trace!("read {:?}, {}, {}", read, node1, node2);
                     // exclude unknown
-                    if *node1 != 0 && *node2 != 0 {
+                    if node1 != 0 && node2 != 0 {
                         self.edges
-                            .entry((*node1, *node2))
+                            .entry((node1, node2))
                             .or_default()
-                            .push(read.to_string());
+                            .push(read_name.clone());
                         // record cyclic nodes
-                        if *node1 == *node2 {
+                        if node1 == node2 {
                             //let node_count = read_nodes.iter().filter(|&n| *n == *node1).count();
                             let mut node_count = 0;
                             for each_node in read_nodes {
-                                if *each_node == *node1 {
+                                if *each_node == node1 {
                                     node_count += 1;
                                 } else {
                                     if node_count > 0 {
                                         self.cyclic_nodes
-                                            .entry(*node1)
+                                            .entry(node1)
                                             .or_default()
                                             .push(node_count);
                                     }
@@ -548,10 +547,7 @@ impl FpGraph {
                                 }
                             }
                             if node_count > 0 {
-                                self.cyclic_nodes
-                                    .entry(*node1)
-                                    .or_default()
-                                    .push(node_count);
+                                self.cyclic_nodes.entry(node1).or_default().push(node_count);
                             }
                         }
                     }
@@ -615,9 +611,9 @@ impl FpGraph {
                 if nodes_next.len() > 1 && nodes_prev.len() > 1 {
                     let mut this_vec = vec![*node1, *node2];
                     this_vec.sort();
-                    let mut nodes_next2 = nodes_next.to_vec();
+                    let mut nodes_next2 = nodes_next.clone();
                     nodes_next2.sort();
-                    let mut nodes_prev2 = nodes_prev.to_vec();
+                    let mut nodes_prev2 = nodes_prev.clone();
                     nodes_prev2.sort();
                     if nodes_next2 != this_vec && nodes_prev2 != this_vec {
                         // keep edges that end with -10
@@ -640,18 +636,16 @@ impl FpGraph {
             }
         }
         for (read, read_nodes) in self.reads.iter() {
-            let read_nodes_clone = read_nodes.clone();
-            let adjacent_pairs = read_nodes.iter().zip(read_nodes_clone.iter().skip(1));
             let mut found_removed_edge = false;
-            for (node1, node2) in adjacent_pairs {
+            for (node1, node2) in read_nodes.iter().zip(read_nodes.iter().skip(1)) {
                 if removed_edges.contains(&(node1, node2)) {
                     found_removed_edge = true;
                 }
             }
             if !found_removed_edge {
                 self.clean_reads
-                    .entry(read.to_string())
-                    .or_insert(read_nodes.to_vec());
+                    .entry(read.clone())
+                    .or_insert(read_nodes.clone());
             }
         }
         Ok(())
@@ -703,13 +697,13 @@ impl FpGraph {
                         && *last_unit <= -10
                         && !complete_haps_forward.contains(&this_hap)
                     {
-                        complete_haps_forward.push(this_hap.to_vec());
+                        complete_haps_forward.push(this_hap);
                     } else if extended_haps.is_empty() {
                         if !incomplete_haps_forward.contains(&this_hap) {
                             incomplete_haps_forward.push(this_hap);
                         }
                     } else {
-                        for each_extended_hap in &extended_haps {
+                        for each_extended_hap in extended_haps {
                             let first_unit = each_extended_hap.first().ok_or_else(|| {
                                 missing_data_error(
                                     "first extended haplotype node",
@@ -725,33 +719,36 @@ impl FpGraph {
                             if *first_unit > -10
                                 && *first_unit < 0
                                 && *last_unit <= -10
-                                && !complete_haps_forward.contains(each_extended_hap)
+                                && !complete_haps_forward.contains(&each_extended_hap)
                             {
-                                if extended_haps.len() == 1 {
-                                    complete_haps_forward.push(each_extended_hap.to_vec());
+                                if !complete_haps_forward.contains(&each_extended_hap)
+                                    && !incomplete_haps_forward.contains(&each_extended_hap)
+                                {
+                                    if complete_haps_forward.is_empty()
+                                        || !complete_haps_forward.contains(&each_extended_hap)
+                                    {
+                                        complete_haps_forward.push(each_extended_hap);
+                                    }
                                 } else {
-                                    incomplete_haps_forward.push(each_extended_hap.to_vec());
+                                    incomplete_haps_forward.push(each_extended_hap);
                                 }
                             } else {
-                                all_extended.push(each_extended_hap.to_vec());
+                                all_extended.push(each_extended_hap);
                             }
                         }
                     }
                 }
                 assembled_haps = all_extended
-                    .iter()
+                    .into_iter()
                     .filter(|x| {
                         !complete_haps_forward.contains(x) && !incomplete_haps_forward.contains(x)
                     })
-                    .map(|x| x.to_vec())
                     .collect::<Vec<_>>();
                 if assembled_haps.is_empty() {
                     break;
                 }
                 if nstep > 100 || assembled_haps.len() > 50 {
-                    for a in &assembled_haps {
-                        incomplete_haps_forward.push(a.to_vec());
-                    }
+                    incomplete_haps_forward.append(&mut assembled_haps);
                     debug!("stopping assembly at step {nstep}");
                     break;
                 }
@@ -801,13 +798,13 @@ impl FpGraph {
                         && *last_unit <= -10
                         && !complete_haps_backward.contains(&this_hap)
                     {
-                        complete_haps_backward.push(this_hap.to_vec());
+                        complete_haps_backward.push(this_hap);
                     } else if extended_haps.is_empty() {
                         if !incomplete_haps_backward.contains(&this_hap) {
                             incomplete_haps_backward.push(this_hap);
                         }
                     } else {
-                        for each_extended_hap in &extended_haps {
+                        for each_extended_hap in extended_haps {
                             let first_unit = each_extended_hap.first().ok_or_else(|| {
                                 missing_data_error(
                                     "first extended haplotype node",
@@ -823,12 +820,14 @@ impl FpGraph {
                             if *first_unit > -10
                                 && *first_unit < 0
                                 && *last_unit <= -10
-                                && !complete_haps_backward.contains(each_extended_hap)
+                                && !complete_haps_backward.contains(&each_extended_hap)
                             {
-                                if extended_haps.len() == 1 {
-                                    complete_haps_backward.push(each_extended_hap.to_vec());
+                                if complete_haps_backward.is_empty()
+                                    || !complete_haps_backward.contains(&each_extended_hap)
+                                {
+                                    complete_haps_backward.push(each_extended_hap);
                                 } else {
-                                    incomplete_haps_backward.push(each_extended_hap.to_vec());
+                                    incomplete_haps_backward.push(each_extended_hap);
                                 }
                             } else {
                                 if *first_unit == -10 {
@@ -841,30 +840,27 @@ impl FpGraph {
                                         debug!(
                                             "add cis-dup hap {each_extended_hap_remove_first_end:?} to incomplete"
                                         );
-                                        incomplete_haps_backward.push(each_extended_hap.clone());
                                         special_incomplete.push(each_extended_hap.clone());
+                                        incomplete_haps_backward.push(each_extended_hap);
                                     }
                                 } else {
-                                    all_extended.push(each_extended_hap.to_vec());
+                                    all_extended.push(each_extended_hap);
                                 }
                             }
                         }
                     }
                 }
                 assembled_haps = all_extended
-                    .iter()
+                    .into_iter()
                     .filter(|x| {
                         !complete_haps_backward.contains(x) && !incomplete_haps_backward.contains(x)
                     })
-                    .map(|x| x.to_vec())
                     .collect::<Vec<_>>();
                 if assembled_haps.is_empty() {
                     break;
                 }
                 if nstep > 100 || assembled_haps.len() > 50 {
-                    for a in &assembled_haps {
-                        incomplete_haps_backward.push(a.to_vec());
-                    }
+                    incomplete_haps_backward.append(&mut assembled_haps);
                     debug!("stopping assembly at step {nstep}");
                     break;
                 }
@@ -947,9 +943,11 @@ impl FpGraph {
     ) -> Result<AssemblyResult, DError> {
         let mut complete_clone = complete_haps.clone();
         let mut incomplete_clone = incomplete_haps.clone();
-        let mut all_haps = complete_haps.clone();
-        let mut incomplete_clone2 = incomplete_haps.clone();
-        all_haps.append(&mut incomplete_clone2);
+        let all_haps = complete_haps
+            .iter()
+            .chain(incomplete_haps.iter())
+            .cloned()
+            .collect::<Vec<_>>();
         let nodes_not_used = self.get_unused_nodes(all_haps.clone());
         debug!(
             "complete: {}, incomplete: {}, unused nodes: {:?}",
@@ -982,7 +980,7 @@ impl FpGraph {
                     let part2 = &ct2[..(min_len - j)];
                     if part1 == part2 {
                         let new_ct = [&ct1[..], &ct2[(min_len - j)..]].concat();
-                        new_ct_candidates.push(new_ct.to_vec());
+                        new_ct_candidates.push(new_ct);
                     }
                 }
                 // nonoverlapping
@@ -1014,7 +1012,7 @@ impl FpGraph {
                     }
                     if !segments_supported.contains(&false) {
                         let new_ct = [&ct1[..], &ct2[..]].concat();
-                        new_ct_candidates.push(new_ct.to_vec());
+                        new_ct_candidates.push(new_ct);
                     }
                 }
                 if !new_ct_candidates.is_empty() {
@@ -1022,7 +1020,7 @@ impl FpGraph {
                         self.pick_from_candidates(new_ct_candidates.clone())?;
                     debug!("merge candidates: {new_ct_candidates:?}");
                     debug!("picked candidate: {picked_candidate:?}");
-                    complete_clone.push(picked_candidate.to_vec());
+                    complete_clone.push(picked_candidate);
                     let index = incomplete_clone
                         .iter()
                         .position(|x| *x == *ct1)
@@ -1086,7 +1084,7 @@ impl FpGraph {
             let mut extended_hap = this_hap.clone();
             extended_hap.push(*next_node);
             let to_include =
-                self.include_cyclic_node_forward(*last_unit, *next_node, extended_hap.clone())?;
+                self.include_cyclic_node_forward(*last_unit, *next_node, &extended_hap)?;
             if to_include {
                 haps_candidates.push(extended_hap);
             }
@@ -1191,9 +1189,9 @@ impl FpGraph {
                 for (test_hap, test_hap_reads) in read_support_stringent_uniq.iter() {
                     for test_hap_read in test_hap_reads {
                         support_length
-                            .entry(test_hap.to_vec())
+                            .entry(test_hap.clone())
                             .or_default()
-                            .push((test_hap_read.to_vec(), check_overlap_length + n));
+                            .push((test_hap_read.clone(), check_overlap_length + n));
                     }
                 }
             } else {
@@ -1235,7 +1233,7 @@ impl FpGraph {
             let mut extended_hap = this_hap.clone();
             extended_hap.insert(0, *prev_node);
             let to_include =
-                self.include_cyclic_node_backward(*first_unit, *prev_node, extended_hap.clone())?;
+                self.include_cyclic_node_backward(*first_unit, *prev_node, &extended_hap)?;
             if to_include {
                 haps_candidates.push(extended_hap);
             }
@@ -1349,9 +1347,9 @@ impl FpGraph {
                 for (test_hap, test_hap_reads) in read_support_stringent_uniq.iter() {
                     for test_hap_read in test_hap_reads {
                         support_length
-                            .entry(test_hap.to_vec())
+                            .entry(test_hap.clone())
                             .or_default()
-                            .push((test_hap_read.to_vec(), check_overlap_length + n));
+                            .push((test_hap_read.clone(), check_overlap_length + n));
                     }
                 }
             } else {
@@ -1516,7 +1514,7 @@ impl FpGraph {
         &self,
         this_node: i32,
         next_node: i32,
-        hap_nodes: Vec<i32>,
+        hap_nodes: &[i32],
     ) -> Result<bool, DError> {
         let mut to_include = true;
         if this_node == next_node {
@@ -1558,7 +1556,7 @@ impl FpGraph {
         &self,
         this_node: i32,
         prev_node: i32,
-        hap_nodes: Vec<i32>,
+        hap_nodes: &[i32],
     ) -> Result<bool, DError> {
         let mut to_include = true;
         if this_node == prev_node {
@@ -1698,7 +1696,7 @@ pub fn filter_assembled_candidates(
 
         for (read, sup_len) in hap_support_length {
             all_support_per_read
-                .entry(read.to_vec())
+                .entry(read.clone())
                 .or_default()
                 .push(*sup_len);
         }
@@ -1715,15 +1713,13 @@ pub fn filter_assembled_candidates(
             nread_stringent.push(*read_support_max);
         }
 
-        support_length_per_hap
-            .entry(test_hap)
-            .or_insert(nread_stringent.clone());
+        support_length_per_hap.insert(test_hap, nread_stringent.clone());
 
         let nread = hap_reads.len();
         debug!("haplotype {test_hap:?} has {nread} supports and checking support length {nread_stringent:?}");
 
         if nread > 0 {
-            filtered_candidates.push(test_hap.to_vec());
+            filtered_candidates.push(test_hap.clone());
         }
     }
     // more filtering based on support length
@@ -1746,7 +1742,7 @@ pub fn filter_assembled_candidates(
                 missing_data_error("maximum support length for haplotype", format!("{lens:?}"))
             })?;
             if *lens_max == *max_support_len {
-                longest_support_haps.push(lens.to_vec());
+                longest_support_haps.push(lens.clone());
             }
         }
         longest_support_haps.sort_by_key(|b| std::cmp::Reverse(b.iter().sum::<usize>()));
@@ -2311,11 +2307,11 @@ mod tests {
         let mut graph = build_graph(read_edges, 2);
         graph.cyclic_nodes.entry(1).or_insert(vec![1, 2]);
         let to_include = graph
-            .include_cyclic_node_forward(1, 1, vec![2, 1, 1])
+            .include_cyclic_node_forward(1, 1, &[2, 1, 1])
             .unwrap();
         assert_eq!(to_include, true);
         let to_include = graph
-            .include_cyclic_node_forward(1, 1, vec![2, 1, 1, 1])
+            .include_cyclic_node_forward(1, 1, &[2, 1, 1, 1])
             .unwrap();
         assert_eq!(to_include, false);
     }
@@ -2329,11 +2325,11 @@ mod tests {
         let mut graph = build_graph(read_edges, 2);
         graph.cyclic_nodes.entry(1).or_insert(vec![1, 2]);
         let to_include = graph
-            .include_cyclic_node_backward(1, 1, vec![1, 1, 2])
+            .include_cyclic_node_backward(1, 1, &[1, 1, 2])
             .unwrap();
         assert_eq!(to_include, true);
         let to_include = graph
-            .include_cyclic_node_backward(1, 1, vec![1, 1, 1, 2])
+            .include_cyclic_node_backward(1, 1, &[1, 1, 1, 2])
             .unwrap();
         assert_eq!(to_include, false);
     }

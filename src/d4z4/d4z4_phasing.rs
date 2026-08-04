@@ -243,7 +243,7 @@ pub fn phase_flanking(
 /// * `BTreeMap<String, String>` - allele -> background
 /// * `BTreeMap<String, Vec<String>>` - map an allele to its upstream paraphase haplotypes
 pub fn haplotype_background(
-    complete_alleles: &Vec<Vec<i32>>,
+    complete_alleles: &[Vec<i32>],
     phasing_result: &BTreeMap<String, GeneCall>,
     supporting_reads: &BTreeMap<Vec<i32>, HashSet<String>>,
     fp_info: Option<&FingerprintInfo>,
@@ -374,7 +374,7 @@ pub fn haplotype_background(
 
             let mut matching_paraphase_haplotype_segments = Vec::new();
             for hap in &this_allele_paraphase_hap {
-                let this_hap_chars = hap.clone().chars().collect::<Vec<char>>();
+                let this_hap_chars = hap.chars().collect::<Vec<char>>();
                 let this_hap_segment = important_sites_index
                     .iter()
                     .map(|x| this_hap_chars[*x].to_string())
@@ -457,7 +457,7 @@ pub fn haplotype_background(
                             this_allele_paraphase_haps.insert(hap.clone());
                             this_read_assignment_nonunique.push(hap_assignment);
 
-                            let this_hap_chars = hap.clone().chars().collect::<Vec<char>>();
+                            let this_hap_chars = hap.chars().collect::<Vec<char>>();
                             let this_hap_found_segment = important_sites_index
                                 .iter()
                                 .map(|x| this_hap_chars[*x].to_string())
@@ -521,20 +521,17 @@ pub fn haplotype_background(
             }
         }
         let allele_name = vec_to_string(&vec![allele.clone()], "-");
-        let hap_string = &allele_name[0];
+        let hap_string = allele_name
+            .into_iter()
+            .next()
+            .ok_or_else(|| missing_data_error("formatted allele name", format!("{allele:?}")))?;
         upstream_haplotypes.insert(hap_string.clone(), flanking.clone());
         if check_chromosome && check_polya {
-            hap_backgrounds.insert(
-                hap_string.to_string(),
-                format!("{polya}-{chromosome}:{upstream_group}"),
-            );
+            hap_backgrounds.insert(hap_string, format!("{polya}-{chromosome}:{upstream_group}"));
         } else if check_chromosome {
-            hap_backgrounds.insert(
-                hap_string.to_string(),
-                format!("{chromosome}:{upstream_group}"),
-            );
+            hap_backgrounds.insert(hap_string, format!("{chromosome}:{upstream_group}"));
         } else if check_polya {
-            hap_backgrounds.insert(hap_string.to_string(), polya);
+            hap_backgrounds.insert(hap_string, polya);
         }
     }
     Ok((hap_backgrounds, upstream_haplotypes))
@@ -861,13 +858,13 @@ pub fn get_background_for_allele_starts(
     fp_info: &FingerprintInfo,
 ) -> Result<(BTreeMap<String, String>, BTreeMap<String, Vec<String>>), DError> {
     let all_starting_read_support = fp_graph
-        .process_complete_haps(kept_starting_haps.to_vec(), Some(1), true, false)?
+        .process_complete_haps(kept_starting_haps, Some(1), true, false)?
         .supporting_reads;
     debug!("all_starting_read_support {:?}", all_starting_read_support);
 
     // haplotype backgrounds
     let (all_starts_hap_backgrounds, upstream_haplotypes) = haplotype_background(
-        &kept_starting_haps.to_vec(),
+        kept_starting_haps,
         phasing_result,
         &all_starting_read_support,
         Some(fp_info),
@@ -909,7 +906,7 @@ pub fn get_background_for_allele_ends(
     DError,
 > {
     let all_ending_read_support = fp_graph
-        .process_complete_haps(kept_ending_haps.to_vec(), Some(1), true, false)?
+        .process_complete_haps(kept_ending_haps, Some(1), true, false)?
         .supporting_reads;
     debug!("all_ending_read_support {:?}", all_ending_read_support);
     // find index on reads
@@ -944,7 +941,7 @@ pub fn get_background_for_allele_ends(
 
     // haplotype backgrounds
     let (all_ends_hap_backgrounds, _upstream_haplotypes) = haplotype_background(
-        &kept_ending_haps.to_vec(),
+        kept_ending_haps,
         phasing_result,
         &all_ending_read_support,
         Some(fp_info),
