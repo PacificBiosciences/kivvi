@@ -474,7 +474,15 @@ pub fn plot_methyl(
         height: 4,
     };
     let pipe_plot: PipePlot = PipePlot { panels, legend };
-    svg::generate(&pipe_plot, out_file_name.to_str().ok_or("to_str failure")?);
+    svg::generate(
+        &pipe_plot,
+        out_file_name.to_str().ok_or_else(|| {
+            invalid_data_error(format!(
+                "Plot output path is not valid UTF-8: {}",
+                out_file_name.display()
+            ))
+        })?,
+    );
 
     Ok(())
 }

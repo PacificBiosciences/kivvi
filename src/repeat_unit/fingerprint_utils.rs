@@ -1103,11 +1103,11 @@ pub fn rm_redundant_finger_prints(
     for (hap1_name, hap1) in fp_info.good_name_to_seq.iter() {
         let reads1 = fp_info
             .read_edges
-            .clone()
-            .into_values()
+            .values()
             .filter(|x| x.contains(hap1_name))
+            .cloned()
             .collect::<Vec<_>>();
-        let (hap1_prev, hap1_next) = get_prev_next(reads1.clone(), *hap1_name, true);
+        let (hap1_prev, hap1_next) = get_prev_next(&reads1, *hap1_name, true);
         trace!("Evaluating {hap1_name} previous nodes {hap1_prev:?}, next nodes {hap1_next:?}");
         // For D4Z4, do not replace if a node has no previous or next nodes
         if include_all_links && (hap1_prev.is_empty() || hap1_next.is_empty()) {
@@ -1132,12 +1132,12 @@ pub fn rm_redundant_finger_prints(
                     // check if hap1 can be replaced with hap2
                     let reads2 = fp_info
                         .read_edges
-                        .clone()
-                        .into_values()
+                        .values()
                         .filter(|x| x.contains(hap2_name))
+                        .cloned()
                         .collect::<Vec<_>>();
                     let (mut hap2_prev, mut hap2_next) =
-                        get_prev_next(reads2.clone(), *hap2_name, include_all_links);
+                        get_prev_next(&reads2, *hap2_name, include_all_links);
                     hap2_prev.sort();
                     hap2_next.sort();
                     let mut reads1_replaced: Vec<Vec<i32>> = Vec::new();
@@ -1155,7 +1155,7 @@ pub fn rm_redundant_finger_prints(
                     let mut reads2_add = reads2.clone();
                     reads2_add.append(&mut reads1_replaced);
                     let (mut hap2_add_prev, mut hap2_add_next) =
-                        get_prev_next(reads2_add.clone(), *hap2_name, include_all_links);
+                        get_prev_next(&reads2_add, *hap2_name, include_all_links);
                     hap2_add_prev.sort();
                     hap2_add_next.sort();
                     trace!("{hap2_name} previous nodes {hap2_prev:?}, now {hap2_add_prev:?}");
@@ -1175,12 +1175,11 @@ pub fn rm_redundant_finger_prints(
             })?;
             let reads1 = fp_info
                 .read_edges
-                .clone()
-                .into_values()
+                .values()
                 .filter(|x| x.contains(hap1_name))
+                .cloned()
                 .collect::<Vec<_>>();
-            let (hap1_prev, hap1_next) =
-                get_prev_next(reads1.clone(), *hap1_name, include_all_links);
+            let (hap1_prev, hap1_next) = get_prev_next(&reads1, *hap1_name, include_all_links);
             if hap1_prev == hap1_next && hap1_prev.len() == 1 && hap1_prev[0] == *to_replace_hap1 {
                 debug!("do not replace fingerprint {hap1_name} with {to_replace_hap1} because its prev and next nodes are both {to_replace_hap1}");
             } else {
@@ -1191,7 +1190,7 @@ pub fn rm_redundant_finger_prints(
         }
     }
     if new_replace.is_empty() {
-        return Ok((fp_info.clone(), false));
+        return Ok((fp_info, false));
     }
     for (fp_name, fp_seq) in fp_info.good_name_to_seq.iter() {
         if !new_replace.contains_key(fp_name) {
@@ -1258,7 +1257,7 @@ pub fn rm_redundant_finger_prints(
 /// # Returns
 /// * `(Vec<i32>, Vec<i32>)` - previous and next fingerprints
 fn get_prev_next(
-    read_fps: Vec<Vec<i32>>,
+    read_fps: &[Vec<i32>],
     fp_to_check: i32,
     include_all_links: bool,
 ) -> (Vec<i32>, Vec<i32>) {
@@ -1781,23 +1780,23 @@ mod tests {
     #[test]
     fn test_get_prev_next() {
         let reads = vec![vec![1, 2, 3], vec![2, 3], vec![1, 2], vec![2, 4]];
-        let (prev, next) = get_prev_next(reads.clone(), 2, false);
+        let (prev, next) = get_prev_next(&reads, 2, false);
         assert_eq!(prev, vec![1]);
         assert_eq!(next, vec![3]);
 
-        let (prev, next) = get_prev_next(reads.clone(), 2, true);
+        let (prev, next) = get_prev_next(&reads, 2, true);
         assert_eq!(prev, vec![1]);
         assert_eq!(next, vec![3, 4]);
 
-        let (prev, next) = get_prev_next(reads.clone(), 3, false);
+        let (prev, next) = get_prev_next(&reads, 3, false);
         assert_eq!(prev, vec![2]);
         assert!(next.is_empty());
 
-        let (prev, next) = get_prev_next(reads.clone(), 4, false);
+        let (prev, next) = get_prev_next(&reads, 4, false);
         assert!(prev.is_empty());
         assert!(next.is_empty());
 
-        let (prev, next) = get_prev_next(reads.clone(), 4, true);
+        let (prev, next) = get_prev_next(&reads, 4, true);
         assert_eq!(prev, vec![2]);
         assert!(next.is_empty());
     }

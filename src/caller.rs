@@ -200,7 +200,7 @@ pub fn get_predefined_variants(
             .split_terminator('\n')
             .map(std::borrow::ToOwned::to_owned)
             .collect::<Vec<_>>();
-        debug!("predefined variants are {:?}", variants.clone());
+        debug!("predefined variants are {:?}", variants);
         predefined_variants = Some(variants);
     }
     Ok(predefined_variants)
@@ -294,7 +294,7 @@ fn prepare_d4z4_analysis(
             d4z4_read_parameters.max_read_count_to_correct,
             true,
         )?;
-        fp_info = new_fp_info.clone();
+        fp_info = new_fp_info;
         if !changed {
             break;
         }
@@ -325,11 +325,11 @@ fn prepare_d4z4_analysis(
     }
     let haploid_depth = starting_reads_count / 4.0;
 
-    let read_info = fp_info.clone().read_bases;
+    let read_info = fp_info.read_bases.clone();
     debug!("tagging reads with fingerprints");
     let _tag_success = tag_reads(
         repeat_records,
-        fp_info.clone().grouped_reads,
+        fp_info.grouped_reads.clone(),
         realigned_bam.clone(),
         region_coordinates.clone(),
         methyl_tags,
@@ -338,7 +338,7 @@ fn prepare_d4z4_analysis(
 
     debug!("Assemble alleles...");
     let mut fp_graph = build_graph(
-        fp_info.clone().read_edges,
+        fp_info.read_edges.clone(),
         d4z4_graph_parameters.min_overlap,
     );
     let assembly_result = fp_graph.run(d4z4_graph_parameters.clone())?;
@@ -481,18 +481,18 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
             kiv2_read_parameters.max_read_count_to_correct,
             false,
         )?;
-        fp_info = new_fp_info.clone();
+        fp_info = new_fp_info;
         if !changed {
             break;
         }
     }
-    let read_info = fp_info.clone().read_bases;
+    let read_info = fp_info.read_bases.clone();
 
     // tag reads in bam by fingerprints
     debug!("tagging reads with fingerprints");
     let _ = tag_reads(
         repeat_records,
-        fp_info.clone().grouped_reads,
+        fp_info.grouped_reads.clone(),
         realigned_bam.clone(),
         region_coordinates.clone(),
         BTreeMap::new(),
@@ -502,7 +502,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     // graph assembler
     debug!("assembling alleles");
     let mut fp_graph = build_graph(
-        fp_info.clone().read_edges,
+        fp_info.read_edges.clone(),
         kiv2_graph_parameters.min_overlap,
     );
     let assembly_result = fp_graph.run(kiv2_graph_parameters.clone())?;

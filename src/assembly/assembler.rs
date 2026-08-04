@@ -503,7 +503,7 @@ impl FpGraph {
             }
         }
         // sort by haplotype length
-        let mut candidates_sort = candidates.clone();
+        let mut candidates_sort = candidates;
         candidates_sort.sort_by_key(|a| a.len());
         // pick the shortest one
         let shortest = candidates_sort.first().ok_or_else(|| {
