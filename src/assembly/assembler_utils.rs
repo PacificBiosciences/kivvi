@@ -101,140 +101,8 @@ pub fn filter_complete_alleles(
     let mut suspicious_complete_alleles = Vec::new();
     for allele in complete_alleles {
         if is_short_complete_allele(allele) {
-            let allele_len = allele.len();
-            let repeat_pos = get_repeat(allele);
-            debug!("allele {allele:?} has identical-unit stretches at {repeat_pos:?}");
-            let mut short_state = ShortAlleleAnalysisState::default();
-            for (_read_name, read_nodes) in all_read_edges {
-                let mut read_matches_forward = scan_read_matches_forward(allele, read_nodes);
-                if !read_matches_forward.is_empty() {
-                    read_matches_forward.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
-                    let best_match = read_matches_forward[0];
-                    record_forward_support(
-                        &mut short_state,
-                        allele,
-                        read_nodes,
-                        best_match,
-                        &repeat_pos,
-                    );
-                }
-                let mut read_matches_reverse = scan_read_matches_backward(allele, read_nodes);
-                if !read_matches_reverse.is_empty() {
-                    read_matches_reverse.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
-                    let best_match = read_matches_reverse[0];
-                    record_backward_support(&mut short_state, allele, read_nodes, best_match);
-                }
-            }
-            debug!("is_spanning {}", short_state.is_spanning);
-            debug!("repeat_pos_support {:?}", short_state.repeat_pos_support);
-            let highly_repetitive = short_state.repeat_pos_support.len() < repeat_pos.len();
-            debug!("allele {allele:?} highly_repetitive {highly_repetitive:?}");
-            let good_support =
-                allele_len >= 2 && short_state.sites_supported_by_three.len() == allele_len - 2;
-            let better_support =
-                allele_len >= 3 && short_state.sites_supported_by_four.len() == allele_len - 3;
-            debug!(
-                "allele {allele:?} good_support {good_support} sites_supported_by_three {:?}",
-                short_state.sites_supported_by_three
-            );
-            debug!(
-                "allele {allele:?} better_support {better_support} sites_supported_by_four {:?}",
-                short_state.sites_supported_by_four
-            );
-            if !short_state.is_spanning {
-                let num_suspicious_reads = short_state.suspicious_reads.len();
-                debug!("num_suspicious_reads {num_suspicious_reads}");
-                debug!("suspicious_forward {:?}", short_state.suspicious_forward);
-                debug!("suspicious_reverse {:?}", short_state.suspicious_reverse);
-                if highly_repetitive {
-                    debug!("allele {allele:?} is suspicious because it is highly repetitive");
-                    suspicious_complete_alleles.push(allele.clone());
-                } else if short_state.suspicious_forward.len() == 1
-                    && short_state.suspicious_reverse.len() == 1
-                    && num_suspicious_reads > 1
-                    && !better_support
-                {
-                    if let (Some((forward_pos, _)), Some((reverse_pos, _))) = (
-                        short_state.suspicious_forward.first_key_value(),
-                        short_state.suspicious_reverse.first_key_value(),
-                    ) {
-                        if !good_support {
-                            if *reverse_pos <= *forward_pos - 1 {
-                                debug!("allele {allele:?} is suspicious because not every site is supported by reads linking the next two sites, and it has two suspicious sites, one with forward-matching suspicous reads and one with reverse-matching suspicious reads.");
-                                suspicious_complete_alleles.push(allele.clone());
-                            }
-                        } else if allele_len < 4 {
-                            continue;
-                        } else if *reverse_pos == *forward_pos - 2
-                            && (*reverse_pos > allele_len - 4
-                                || short_state.sites_supported_by_four.contains(reverse_pos))
-                            && (*forward_pos > allele_len - 4
-                                || short_state.sites_supported_by_four.contains(forward_pos))
-                        {
-                            continue;
-                        } else if *reverse_pos <= *forward_pos - 2 {
-                            debug!("allele {allele:?} is suspicious because it has two suspicious sites, one with forward-matching suspicous reads and one with reverse-matching suspicious reads. And suspicious sites are not supported by reads linking the next three sites.");
-                            suspicious_complete_alleles.push(allele.clone());
-                        }
-                    }
-                } else if short_state.suspicious_forward.is_empty()
-                    && short_state.suspicious_reverse.len() == 1
-                {
-                    if let Some((suspicious_site, reads)) =
-                        short_state.suspicious_reverse.first_key_value()
-                    {
-                        let suspicious_site_num_reads = reads.len();
-                        debug!("only one suspicious_site at index {suspicious_site:?} with {suspicious_site_num_reads} suspicious reads");
-                        if allele_len < 4
-                            || *suspicious_site > allele_len - 4
-                            || short_state
-                                .sites_supported_by_four
-                                .contains(suspicious_site)
-                        {
-                            continue;
-                        }
-                        if allele_len > 4 && *suspicious_site == allele_len - 4 {
-                            let prev_site = *suspicious_site - 1;
-                            if !short_state.sites_supported_by_four.contains(&prev_site)
-                                && !short_state
-                                    .sites_supported_by_four
-                                    .contains(suspicious_site)
-                                && suspicious_site_num_reads >= 2
-                            {
-                                debug!("allele {allele:?} is suspicious because the suspicious site at the end of the allele and both this site and the previous site are not supported by reads linking the next three sites.");
-                                suspicious_complete_alleles.push(allele.clone());
-                            }
-                        }
-                        if allele_len < 3
-                            || *suspicious_site > allele_len - 3
-                            || short_state
-                                .sites_supported_by_three
-                                .contains(suspicious_site)
-                        {
-                            continue;
-                        }
-                        if suspicious_site_num_reads >= 3 {
-                            debug!("allele {allele:?} is suspicious because the suspicious site is not supported by reads linking the next two or three sites.");
-                            suspicious_complete_alleles.push(allele.clone());
-                        }
-                    }
-                } else if num_suspicious_reads >= 5 && !good_support {
-                    debug!("allele {allele:?} is suspicious because it has at least 5 suspicious reads, and not every site is supported by reads linking the next two sites.");
-                    suspicious_complete_alleles.push(allele.clone());
-                } else if allele_len >= 3
-                    && (!short_state.sites_supported_by_three.contains(&0)
-                        || !short_state
-                            .sites_supported_by_three
-                            .contains(&(allele_len - 3)))
-                {
-                    // we want good support at both ends
-                    debug!("allele {allele:?} is suspicious because the left side or the right side is not supported by reads linking the next two sites.");
-                    suspicious_complete_alleles.push(allele.clone());
-                } else if allele_len <= 4 && short_state.sites_supported_by_four.is_empty() {
-                    // if only two units, should have spanning reads
-                    debug!("allele {allele:?} is suspicious because it is two units or shorter, and has no spanning reads.");
-                    suspicious_complete_alleles.push(allele.clone());
-                }
+            if is_short_complete_allele_suspicious(allele, all_read_edges) {
+                suspicious_complete_alleles.push(allele.clone());
             }
         } else if is_long_complete_allele_suspicious(allele, complete_alleles, incomplete_alleles)?
             && !suspicious_complete_alleles.contains(allele)
@@ -258,6 +126,171 @@ struct ShortAlleleAnalysisState {
     sites_supported_by_three: HashSet<usize>,
     sites_supported_by_four: HashSet<usize>,
     is_spanning: bool,
+}
+
+/// Determine whether a short complete allele is suspicious using read-support heuristics.
+/// # Arguments
+/// * `allele` - short complete allele under review
+/// * `all_read_edges` - read paths used to evaluate support for the allele
+/// # Returns
+/// * `bool` - true if the short complete allele should be flagged as suspicious
+fn is_short_complete_allele_suspicious(
+    allele: &[i32],
+    all_read_edges: &BTreeMap<String, Vec<i32>>,
+) -> bool {
+    let repeat_pos = get_repeat(allele);
+    debug!("allele {allele:?} has identical-unit stretches at {repeat_pos:?}");
+    let mut short_state = ShortAlleleAnalysisState::default();
+    for (_read_name, read_nodes) in all_read_edges {
+        let mut read_matches_forward = scan_read_matches_forward(allele, read_nodes);
+        if !read_matches_forward.is_empty() {
+            read_matches_forward.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
+            let best_match = read_matches_forward[0];
+            record_forward_support(
+                &mut short_state,
+                allele,
+                read_nodes,
+                best_match,
+                &repeat_pos,
+            );
+        }
+        let mut read_matches_reverse = scan_read_matches_backward(allele, read_nodes);
+        if !read_matches_reverse.is_empty() {
+            read_matches_reverse.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
+            let best_match = read_matches_reverse[0];
+            record_backward_support(&mut short_state, allele, read_nodes, best_match);
+        }
+    }
+    is_short_complete_allele_suspicious_from_state(allele, &repeat_pos, &short_state)
+}
+
+/// Determine whether a short complete allele is suspicious from precomputed support state.
+/// # Arguments
+/// * `allele` - short complete allele under review
+/// * `repeat_pos` - repeated-unit positions for the allele
+/// * `short_state` - accumulated read-support evidence for the allele
+/// # Returns
+/// * `bool` - true if the short complete allele should be flagged as suspicious
+fn is_short_complete_allele_suspicious_from_state(
+    allele: &[i32],
+    repeat_pos: &BTreeMap<usize, usize>,
+    short_state: &ShortAlleleAnalysisState,
+) -> bool {
+    let allele_len = allele.len();
+    debug!("is_spanning {}", short_state.is_spanning);
+    debug!("repeat_pos_support {:?}", short_state.repeat_pos_support);
+    let highly_repetitive = short_state.repeat_pos_support.len() < repeat_pos.len();
+    debug!("allele {allele:?} highly_repetitive {highly_repetitive:?}");
+    let good_support =
+        allele_len >= 2 && short_state.sites_supported_by_three.len() == allele_len - 2;
+    let better_support =
+        allele_len >= 3 && short_state.sites_supported_by_four.len() == allele_len - 3;
+    debug!(
+        "allele {allele:?} good_support {good_support} sites_supported_by_three {:?}",
+        short_state.sites_supported_by_three
+    );
+    debug!(
+        "allele {allele:?} better_support {better_support} sites_supported_by_four {:?}",
+        short_state.sites_supported_by_four
+    );
+    if short_state.is_spanning {
+        return false;
+    }
+
+    let num_suspicious_reads = short_state.suspicious_reads.len();
+    debug!("num_suspicious_reads {num_suspicious_reads}");
+    debug!("suspicious_forward {:?}", short_state.suspicious_forward);
+    debug!("suspicious_reverse {:?}", short_state.suspicious_reverse);
+    if highly_repetitive {
+        debug!("allele {allele:?} is suspicious because it is highly repetitive");
+        return true;
+    } else if short_state.suspicious_forward.len() == 1
+        && short_state.suspicious_reverse.len() == 1
+        && num_suspicious_reads > 1
+        && !better_support
+    {
+        if let (Some((forward_pos, _)), Some((reverse_pos, _))) = (
+            short_state.suspicious_forward.first_key_value(),
+            short_state.suspicious_reverse.first_key_value(),
+        ) {
+            if !good_support {
+                if *reverse_pos <= *forward_pos - 1 {
+                    debug!("allele {allele:?} is suspicious because not every site is supported by reads linking the next two sites, and it has two suspicious sites, one with forward-matching suspicous reads and one with reverse-matching suspicious reads.");
+                    return true;
+                }
+            } else if allele_len < 4 {
+                return false;
+            } else if *reverse_pos == *forward_pos - 2
+                && (*reverse_pos > allele_len - 4
+                    || short_state.sites_supported_by_four.contains(reverse_pos))
+                && (*forward_pos > allele_len - 4
+                    || short_state.sites_supported_by_four.contains(forward_pos))
+            {
+                return false;
+            } else if *reverse_pos <= *forward_pos - 2 {
+                debug!("allele {allele:?} is suspicious because it has two suspicious sites, one with forward-matching suspicous reads and one with reverse-matching suspicious reads. And suspicious sites are not supported by reads linking the next three sites.");
+                return true;
+            }
+        }
+    } else if short_state.suspicious_forward.is_empty() && short_state.suspicious_reverse.len() == 1
+    {
+        if let Some((suspicious_site, reads)) = short_state.suspicious_reverse.first_key_value() {
+            let suspicious_site_num_reads = reads.len();
+            debug!(
+                "only one suspicious_site at index {suspicious_site:?} with {suspicious_site_num_reads} suspicious reads"
+            );
+            if allele_len < 4
+                || *suspicious_site > allele_len - 4
+                || short_state
+                    .sites_supported_by_four
+                    .contains(suspicious_site)
+            {
+                return false;
+            }
+            if allele_len > 4 && *suspicious_site == allele_len - 4 {
+                let prev_site = *suspicious_site - 1;
+                if !short_state.sites_supported_by_four.contains(&prev_site)
+                    && !short_state
+                        .sites_supported_by_four
+                        .contains(suspicious_site)
+                    && suspicious_site_num_reads >= 2
+                {
+                    debug!("allele {allele:?} is suspicious because the suspicious site at the end of the allele and both this site and the previous site are not supported by reads linking the next three sites.");
+                    return true;
+                }
+            }
+            if allele_len < 3
+                || *suspicious_site > allele_len - 3
+                || short_state
+                    .sites_supported_by_three
+                    .contains(suspicious_site)
+            {
+                return false;
+            }
+            if suspicious_site_num_reads >= 3 {
+                debug!("allele {allele:?} is suspicious because the suspicious site is not supported by reads linking the next two or three sites.");
+                return true;
+            }
+        }
+    } else if num_suspicious_reads >= 5 && !good_support {
+        debug!("allele {allele:?} is suspicious because it has at least 5 suspicious reads, and not every site is supported by reads linking the next two sites.");
+        return true;
+    } else if allele_len >= 3
+        && (!short_state.sites_supported_by_three.contains(&0)
+            || !short_state
+                .sites_supported_by_three
+                .contains(&(allele_len - 3)))
+    {
+        // we want good support at both ends
+        debug!("allele {allele:?} is suspicious because the left side or the right side is not supported by reads linking the next two sites.");
+        return true;
+    } else if allele_len <= 4 && short_state.sites_supported_by_four.is_empty() {
+        // if only two units, should have spanning reads
+        debug!("allele {allele:?} is suspicious because it is two units or shorter, and has no spanning reads.");
+        return true;
+    }
+
+    false
 }
 
 /// Update short-allele support state from the best forward match for one read.
