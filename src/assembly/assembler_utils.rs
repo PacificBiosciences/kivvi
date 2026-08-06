@@ -106,147 +106,23 @@ pub fn filter_complete_alleles(
             debug!("allele {allele:?} has identical-unit stretches at {repeat_pos:?}");
             let mut short_state = ShortAlleleAnalysisState::default();
             for (_read_name, read_nodes) in all_read_edges {
-                let read_nodes_len = read_nodes.len();
-                let mut i_index: usize;
-                let mut read_matches_forward = Vec::new();
-                let mut read_matches_reverse = Vec::new();
-                for i in 0..allele_len {
-                    i_index = i;
-                    let mut k_index: usize;
-                    let upper_bound = cmp::min(allele_len - i, read_nodes_len) + 1;
-                    for k in 2..upper_bound {
-                        k_index = k;
-                        let nodes_in_allele = &allele[i..(i + k)];
-                        let nodes_in_reads = &read_nodes[0..k];
-                        let mut match_allele = Vec::new();
-                        for (j, read_node) in nodes_in_reads.iter().enumerate() {
-                            if *read_node == 0 {
-                                match_allele.push(0)
-                            } else if *read_node == nodes_in_allele[j] {
-                                match_allele.push(1);
-                            } else {
-                                match_allele.push(-1);
-                            }
-                        }
-                        let match_count = match_allele
-                            .iter()
-                            .filter(|x| **x == 1)
-                            .collect::<Vec<_>>()
-                            .len();
-                        trace!("allele {allele:?} read {read_nodes:?} {i_index} {k_index} {nodes_in_allele:?} {nodes_in_reads:?} {match_count}");
-                        if !match_allele.contains(&(-1)) && match_count > 1 {
-                            read_matches_forward.push((i_index, k_index));
-                            if k_index == read_nodes_len && match_count >= 3 && k_index >= 3 {
-                                for q in 0..(k_index - 2) {
-                                    if !read_nodes[q..(q + 3)].contains(&0) {
-                                        short_state.sites_supported_by_three.insert(i_index + q);
-                                    }
-                                }
-                                for q in 0..(k_index - 3) {
-                                    if !read_nodes[q..(q + 4)].contains(&0) {
-                                        short_state.sites_supported_by_four.insert(i_index + q);
-                                    }
-                                    let this_pos = i_index + q;
-                                    if repeat_pos.contains_key(&this_pos) {
-                                        if let Some(repeat_size) = repeat_pos.get(&this_pos) {
-                                            let end_pos = q + *repeat_size + 2;
-                                            if end_pos <= read_nodes_len {
-                                                if !read_nodes[q..end_pos].contains(&0) {
-                                                    short_state
-                                                        .repeat_pos_support
-                                                        .entry(this_pos)
-                                                        .or_default()
-                                                        .push(read_nodes.clone());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if match_allele.contains(&(-1)) {
-                            break;
-                        }
-                    }
-                }
+                let mut read_matches_forward = scan_read_matches_forward(allele, read_nodes);
                 if !read_matches_forward.is_empty() {
                     read_matches_forward.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
                     let best_match = read_matches_forward[0];
-                    debug!(
-                        "allele {allele:?} read {read_nodes:?} found {} matches starting at {}",
-                        best_match.1, best_match.0
+                    record_forward_support(
+                        &mut short_state,
+                        allele,
+                        read_nodes,
+                        best_match,
+                        &repeat_pos,
                     );
-                    if best_match.1 == read_nodes_len {
-                        let this_read_spanning = check_spanning(read_nodes);
-                        // debug!("read {read_nodes:?} is spanning: {this_read_spanning}");
-                        if this_read_spanning && !short_state.is_spanning {
-                            short_state.is_spanning = true;
-                        }
-                    }
-                    if best_match.1 < read_nodes_len && best_match.0 + best_match.1 < allele_len {
-                        short_state.suspicious_reads.insert(read_nodes.clone());
-                        short_state
-                            .suspicious_forward
-                            .entry(best_match.0 + best_match.1)
-                            .or_default()
-                            .push(read_nodes.clone());
-                    }
                 }
-                let mut i_index: usize;
-                for i in 0..allele_len {
-                    i_index = i;
-                    let mut k_index: usize;
-                    let upper_bound = cmp::min(allele_len - i, read_nodes_len) + 1;
-                    for k in 2..upper_bound {
-                        k_index = k;
-                        let nodes_in_allele = &allele[(allele_len - i - k)..(allele_len - i)];
-                        let nodes_in_reads = &read_nodes[(read_nodes_len - k)..read_nodes_len];
-                        let mut match_allele = Vec::new();
-                        for (j, read_node) in nodes_in_reads.iter().enumerate() {
-                            if *read_node == 0 {
-                                match_allele.push(0)
-                            } else if *read_node == nodes_in_allele[j] {
-                                match_allele.push(1);
-                            } else {
-                                match_allele.push(-1);
-                            }
-                        }
-                        let match_count = match_allele
-                            .iter()
-                            .filter(|x| **x == 1)
-                            .collect::<Vec<_>>()
-                            .len();
-                        trace!("allele {allele:?} read {read_nodes:?} {i_index} {k_index} {nodes_in_allele:?} {nodes_in_reads:?} {match_count}");
-                        if !match_allele.contains(&(-1)) && match_count > 1 {
-                            read_matches_reverse.push((i_index, k_index));
-                        }
-                        if match_allele.contains(&(-1)) {
-                            break;
-                        }
-                    }
-                }
+                let mut read_matches_reverse = scan_read_matches_backward(allele, read_nodes);
                 if !read_matches_reverse.is_empty() {
                     read_matches_reverse.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
                     let best_match = read_matches_reverse[0];
-                    debug!(
-                        "allele {allele:?} read {read_nodes:?} found {} matches ending at {}",
-                        best_match.1, best_match.0
-                    );
-                    if best_match.1 == read_nodes_len {
-                        let this_read_spanning = check_spanning(read_nodes);
-                        // debug!("read {read_nodes:?} is spanning: {this_read_spanning}");
-                        if this_read_spanning && !short_state.is_spanning {
-                            short_state.is_spanning = true;
-                        }
-                    }
-                    if best_match.1 < read_nodes_len && best_match.0 + best_match.1 < allele_len {
-                        short_state.suspicious_reads.insert(read_nodes.clone());
-                        short_state
-                            .suspicious_reverse
-                            .entry(allele_len - best_match.0 - best_match.1)
-                            .or_default()
-                            .push(read_nodes.clone());
-                    }
+                    record_backward_support(&mut short_state, allele, read_nodes, best_match);
                 }
             }
             debug!("is_spanning {}", short_state.is_spanning);
@@ -382,6 +258,185 @@ struct ShortAlleleAnalysisState {
     sites_supported_by_three: HashSet<usize>,
     sites_supported_by_four: HashSet<usize>,
     is_spanning: bool,
+}
+
+/// Update short-allele support state from the best forward match for one read.
+/// # Arguments
+/// * `state` - accumulated short-allele evidence
+/// * `allele` - allele being evaluated
+/// * `read_nodes` - read nodes that were matched against the allele
+/// * `best_match` - best forward match as `(start_index, matched_len)`
+/// * `repeat_pos` - repeated-unit positions for the allele
+fn record_forward_support(
+    state: &mut ShortAlleleAnalysisState,
+    allele: &[i32],
+    read_nodes: &[i32],
+    best_match: (usize, usize),
+    repeat_pos: &BTreeMap<usize, usize>,
+) {
+    let read_nodes_len = read_nodes.len();
+    debug!(
+        "allele {allele:?} read {read_nodes:?} found {} matches starting at {}",
+        best_match.1, best_match.0
+    );
+    if best_match.1 == read_nodes_len && check_spanning(read_nodes) && !state.is_spanning {
+        state.is_spanning = true;
+    }
+    if best_match.1 < read_nodes_len && best_match.0 + best_match.1 < allele.len() {
+        state.suspicious_reads.insert(read_nodes.to_vec());
+        state
+            .suspicious_forward
+            .entry(best_match.0 + best_match.1)
+            .or_default()
+            .push(read_nodes.to_vec());
+    }
+    let i_index = best_match.0;
+    let k_index = best_match.1;
+    if k_index == read_nodes_len && k_index >= 3 {
+        for q in 0..(k_index - 2) {
+            if !read_nodes[q..(q + 3)].contains(&0) {
+                state.sites_supported_by_three.insert(i_index + q);
+            }
+        }
+        for q in 0..(k_index - 3) {
+            if !read_nodes[q..(q + 4)].contains(&0) {
+                state.sites_supported_by_four.insert(i_index + q);
+            }
+            let this_pos = i_index + q;
+            if let Some(repeat_size) = repeat_pos.get(&this_pos) {
+                let end_pos = q + *repeat_size + 2;
+                if end_pos <= read_nodes_len && !read_nodes[q..end_pos].contains(&0) {
+                    state
+                        .repeat_pos_support
+                        .entry(this_pos)
+                        .or_default()
+                        .push(read_nodes.to_vec());
+                }
+            }
+        }
+    }
+}
+
+/// Update short-allele support state from the best backward match for one read.
+/// # Arguments
+/// * `state` - accumulated short-allele evidence
+/// * `allele` - allele being evaluated
+/// * `read_nodes` - read nodes that were matched against the allele
+/// * `best_match` - best backward match as `(offset_from_end, matched_len)`
+fn record_backward_support(
+    state: &mut ShortAlleleAnalysisState,
+    allele: &[i32],
+    read_nodes: &[i32],
+    best_match: (usize, usize),
+) {
+    let read_nodes_len = read_nodes.len();
+    debug!(
+        "allele {allele:?} read {read_nodes:?} found {} matches ending at {}",
+        best_match.1, best_match.0
+    );
+    if best_match.1 == read_nodes_len && check_spanning(read_nodes) && !state.is_spanning {
+        state.is_spanning = true;
+    }
+    if best_match.1 < read_nodes_len && best_match.0 + best_match.1 < allele.len() {
+        state.suspicious_reads.insert(read_nodes.to_vec());
+        state
+            .suspicious_reverse
+            .entry(allele.len() - best_match.0 - best_match.1)
+            .or_default()
+            .push(read_nodes.to_vec());
+    }
+}
+
+/// Scan a read against an allele from the left side and collect matching segments.
+/// # Arguments
+/// * `allele` - allele being evaluated
+/// * `read_nodes` - read nodes to compare against the allele
+/// # Returns
+/// * `Vec<(usize, usize)>` - matching segments as `(start_index, matched_len)`
+fn scan_read_matches_forward(allele: &[i32], read_nodes: &[i32]) -> Vec<(usize, usize)> {
+    let allele_len = allele.len();
+    let read_nodes_len = read_nodes.len();
+    let mut read_matches_forward = Vec::new();
+    for i in 0..allele_len {
+        let i_index = i;
+        let upper_bound = cmp::min(allele_len - i, read_nodes_len) + 1;
+        for k in 2..upper_bound {
+            let k_index = k;
+            let nodes_in_allele = &allele[i..(i + k)];
+            let nodes_in_reads = &read_nodes[0..k];
+            let mut match_allele = Vec::new();
+            for (j, read_node) in nodes_in_reads.iter().enumerate() {
+                if *read_node == 0 {
+                    match_allele.push(0)
+                } else if *read_node == nodes_in_allele[j] {
+                    match_allele.push(1);
+                } else {
+                    match_allele.push(-1);
+                }
+            }
+            let match_count = match_allele
+                .iter()
+                .filter(|x| **x == 1)
+                .collect::<Vec<_>>()
+                .len();
+            trace!(
+                "allele {allele:?} read {read_nodes:?} {i_index} {k_index} {nodes_in_allele:?} {nodes_in_reads:?} {match_count}"
+            );
+            if !match_allele.contains(&(-1)) && match_count > 1 {
+                read_matches_forward.push((i_index, k_index));
+            }
+            if match_allele.contains(&(-1)) {
+                break;
+            }
+        }
+    }
+    read_matches_forward
+}
+
+/// Scan a read against an allele from the right side and collect matching segments.
+/// # Arguments
+/// * `allele` - allele being evaluated
+/// * `read_nodes` - read nodes to compare against the allele
+/// # Returns
+/// * `Vec<(usize, usize)>` - matching segments as `(offset_from_end, matched_len)`
+fn scan_read_matches_backward(allele: &[i32], read_nodes: &[i32]) -> Vec<(usize, usize)> {
+    let allele_len = allele.len();
+    let read_nodes_len = read_nodes.len();
+    let mut read_matches_reverse = Vec::new();
+    for i in 0..allele_len {
+        let i_index = i;
+        let upper_bound = cmp::min(allele_len - i, read_nodes_len) + 1;
+        for k in 2..upper_bound {
+            let k_index = k;
+            let nodes_in_allele = &allele[(allele_len - i - k)..(allele_len - i)];
+            let nodes_in_reads = &read_nodes[(read_nodes_len - k)..read_nodes_len];
+            let mut match_allele = Vec::new();
+            for (j, read_node) in nodes_in_reads.iter().enumerate() {
+                if *read_node == 0 {
+                    match_allele.push(0)
+                } else if *read_node == nodes_in_allele[j] {
+                    match_allele.push(1);
+                } else {
+                    match_allele.push(-1);
+                }
+            }
+            let match_count = match_allele
+                .iter()
+                .filter(|x| **x == 1)
+                .collect::<Vec<_>>()
+                .len();
+            trace!(
+                "allele {allele:?} read {read_nodes:?} {i_index} {k_index} {nodes_in_allele:?} {nodes_in_reads:?} {match_count}"
+            );
+            if !match_allele.contains(&(-1)) && match_count > 1 {
+                read_matches_reverse.push((i_index, k_index));
+            }
+            if match_allele.contains(&(-1)) {
+                break;
+            }
+        }
+    }
+    read_matches_reverse
 }
 
 /// Return whether an allele should use the short-allele suspicion heuristics.
