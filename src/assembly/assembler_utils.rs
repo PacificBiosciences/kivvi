@@ -256,10 +256,8 @@ pub fn filter_complete_alleles(
             debug!("repeat_pos_support {repeat_pos_support:?}");
             let highly_repetitive = repeat_pos_support.len() < repeat_pos.len();
             debug!("allele {allele:?} highly_repetitive {highly_repetitive:?}");
-            let good_support =
-                allele.len() >= 2 && sites_supported_by_three.len() == allele.len() - 2;
-            let better_support =
-                allele.len() >= 3 && sites_supported_by_four.len() == allele.len() - 3;
+            let good_support = allele_len >= 2 && sites_supported_by_three.len() == allele_len - 2;
+            let better_support = allele_len >= 3 && sites_supported_by_four.len() == allele_len - 3;
             debug!(
                 "allele {allele:?} good_support {good_support} sites_supported_by_three {sites_supported_by_three:?}"
             );
@@ -288,10 +286,12 @@ pub fn filter_complete_alleles(
                                 debug!("allele {allele:?} is suspicious because not every site is supported by reads linking the next two sites, and it has two suspicious sites, one with forward-matching suspicous reads and one with reverse-matching suspicious reads.");
                                 suspicious_complete_alleles.push(allele.clone());
                             }
+                        } else if allele_len < 4 {
+                            continue;
                         } else if *reverse_pos == *forward_pos - 2
-                            && (*reverse_pos > allele.len() - 4
+                            && (*reverse_pos > allele_len - 4
                                 || sites_supported_by_four.contains(reverse_pos))
-                            && (*forward_pos > allele.len() - 4
+                            && (*forward_pos > allele_len - 4
                                 || sites_supported_by_four.contains(forward_pos))
                         {
                             continue;
@@ -304,12 +304,24 @@ pub fn filter_complete_alleles(
                     if let Some((suspicious_site, reads)) = suspicious_reverse.first_key_value() {
                         let suspicious_site_num_reads = reads.len();
                         debug!("only one suspicious_site at index {suspicious_site:?} with {suspicious_site_num_reads} suspicious reads");
-                        if *suspicious_site > allele.len() - 4
+                        if allele_len < 4
+                            || *suspicious_site > allele_len - 4
                             || sites_supported_by_four.contains(suspicious_site)
                         {
                             continue;
                         }
-                        if *suspicious_site > allele.len() - 3
+                        if allele_len > 4 && *suspicious_site == allele_len - 4 {
+                            let prev_site = *suspicious_site - 1;
+                            if !sites_supported_by_four.contains(&prev_site)
+                                && !sites_supported_by_four.contains(suspicious_site)
+                                && suspicious_site_num_reads >= 2
+                            {
+                                debug!("allele {allele:?} is suspicious because the suspicious site at the end of the allele and both this site and the previous site are not supported by reads linking the next three sites.");
+                                suspicious_complete_alleles.push(allele.clone());
+                            }
+                        }
+                        if allele_len < 3
+                            || *suspicious_site > allele_len - 3
                             || sites_supported_by_three.contains(suspicious_site)
                         {
                             continue;
@@ -322,8 +334,9 @@ pub fn filter_complete_alleles(
                 } else if num_suspicious_reads >= 5 && !good_support {
                     debug!("allele {allele:?} is suspicious because it has at least 5 suspicious reads, and not every site is supported by reads linking the next two sites.");
                     suspicious_complete_alleles.push(allele.clone());
-                } else if !sites_supported_by_three.contains(&0)
-                    || !sites_supported_by_three.contains(&(allele_len - 3))
+                } else if allele_len >= 3
+                    && (!sites_supported_by_three.contains(&0)
+                        || !sites_supported_by_three.contains(&(allele_len - 3)))
                 {
                     // we want good support at both ends
                     debug!("allele {allele:?} is suspicious because the left side or the right side is not supported by reads linking the next two sites.");
