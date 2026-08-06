@@ -207,7 +207,28 @@ fn is_short_complete_allele_suspicious_from_state(
         debug!("allele {allele:?} is suspicious because it is highly repetitive");
         return true;
     }
-    // 3. two suspicious sites, one forward, one reverse
+
+    // 3. if only two units, should have spanning reads
+    if allele_len <= 4 {
+        if short_state.sites_supported_by_four.is_empty() {
+            debug!("allele {allele:?} is suspicious because it is two units or shorter, and has no spanning reads.");
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    // 4. we want good support at both ends
+    if !short_state.sites_supported_by_three.contains(&0)
+        || !short_state
+            .sites_supported_by_three
+            .contains(&(allele_len - 3))
+    {
+        debug!("allele {allele:?} is suspicious because the left side or the right side is not supported by reads linking the next two sites.");
+        return true;
+    }
+
+    // 5. two suspicious sites, one forward, one reverse
     if short_state.suspicious_forward.len() == 1
         && short_state.suspicious_reverse.len() == 1
         && num_suspicious_reads > 1
@@ -219,42 +240,42 @@ fn is_short_complete_allele_suspicious_from_state(
         ) {
             if !good_support {
                 if *reverse_pos <= *forward_pos - 1 {
+                    // 5.1 reverse pos is before forward pos and not good_support
                     debug!("allele {allele:?} is suspicious because not every site is supported by reads linking the next two sites, and it has two suspicious sites, one with forward-matching suspicous reads and one with reverse-matching suspicious reads.");
                     return true;
                 }
-            } else if allele_len < 4 {
-                return false;
             } else if *reverse_pos == *forward_pos - 2
                 && (*reverse_pos > allele_len - 4
                     || short_state.sites_supported_by_four.contains(reverse_pos))
                 && (*forward_pos > allele_len - 4
                     || short_state.sites_supported_by_four.contains(forward_pos))
             {
+                // 5.2 good if reverse pos is 2 positions before forward pos and both positions are supported by reads linking the next three sites (or both sites are at the end of the allele)
                 return false;
             } else if *reverse_pos <= *forward_pos - 2 {
+                // 5.3 suspicious if reverse pos is 2 positions before forward pos (good_support is true here)
                 debug!("allele {allele:?} is suspicious because it has two suspicious sites, one with forward-matching suspicous reads and one with reverse-matching suspicious reads. And suspicious sites are not supported by reads linking the next three sites.");
                 return true;
             }
         }
     } else if short_state.suspicious_forward.is_empty() && short_state.suspicious_reverse.len() == 1
-    // 4. one suspicious site only, currently only looking at reverse-matching suspicious reads
+    // 6. one suspicious site only, currently only looking at reverse-matching suspicious reads
     {
         if let Some((suspicious_site, reads)) = short_state.suspicious_reverse.first_key_value() {
             let suspicious_site_num_reads = reads.len();
             debug!(
                 "only one suspicious_site at index {suspicious_site:?} with {suspicious_site_num_reads} suspicious reads"
             );
-            // 4.1 good if the site is linked to the next three sites
-            if allele_len < 4
-                || *suspicious_site > allele_len - 4
+            // 6.1 good if the site is linked to the next three sites
+            if *suspicious_site > allele_len - 4
                 || short_state
                     .sites_supported_by_four
                     .contains(suspicious_site)
             {
                 return false;
             }
-            // 4.2 suspicious if at the end and both this site and the previous site are not supported by reads linking the next three sites
-            if allele_len > 4 && *suspicious_site == allele_len - 4 {
+            // 6.2 suspicious if at the end and both this site and the previous site are not supported by reads linking the next three sites
+            if *suspicious_site == allele_len - 4 {
                 let prev_site = *suspicious_site - 1;
                 if !short_state.sites_supported_by_four.contains(&prev_site)
                     && !short_state
@@ -266,37 +287,23 @@ fn is_short_complete_allele_suspicious_from_state(
                     return true;
                 }
             }
-            // 4.3 good if the site is linked to the next two sites
-            if allele_len < 3
-                || *suspicious_site > allele_len - 3
+            // 6.3 good if the site is linked to the next two sites
+            if *suspicious_site > allele_len - 3
                 || short_state
                     .sites_supported_by_three
                     .contains(suspicious_site)
             {
                 return false;
             }
-            // 4.4 suspicious if the site is not supported by reads linking the next two or three sites
+            // 6.4 suspicious if the site is not supported by reads linking the next two or three sites
             if suspicious_site_num_reads >= 3 {
                 debug!("allele {allele:?} is suspicious because the suspicious site is not supported by reads linking the next two or three sites.");
                 return true;
             }
         }
     } else if num_suspicious_reads >= 5 && !good_support {
-        // 5. too many suspicious reads and not good_support
+        // 7. too many suspicious reads and not good_support
         debug!("allele {allele:?} is suspicious because it has at least 5 suspicious reads, and not every site is supported by reads linking the next two sites.");
-        return true;
-    } else if allele_len >= 3
-        && (!short_state.sites_supported_by_three.contains(&0)
-            || !short_state
-                .sites_supported_by_three
-                .contains(&(allele_len - 3)))
-    {
-        // 6. we want good support at both ends
-        debug!("allele {allele:?} is suspicious because the left side or the right side is not supported by reads linking the next two sites.");
-        return true;
-    } else if allele_len <= 4 && short_state.sites_supported_by_four.is_empty() {
-        // 7. if only two units, should have spanning reads
-        debug!("allele {allele:?} is suspicious because it is two units or shorter, and has no spanning reads.");
         return true;
     }
 
@@ -803,6 +810,188 @@ pub fn compare_two_haps_same_length(hap1: &[i32], hap2: &[i32]) -> (Vec<i32>, i3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_short_complete_allele_suspicious_from_state_spanning_is_not_suspicious() {
+        // scenario 1
+        let allele = vec![-2, 2, 3, -10];
+        let repeat_pos = BTreeMap::new();
+        let short_state = ShortAlleleAnalysisState {
+            is_spanning: true,
+            ..Default::default()
+        };
+
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+
+        assert!(!is_suspicious);
+    }
+
+    #[test]
+    fn test_is_short_complete_allele_suspicious_from_state_highly_repetitive_is_suspicious() {
+        // scenario 2
+        let allele = vec![-2, 2, 2, 2, -10];
+        let repeat_pos = BTreeMap::from([(1, 3)]);
+        let short_state = ShortAlleleAnalysisState::default();
+
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+
+        assert!(is_suspicious);
+    }
+
+    #[test]
+    fn test_is_short_complete_allele_suspicious_from_state_short_allele_without_support_by_four_is_suspicious(
+    ) {
+        // scenario 3, short allele, supported_by_four is empty
+        let allele = vec![-2, 2, 3, -10];
+        let repeat_pos = BTreeMap::new();
+        let short_state = ShortAlleleAnalysisState {
+            sites_supported_by_three: HashSet::from([0, 1]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(is_suspicious);
+
+        let short_state = ShortAlleleAnalysisState {
+            sites_supported_by_three: HashSet::from([0, 1]),
+            sites_supported_by_four: HashSet::from([0]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(!is_suspicious);
+    }
+
+    #[test]
+    fn test_is_short_complete_allele_suspicious_from_state_missing_end_support_is_suspicious() {
+        // scenario 4, requiring both ends
+        let allele = vec![-2, 2, 3, 4, 5, -10];
+        let repeat_pos = BTreeMap::new();
+        let short_state = ShortAlleleAnalysisState {
+            sites_supported_by_three: HashSet::from([0, 1, 2]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(is_suspicious);
+
+        let short_state = ShortAlleleAnalysisState {
+            sites_supported_by_three: HashSet::from([0, 1, 3]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(!is_suspicious);
+    }
+
+    #[test]
+    fn test_is_short_complete_allele_suspicious_from_state_many_suspicious_reads_without_good_support_is_suspicious(
+    ) {
+        // scenario 7, many suspicious reads and not good_support
+        let allele = vec![-2, 2, 3, 4, 5, -10];
+        let repeat_pos = BTreeMap::new();
+        let short_state = ShortAlleleAnalysisState {
+            suspicious_reads: HashSet::from([
+                vec![1, 2],
+                vec![2, 3],
+                vec![3, 4],
+                vec![4, 5],
+                vec![5, 6],
+            ]),
+            sites_supported_by_three: HashSet::from([0, 1, 2]),
+            ..Default::default()
+        };
+
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+
+        assert!(is_suspicious);
+    }
+
+    #[test]
+    fn test_is_short_complete_allele_suspicious_from_state_two_suspicious_sites_without_good_support_is_suspicious(
+    ) {
+        // scenario 5, one forward suspicious site and one reverse suspicious site
+        let allele = vec![-2, 1, 2, 3, 4, 5, 6, -10];
+        let repeat_pos = BTreeMap::new();
+        let short_state = ShortAlleleAnalysisState {
+            suspicious_forward: BTreeMap::from([(4, vec![vec![3, 4, 7]])]),
+            suspicious_reverse: BTreeMap::from([(3, vec![vec![7, 3, 4]])]),
+            suspicious_reads: HashSet::from([vec![3, 4, 7], vec![7, 3, 4]]),
+            sites_supported_by_three: HashSet::from([0, 1, 5]),
+            sites_supported_by_four: HashSet::from([0, 1, 2, 3, 4]), // better_support
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(!is_suspicious);
+
+        let short_state = ShortAlleleAnalysisState {
+            suspicious_forward: BTreeMap::from([(4, vec![vec![3, 4, 7]])]),
+            suspicious_reverse: BTreeMap::from([(3, vec![vec![7, 3, 4]])]),
+            suspicious_reads: HashSet::from([vec![3, 4, 7], vec![7, 3, 4]]),
+            sites_supported_by_three: HashSet::from([0, 1]),
+            sites_supported_by_four: HashSet::from([0]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(is_suspicious);
+
+        // good support, site index differ by one
+        let short_state = ShortAlleleAnalysisState {
+            suspicious_forward: BTreeMap::from([(4, vec![vec![3, 4, 7]])]),
+            suspicious_reverse: BTreeMap::from([(3, vec![vec![7, 3, 4]])]),
+            suspicious_reads: HashSet::from([vec![3, 4, 7], vec![7, 3, 4]]),
+            sites_supported_by_three: HashSet::from([0, 1, 2, 3, 4, 5]), // good_support
+            sites_supported_by_four: HashSet::from([0]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(!is_suspicious);
+
+        // good support, site index differ by more than one
+        let short_state = ShortAlleleAnalysisState {
+            suspicious_forward: BTreeMap::from([(4, vec![vec![3, 4, 7]])]),
+            suspicious_reverse: BTreeMap::from([(2, vec![vec![7, 2, 3]])]),
+            suspicious_reads: HashSet::from([vec![3, 4, 7], vec![7, 2, 3]]),
+            sites_supported_by_three: HashSet::from([0, 1, 2, 3, 4, 5]), // good_support
+            sites_supported_by_four: HashSet::from([0]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(is_suspicious);
+
+        // good support, site index differ by two, but both sites in suported_by_four
+        let short_state = ShortAlleleAnalysisState {
+            suspicious_forward: BTreeMap::from([(4, vec![vec![3, 4, 7]])]),
+            suspicious_reverse: BTreeMap::from([(2, vec![vec![7, 2, 3]])]),
+            suspicious_reads: HashSet::from([vec![3, 4, 7], vec![7, 2, 3]]),
+            sites_supported_by_three: HashSet::from([0, 1, 2, 3, 4, 5]), // good_support
+            sites_supported_by_four: HashSet::from([0, 2, 4]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(!is_suspicious);
+
+        // good support, site index differ by two, but both sites in suported_by_four or index towards the end of allele
+        let short_state = ShortAlleleAnalysisState {
+            suspicious_forward: BTreeMap::from([(5, vec![vec![4, 5, 7]])]), // 5 is towards the end and is in support_by_three
+            suspicious_reverse: BTreeMap::from([(3, vec![vec![7, 3, 4]])]),
+            suspicious_reads: HashSet::from([vec![4, 5, 7], vec![7, 3, 4]]),
+            sites_supported_by_three: HashSet::from([0, 1, 2, 3, 4, 5]), // good_support
+            sites_supported_by_four: HashSet::from([0, 3]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(!is_suspicious);
+    }
 
     #[test]
     fn test_get_repeat() {
