@@ -21,7 +21,7 @@ use crate::repeat_unit::fingerprint_utils::{
 };
 use crate::util::{create_kivvi_temp_dir, d4z4_coordinates, kiv2_coordinates, DError, DResult};
 use crate::variant::report_variants;
-use crate::vcf::write_vcf;
+use crate::vcf::{write_empty_vcf, write_vcf};
 use log::{debug, info};
 use paraphase::detail::phaser_util::build_faidx;
 use paraphase::io::json::GeneCall;
@@ -154,34 +154,38 @@ pub fn read_info_to_string(read_edges: &BTreeMap<String, Vec<i32>>) -> BTreeMap<
         .collect()
 }
 
-/// Remove a file if it exists
-/// # Arguments
-/// * `path` - path to the file
-fn remove_if_exists(path: impl AsRef<Path>) -> DResult {
-    let path = path.as_ref();
-    if path.exists() {
-        std::fs::remove_file(path)?;
+/// Build an empty sample call for runs that complete without callable target reads.
+fn build_empty_sample_call() -> SampleCall {
+    SampleCall {
+        allele_cn: String::from("NA"),
+        ..Default::default()
     }
+}
+
+/// Write one sample call report to the target JSON path.
+fn write_sample_call_json(output_json: &Path, sample_call: &SampleCall) -> DResult {
+    let mut writer = std::io::BufWriter::new(std::fs::File::create(output_json)?);
+    writeln!(writer, "{}", serde_json::to_string_pretty(sample_call)?)?;
     Ok(())
 }
 
-fn fai_path_for(reference: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.fai", reference.display()))
+/// Write a machine-readable empty-call JSON result for a sample with no target-overlapping reads.
+fn write_empty_call_json(output_json: &Path) -> DResult {
+    let mut sample_call = build_empty_sample_call();
+    sample_call.additional.insert(
+        String::from("call_status"),
+        String::from("failed_due_to_no_reads").into(),
+    );
+    write_sample_call_json(output_json, &sample_call)
 }
 
-fn ensure_reads_present(
-    sample_id: &str,
-    stage: &str,
-    region_coordinates: &crate::util::RegionCoordinates,
-    read_count: usize,
+/// Finalize and index a realigned BAM that contains only a header and no kept records.
+fn finalize_empty_realigned_bam(
+    realigned_bam: &PathBuf,
+    writer: rust_htslib::bam::Writer,
 ) -> DResult {
-    if read_count == 0 {
-        let regions = region_coordinates.extract_regions.join(" ");
-        return Err(format!(
-            "No reads found for sample '{sample_id}' during {stage}. Checked region(s): {regions}"
-        )
-        .into());
-    }
+    drop(writer);
+    bam::index::build(realigned_bam, None, bam::index::Type::Bai, 1)?;
     Ok(())
 }
 
@@ -217,7 +221,7 @@ fn prepare_d4z4_analysis(
     d4z4_read_parameters: &ReadParameters,
     d4z4_graph_parameters: &GraphParameters,
     sensitive: bool,
-) -> Result<D4z4PreparedAnalysis, DError> {
+) -> Result<Option<D4z4PreparedAnalysis>, DError> {
     debug!("realigning reads to repeat unit");
     let (realn_records_unfiltered, read_length, writer, methyl_tags, methyl_probs) = realign(
         cli_settings.bam_filename.clone(),
@@ -226,12 +230,13 @@ fn prepare_d4z4_analysis(
         realigned_bam.clone(),
         true,
     )?;
-    ensure_reads_present(
-        sample_id,
-        "read extraction/realignment",
-        region_coordinates,
-        realn_records_unfiltered.len(),
-    )?;
+    if realn_records_unfiltered.is_empty() {
+        finalize_empty_realigned_bam(realigned_bam, writer)?;
+        debug!(
+            "No reads found for sample '{sample_id}' during read extraction/realignment; returning empty D4Z4 call"
+        );
+        return Ok(None);
+    }
     let (repeat_records, mut white_list_read_segments, blacklist_segments) =
         filter_realignments_d4z4(
             realn_records_unfiltered,
@@ -239,12 +244,12 @@ fn prepare_d4z4_analysis(
             reference,
             realigned_bam.clone(),
         )?;
-    ensure_reads_present(
-        sample_id,
-        "alignment filtering",
-        region_coordinates,
-        repeat_records.len(),
-    )?;
+    if repeat_records.is_empty() {
+        debug!(
+            "No reads found for sample '{sample_id}' during alignment filtering; returning empty D4Z4 call"
+        );
+        return Ok(None);
+    }
 
     debug!("collecting flanking reads");
     let (flanking_reads, clipped_reads) = get_start_end_d4z4(
@@ -353,7 +358,7 @@ fn prepare_d4z4_analysis(
     let (kept_starting_haps, kept_ending_haps, kept_complete) =
         process_alleles(&assembly_result, &fp_info)?;
 
-    Ok(D4z4PreparedAnalysis {
+    Ok(Some(D4z4PreparedAnalysis {
         depth_summary,
         methyl_probs,
         cpg_sites_per_read,
@@ -370,7 +375,7 @@ fn prepare_d4z4_analysis(
         kept_starting_haps,
         kept_ending_haps,
         kept_complete,
-    })
+    }))
 }
 
 /// Main function to genotype KIV2
@@ -421,24 +426,27 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
         realigned_bam.clone(),
         false,
     )?;
-    ensure_reads_present(
-        sample_id,
-        "read extraction/realignment",
-        &region_coordinates,
-        realn_records_unfiltered.len(),
-    )?;
+    if realn_records_unfiltered.is_empty() {
+        finalize_empty_realigned_bam(&realigned_bam, writer)?;
+        write_empty_call_json(&output_json)?;
+        write_empty_vcf(&output_vcf, region_coordinates.clone())?;
+        temp_dir.close()?;
+        info!("Completed kivvi analysis on KIV2 with no callable target reads...");
+        return Ok(());
+    }
     let repeat_records = filter_realignments_kiv2(
         realn_records_unfiltered,
         writer,
         &reference,
         realigned_bam.clone(),
     )?;
-    ensure_reads_present(
-        sample_id,
-        "alignment filtering",
-        &region_coordinates,
-        repeat_records.len(),
-    )?;
+    if repeat_records.is_empty() {
+        write_empty_call_json(&output_json)?;
+        write_empty_vcf(&output_vcf, region_coordinates.clone())?;
+        temp_dir.close()?;
+        info!("Completed kivvi analysis on KIV2 with no callable target reads...");
+        return Ok(());
+    }
 
     // get flanking reads
     debug!("collecting flanking reads");
@@ -590,8 +598,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
         allele_info: Vec::new(),
         ..Default::default()
     };
-    let mut writer = std::io::BufWriter::new(std::fs::File::create(output_json)?);
-    writeln!(writer, "{}", serde_json::to_string_pretty(&sample_call)?)?;
+    write_sample_call_json(&output_json, &sample_call)?;
 
     // write to vcf
     debug!("Write to VCF...");
@@ -611,10 +618,6 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
         plot_alleles_and_reads(&output_svg, to_plot)?;
     }
 
-    // remove temporary reference file
-    remove_if_exists(&reference)?;
-    let fai_file = fai_path_for(&reference);
-    remove_if_exists(fai_file)?;
     temp_dir.close()?;
 
     info!("Completed kivvi analysis on KIV2...");
@@ -826,6 +829,14 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
 
             Ok((phasing_result, prepared))
         })?
+    };
+
+    let Some(prepared) = prepared else {
+        write_empty_call_json(&output_json)?;
+        write_empty_vcf(&output_vcf, region_coordinates.clone())?;
+        temp_dir.close()?;
+        info!("Completed kivvi analysis on D4Z4 with no callable target reads...");
+        return Ok(());
     };
 
     let D4z4PreparedAnalysis {
@@ -1189,8 +1200,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         serde_json::to_value(&d4z4_qc_metrics)?.into(),
     );
 
-    let mut writer = std::io::BufWriter::new(std::fs::File::create(output_json)?);
-    writeln!(writer, "{}", serde_json::to_string_pretty(&sample_call)?)?;
+    write_sample_call_json(&output_json, &sample_call)?;
 
     // write to vcf
     debug!("writing VCF output");
@@ -1210,13 +1220,6 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         plot_alleles_and_reads(&output_svg, to_plot)?;
     }
 
-    // remove temporary reference file
-    remove_if_exists(&reference)?;
-    let fai_file = fai_path_for(&reference);
-    remove_if_exists(fai_file)?;
-    remove_if_exists(&genome_reference)?;
-    let fai_file = fai_path_for(&genome_reference);
-    remove_if_exists(fai_file)?;
     temp_dir.close()?;
 
     info!("Completed kivvi analysis on D4Z4...");

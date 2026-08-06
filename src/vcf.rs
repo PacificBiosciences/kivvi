@@ -15,6 +15,34 @@ const VCF_LINES: [&str; 3] = [
     r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">"#,
 ];
 
+/// Build the shared VCF header for both populated and header-only Kivvi outputs.
+fn build_vcf_header(region_coordinates: &RegionCoordinates, allele_len: usize) -> bcf::header::Header {
+    let mut vcf_header = bcf::header::Header::new();
+    for line in VCF_LINES.iter() {
+        vcf_header.push_record(line.as_bytes());
+    }
+
+    let contig_line = format!(
+        r#"##contig=<ID={},length={}>"#,
+        region_coordinates.chromosome_output, region_coordinates.chromosome_len
+    );
+    vcf_header.push_record(contig_line.as_bytes());
+
+    let args: Vec<String> = env::args().collect();
+    let command_line = args.join(" ");
+    let line = format!("##{}Command={}", env!("CARGO_PKG_NAME"), command_line);
+    vcf_header.push_record(line.as_bytes());
+    let version_line = format!("##{}Version={}", env!("CARGO_PKG_NAME"), &*FULL_VERSION);
+    vcf_header.push_record(version_line.as_bytes());
+
+    for i in 0..allele_len {
+        let allele_name = format!("allele{}", i + 1);
+        vcf_header.push_sample(allele_name.as_bytes());
+    }
+
+    vcf_header
+}
+
 /// Write variants to VCF
 /// # Arguments
 /// * `output_path` - output VCF
@@ -41,29 +69,7 @@ pub fn write_vcf(
         .map(|(x, _y)| x.clone())
         .collect::<Vec<String>>();
 
-    let mut vcf_header = bcf::header::Header::new();
-    // add header
-    for line in VCF_LINES.iter() {
-        vcf_header.push_record(line.as_bytes());
-    }
-
-    let contig_line = format!(
-        r#"##contig=<ID={},length={}>"#,
-        region_coordinates.chromosome_output, region_coordinates.chromosome_len
-    );
-    vcf_header.push_record(contig_line.as_bytes());
-
-    let args: Vec<String> = env::args().collect();
-    let command_line = args.join(" ");
-    let line = format!("##{}Command={}", env!("CARGO_PKG_NAME"), command_line);
-    vcf_header.push_record(line.as_bytes());
-    let version_line = format!("##{}Version={}", env!("CARGO_PKG_NAME"), &*FULL_VERSION);
-    vcf_header.push_record(version_line.as_bytes());
-    //vcf_header.push_sample(sample_name.as_bytes());
-    for i in 0..allele_len {
-        let allele_name = format!("allele{}", i + 1);
-        vcf_header.push_sample(allele_name.as_bytes());
-    }
+    let vcf_header = build_vcf_header(&region_coordinates, allele_len);
 
     let mut writer = bcf::Writer::from_path(output_path, &vcf_header, true, Format::Vcf)
         .map_err(|_| format!("Invalid VCF output path: {}", output_path.display()))?;
@@ -110,6 +116,18 @@ pub fn write_vcf(
         writer.write(&record)?;
     }
 
+    Ok(())
+}
+
+/// Write a header-only VCF for a successful run with no callable target-overlapping reads.
+/// # Arguments
+/// * `output_path` - output VCF
+/// * `region_coordinates` - region coordinates for the target locus
+pub fn write_empty_vcf(output_path: &PathBuf, region_coordinates: RegionCoordinates) -> DResult {
+    let mut vcf_header = build_vcf_header(&region_coordinates, 0);
+    vcf_header.push_record(br#"##kivviStatus=no_target_reads"#);
+    let _writer = bcf::Writer::from_path(output_path, &vcf_header, true, Format::Vcf)
+        .map_err(|_| format!("Invalid VCF output path: {}", output_path.display()))?;
     Ok(())
 }
 
