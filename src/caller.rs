@@ -987,6 +987,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         &fp_info,
         &all_ends_ml_per_allele,
         qal_units,
+        haploid_depth,
     )?;
 
     // write to json

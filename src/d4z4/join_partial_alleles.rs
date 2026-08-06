@@ -437,6 +437,7 @@ fn merge_two_partial_alleles(
     alleles: &Vec<String>,
     fp_graph: &FpGraph,
     fp_info: &FingerprintInfo,
+    haploid_depth: f32,
 ) -> (usize, String, String) {
     let cyclic_nodes = &fp_graph.cyclic_nodes;
     let grouped_reads = &fp_info.grouped_reads;
@@ -511,7 +512,7 @@ fn merge_two_partial_alleles(
                 return (ovl_len, alleles.join("..."), format!(">={allele_size}"));
             };
             debug!("cyclic_node {cyclic_node} cyclic_node_depth {cyclic_node_depth} cyclic_node_cn {cyclic_node_cn}");
-            if cyclic_node_depth <= 40 && *cyclic_node_cn >= 3 {
+            if cyclic_node_depth <= 40 && *cyclic_node_cn >= 3 && haploid_depth >= 7.5 {
                 while let Some(&last_element) = ct1.last() {
                     if last_element == cyclic_node {
                         ct1.pop();
@@ -582,6 +583,7 @@ fn get_allele_summary(
     fp_info: &FingerprintInfo,
     methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
     qal_units: &Vec<i32>,
+    haploid_depth: f32,
 ) -> Result<AlleleSummary, DError> {
     let mut sorted_alleles = alleles.clone();
     sorted_alleles.sort_by(|a, b| b.contains("LeftFlank").cmp(&a.contains("LeftFlank")));
@@ -609,7 +611,7 @@ fn get_allele_summary(
     let methylation_value = get_methylation_value(distal_allele, methyl_values, None)?;
 
     let (_ovl_len, allele_name, allele_size) =
-        merge_two_partial_alleles(&sorted_alleles, fp_graph, fp_info);
+        merge_two_partial_alleles(&sorted_alleles, fp_graph, fp_info, haploid_depth);
     Ok(AlleleSummary {
         allele_name: allele_name,
         chromosome: chr_info.replace("chromosome_unknown", "unknown"),
@@ -937,6 +939,7 @@ fn calculate_allele_overlaps(
     all_ends_hap_backgrounds: &BTreeMap<String, String>,
     fp_graph: &FpGraph,
     fp_info: &FingerprintInfo,
+    haploid_depth: f32,
 ) -> BTreeMap<String, Vec<(String, usize)>> {
     let mut allele_overlaps: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
     for proximal_allele in all_starts_hap_backgrounds.keys() {
@@ -949,6 +952,7 @@ fn calculate_allele_overlaps(
                     &vec![proximal_allele.clone(), distal_allele.clone()],
                     fp_graph,
                     fp_info,
+                    haploid_depth,
                 );
                 allele_overlaps
                     .entry(proximal_allele.clone())
@@ -971,6 +975,7 @@ fn merge_selected_partial_alleles(
     fp_info: &FingerprintInfo,
     methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
     qal_units: &[i32],
+    haploid_depth: f32,
 ) -> Result<(), DError> {
     for alleles_to_merge in pairs_of_alleles_to_merge {
         let original_distal_allele = get_original_distal_allele(&alleles_to_merge);
@@ -984,6 +989,7 @@ fn merge_selected_partial_alleles(
             fp_info,
             methyl_values,
             &qal_units.to_vec(),
+            haploid_depth,
         )?;
         record_distal_allele_chromosome(
             &mut state.distal_allele_chrom_map,
@@ -1115,6 +1121,7 @@ fn handle_four_partial_alleles_group(
     fp_info: &FingerprintInfo,
     methyl_values: &BTreeMap<String, Vec<Vec<i32>>>,
     qal_units: &[i32],
+    haploid_depth: f32,
 ) -> Result<(), DError> {
     if this_type_alleles.len() != 4 {
         return Ok(());
@@ -1155,21 +1162,25 @@ fn handle_four_partial_alleles_group(
         &vec![left_flank1.clone(), right_flank1.clone()],
         fp_graph,
         fp_info,
+        haploid_depth,
     );
     let (ovl_len2, allele_name2, allele_size2) = merge_two_partial_alleles(
         &vec![left_flank2.clone(), right_flank2.clone()],
         fp_graph,
         fp_info,
+        haploid_depth,
     );
     let (ovl_len3, allele_name3, allele_size3) = merge_two_partial_alleles(
         &vec![left_flank1.clone(), right_flank2.clone()],
         fp_graph,
         fp_info,
+        haploid_depth,
     );
     let (ovl_len4, allele_name4, allele_size4) = merge_two_partial_alleles(
         &vec![left_flank2.clone(), right_flank1.clone()],
         fp_graph,
         fp_info,
+        haploid_depth,
     );
 
     debug!("checking {left_flank1} against {right_flank1}: ovl_len1 {ovl_len1} allele_name1 {allele_name1} allele_size1 {allele_size1}");
@@ -1574,6 +1585,7 @@ pub fn join_partial_alleles(
     fp_info: &FingerprintInfo,
     all_ends_ml_per_allele: &Option<BTreeMap<String, Vec<Vec<i32>>>>,
     qal_units: Vec<i32>,
+    haploid_depth: f32,
 ) -> Result<Vec<AlleleSummary>, DError> {
     let methyl_values = all_ends_ml_per_allele.clone().unwrap_or_default();
     let mut state = JoinPartialAllelesState::default();
@@ -1599,6 +1611,7 @@ pub fn join_partial_alleles(
         all_ends_hap_backgrounds,
         fp_graph,
         fp_info,
+        haploid_depth,
     );
 
     // merge partial alleles
@@ -1622,6 +1635,7 @@ pub fn join_partial_alleles(
         fp_info,
         &methyl_values,
         &qal_units,
+        haploid_depth,
     )?;
 
     // if there are two pairs of partial alleles of the same type, we can do some further analysis to merge them
@@ -1638,6 +1652,7 @@ pub fn join_partial_alleles(
                 fp_info,
                 &methyl_values,
                 &qal_units,
+                haploid_depth,
             )?;
         }
     }
