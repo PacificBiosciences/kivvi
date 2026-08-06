@@ -193,6 +193,7 @@ fn is_short_complete_allele_suspicious_from_state(
         "allele {allele:?} better_support {better_support} sites_supported_by_four {:?}",
         short_state.sites_supported_by_four
     );
+    // 1. good if fully spanned by a long read
     if short_state.is_spanning {
         return false;
     }
@@ -201,10 +202,13 @@ fn is_short_complete_allele_suspicious_from_state(
     debug!("num_suspicious_reads {num_suspicious_reads}");
     debug!("suspicious_forward {:?}", short_state.suspicious_forward);
     debug!("suspicious_reverse {:?}", short_state.suspicious_reverse);
+    // 2. suspicious if highly repetitive
     if highly_repetitive {
         debug!("allele {allele:?} is suspicious because it is highly repetitive");
         return true;
-    } else if short_state.suspicious_forward.len() == 1
+    }
+    // 3. two suspicious sites, one forward, one reverse
+    if short_state.suspicious_forward.len() == 1
         && short_state.suspicious_reverse.len() == 1
         && num_suspicious_reads > 1
         && !better_support
@@ -233,12 +237,14 @@ fn is_short_complete_allele_suspicious_from_state(
             }
         }
     } else if short_state.suspicious_forward.is_empty() && short_state.suspicious_reverse.len() == 1
+    // 4. one suspicious site only, currently only looking at reverse-matching suspicious reads
     {
         if let Some((suspicious_site, reads)) = short_state.suspicious_reverse.first_key_value() {
             let suspicious_site_num_reads = reads.len();
             debug!(
                 "only one suspicious_site at index {suspicious_site:?} with {suspicious_site_num_reads} suspicious reads"
             );
+            // 4.1 good if the site is linked to the next three sites
             if allele_len < 4
                 || *suspicious_site > allele_len - 4
                 || short_state
@@ -247,6 +253,7 @@ fn is_short_complete_allele_suspicious_from_state(
             {
                 return false;
             }
+            // 4.2 suspicious if at the end and both this site and the previous site are not supported by reads linking the next three sites
             if allele_len > 4 && *suspicious_site == allele_len - 4 {
                 let prev_site = *suspicious_site - 1;
                 if !short_state.sites_supported_by_four.contains(&prev_site)
@@ -259,6 +266,7 @@ fn is_short_complete_allele_suspicious_from_state(
                     return true;
                 }
             }
+            // 4.3 good if the site is linked to the next two sites
             if allele_len < 3
                 || *suspicious_site > allele_len - 3
                 || short_state
@@ -267,12 +275,14 @@ fn is_short_complete_allele_suspicious_from_state(
             {
                 return false;
             }
+            // 4.4 suspicious if the site is not supported by reads linking the next two or three sites
             if suspicious_site_num_reads >= 3 {
                 debug!("allele {allele:?} is suspicious because the suspicious site is not supported by reads linking the next two or three sites.");
                 return true;
             }
         }
     } else if num_suspicious_reads >= 5 && !good_support {
+        // 5. too many suspicious reads and not good_support
         debug!("allele {allele:?} is suspicious because it has at least 5 suspicious reads, and not every site is supported by reads linking the next two sites.");
         return true;
     } else if allele_len >= 3
@@ -281,11 +291,11 @@ fn is_short_complete_allele_suspicious_from_state(
                 .sites_supported_by_three
                 .contains(&(allele_len - 3)))
     {
-        // we want good support at both ends
+        // 6. we want good support at both ends
         debug!("allele {allele:?} is suspicious because the left side or the right side is not supported by reads linking the next two sites.");
         return true;
     } else if allele_len <= 4 && short_state.sites_supported_by_four.is_empty() {
-        // if only two units, should have spanning reads
+        // 7. if only two units, should have spanning reads
         debug!("allele {allele:?} is suspicious because it is two units or shorter, and has no spanning reads.");
         return true;
     }
