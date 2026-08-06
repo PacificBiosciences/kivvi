@@ -100,8 +100,8 @@ pub fn filter_complete_alleles(
     debug!("filter short alleles with suspicious reads");
     let mut suspicious_complete_alleles = Vec::new();
     for allele in complete_alleles {
-        let allele_len = allele.len();
-        if allele_len <= 16 {
+        if is_short_complete_allele(allele) {
+            let allele_len = allele.len();
             let repeat_pos = get_repeat(allele);
             debug!("allele {allele:?} has identical-unit stretches at {repeat_pos:?}");
             let mut repeat_pos_support: BTreeMap<usize, Vec<Vec<i32>>> = BTreeMap::new();
@@ -347,37 +347,10 @@ pub fn filter_complete_alleles(
                     suspicious_complete_alleles.push(allele.clone());
                 }
             }
-        } else {
-            let mut haps_to_assess = complete_alleles.clone();
-            haps_to_assess.extend(incomplete_alleles.clone());
-            let overlapping_haps = find_overlapping_alleles(haps_to_assess.clone(), Some(10))?.1;
-            let overlapping_haps_loose = find_overlapping_alleles(haps_to_assess, Some(7))?.1;
-            for (hap1, hap1_overlaps) in overlapping_haps.iter() {
-                if complete_alleles.contains(hap1) && !suspicious_complete_alleles.contains(hap1) {
-                    if let Some(this_overlaps_loose) = overlapping_haps_loose.get(hap1) {
-                        let this_overlaps_loose_count = this_overlaps_loose.len();
-                        let mut overlap_count = 0;
-                        for (hap2, overlap_len) in this_overlaps_loose.iter() {
-                            if !redundant_haplotype_allowed(hap1, hap2, overlap_len)? {
-                                overlap_count += 1;
-                            }
-                        }
-                        if overlap_count > 0 && this_overlaps_loose_count > 1 {
-                            debug!(
-                            "Complete haplotype {hap1:?} is suspicious because it has {this_overlaps_loose_count} loose overlapping haplotypes, {overlap_count} of them are not redundant");
-                            suspicious_complete_alleles.push(hap1.clone());
-                        } else {
-                            for (hap2, overlap_len) in hap1_overlaps.iter() {
-                                if !redundant_haplotype_allowed(hap1, hap2, overlap_len)? {
-                                    debug!(
-                                        "Complete haplotype {hap1:?} is suspicious because it is overlapping with another haplotype {hap2:?}");
-                                    suspicious_complete_alleles.push(hap1.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        } else if is_long_complete_allele_suspicious(allele, complete_alleles, incomplete_alleles)?
+            && !suspicious_complete_alleles.contains(allele)
+        {
+            suspicious_complete_alleles.push(allele.clone());
         }
     }
     debug!(
@@ -385,6 +358,65 @@ pub fn filter_complete_alleles(
         suspicious_complete_alleles
     );
     Ok(suspicious_complete_alleles)
+}
+
+/// Return whether an allele should use the short-allele suspicion heuristics.
+/// # Arguments
+/// * `allele` - allele to classify by size
+/// # Returns
+/// * `bool` - true if the allele should use short-allele logic
+fn is_short_complete_allele(allele: &[i32]) -> bool {
+    allele.len() <= 16
+}
+
+/// Determine whether a long complete allele is suspicious based on overlap with
+/// other complete or incomplete haplotypes.
+/// # Arguments
+/// * `allele` - complete allele under review
+/// * `complete_alleles` - all complete alleles
+/// * `incomplete_alleles` - all incomplete alleles
+/// # Returns
+/// * `bool` - true if the long complete allele is suspicious
+fn is_long_complete_allele_suspicious(
+    allele: &[i32],
+    complete_alleles: &[Vec<i32>],
+    incomplete_alleles: &[Vec<i32>],
+) -> Result<bool, DError> {
+    let mut haps_to_assess = complete_alleles.to_vec();
+    haps_to_assess.extend_from_slice(incomplete_alleles);
+    let overlapping_haps = find_overlapping_alleles(haps_to_assess.clone(), Some(10))?.1;
+    let overlapping_haps_loose = find_overlapping_alleles(haps_to_assess, Some(7))?.1;
+    let Some(hap1_overlaps) = overlapping_haps.get(allele) else {
+        return Ok(false);
+    };
+    let Some(this_overlaps_loose) = overlapping_haps_loose.get(allele) else {
+        return Ok(false);
+    };
+
+    let this_overlaps_loose_count = this_overlaps_loose.len();
+    let mut overlap_count = 0;
+    for (hap2, overlap_len) in this_overlaps_loose {
+        if !redundant_haplotype_allowed(allele, hap2, overlap_len)? {
+            overlap_count += 1;
+        }
+    }
+    if overlap_count > 0 && this_overlaps_loose_count > 1 {
+        debug!(
+            "Complete haplotype {allele:?} is suspicious because it has {this_overlaps_loose_count} loose overlapping haplotypes, {overlap_count} of them are not redundant"
+        );
+        return Ok(true);
+    }
+
+    for (hap2, overlap_len) in hap1_overlaps {
+        if !redundant_haplotype_allowed(allele, hap2, overlap_len)? {
+            debug!(
+                "Complete haplotype {allele:?} is suspicious because it is overlapping with another haplotype {hap2:?}"
+            );
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 /// Identify redundant haplotypes
@@ -395,8 +427,8 @@ pub fn filter_complete_alleles(
 /// # Returns
 /// * `bool` - true if redundant, false otherwise
 pub fn redundant_haplotype_allowed(
-    hap1: &Vec<i32>,
-    hap2: &Vec<i32>,
+    hap1: &[i32],
+    hap2: &[i32],
     overlap_len: &usize,
 ) -> Result<bool, DError> {
     let hap1_len = hap1.len() as i32;
