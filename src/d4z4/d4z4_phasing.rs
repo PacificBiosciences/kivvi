@@ -1,7 +1,9 @@
 use crate::assembly::assembler::FpGraph;
 use crate::caller::vec_to_string;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
-use crate::util::{create_kivvi_temp_dir, invalid_data_error, missing_data_error, DError};
+use crate::util::{
+    create_kivvi_temp_dir, invalid_data_error, kivvi_temp_root, missing_data_error, DError,
+};
 use crate::variant::get_read_position_in_allele;
 use log::{debug, trace};
 use paraphase::config::region::try_load;
@@ -65,8 +67,10 @@ fn load_region_config_for_bam(wgs_bam: &PathBuf) -> Result<paraphase::config::Re
     Ok(region_config)
 }
 
-fn paraphase_gene_bam_path(sample: &str, output_path: &Path, gene: &str) -> PathBuf {
-    output_path.join(format!("{sample}.kivvi.paraphase.{gene}.bam"))
+fn paraphase_gene_bam_path(sample: &str, output_path: &Path, gene: &str) -> Result<PathBuf, DError> {
+    let temp_root = kivvi_temp_root(output_path);
+    std::fs::create_dir_all(&temp_root)?;
+    Ok(temp_root.join(format!("{sample}.kivvi.paraphase.{gene}.bam")))
 }
 
 fn combined_paraphase_bam_path(sample: &str, output_path: &Path) -> PathBuf {
@@ -123,7 +127,7 @@ pub fn phase_flanking_gene(
     let res = phaser.run()?;
 
     let bam_path = if write_bam {
-        let output_bam = paraphase_gene_bam_path(sample, output_path, gene);
+        let output_bam = paraphase_gene_bam_path(sample, output_path, gene)?;
         let mut writer = bam::Writer::from_path(
             &output_bam,
             &bam::Header::from_template(reader.header()),
