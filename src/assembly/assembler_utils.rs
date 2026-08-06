@@ -274,30 +274,17 @@ fn is_short_complete_allele_suspicious_from_state(
             {
                 return false;
             }
-            // 6.2 suspicious if at the end and both this site and the previous site are not supported by reads linking the next three sites
-            if *suspicious_site == allele_len - 4 {
-                let prev_site = *suspicious_site - 1;
-                if !short_state.sites_supported_by_four.contains(&prev_site)
-                    && !short_state
-                        .sites_supported_by_four
-                        .contains(suspicious_site)
-                    && suspicious_site_num_reads >= 2
-                {
-                    debug!("allele {allele:?} is suspicious because the suspicious site at the end of the allele and both this site and the previous site are not supported by reads linking the next three sites.");
-                    return true;
-                }
-            }
-            // 6.3 good if the site is linked to the next two sites
-            if *suspicious_site > allele_len - 3
-                || short_state
-                    .sites_supported_by_three
-                    .contains(suspicious_site)
+            // 6.2 good if the previous site is linked to the next three sites
+            let prev_site = *suspicious_site - 1;
+            if prev_site > allele_len - 4
+                || short_state.sites_supported_by_four.contains(&prev_site)
             {
                 return false;
             }
-            // 6.4 suspicious if the site is not supported by reads linking the next two or three sites
-            if suspicious_site_num_reads >= 3 {
-                debug!("allele {allele:?} is suspicious because the suspicious site is not supported by reads linking the next two or three sites.");
+
+            // 6.3 suspicious if neither the site nor the previous site are supported by reads linking the next three sites
+            if suspicious_site_num_reads >= 2 {
+                debug!("allele {allele:?} is suspicious because neither the suspicious site or the previous site are supported by reads linking the next three sites.");
                 return true;
             }
         }
@@ -991,6 +978,46 @@ mod tests {
         let is_suspicious =
             is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
         assert!(!is_suspicious);
+    }
+
+    #[test]
+    fn test_is_short_complete_allele_suspicious_from_state_single_reverse_site_with_support_by_four_is_not_suspicious(
+    ) {
+        // scenario 6. one suspicious reverse site but it is supported by reads linking the next three sites
+        let allele = vec![-2, 1, 2, 3, 4, 5, -10];
+        let repeat_pos = BTreeMap::new();
+        let short_state = ShortAlleleAnalysisState {
+            suspicious_reverse: BTreeMap::from([(3, vec![vec![6, 3, 4], vec![7, 6, 3, 4]])]),
+            suspicious_reads: HashSet::from([vec![6, 3, 4], vec![7, 6, 3, 4]]),
+            sites_supported_by_three: HashSet::from([0, 1, 2, 3, 4]),
+            sites_supported_by_four: HashSet::from([3]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(!is_suspicious);
+
+        let short_state = ShortAlleleAnalysisState {
+            suspicious_reverse: BTreeMap::from([(3, vec![vec![6, 3, 4], vec![7, 6, 3, 4]])]),
+            suspicious_reads: HashSet::from([vec![6, 3, 4], vec![7, 6, 3, 4]]),
+            sites_supported_by_three: HashSet::from([0, 1, 2, 3, 4]),
+            sites_supported_by_four: HashSet::from([2]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(!is_suspicious);
+
+        // neither the suspicious site nor the previous site is in supported_by_four
+        let short_state = ShortAlleleAnalysisState {
+            suspicious_reverse: BTreeMap::from([(3, vec![vec![6, 3, 4], vec![7, 6, 3, 4]])]),
+            suspicious_reads: HashSet::from([vec![6, 3, 4], vec![7, 6, 3, 4]]),
+            sites_supported_by_three: HashSet::from([0, 1, 2, 3, 4]),
+            ..Default::default()
+        };
+        let is_suspicious =
+            is_short_complete_allele_suspicious_from_state(&allele, &repeat_pos, &short_state);
+        assert!(is_suspicious);
     }
 
     #[test]
