@@ -16,7 +16,10 @@ const VCF_LINES: [&str; 3] = [
 ];
 
 /// Build the shared VCF header for both populated and header-only Kivvi outputs.
-fn build_vcf_header(region_coordinates: &RegionCoordinates, allele_len: usize) -> bcf::header::Header {
+fn build_vcf_header(
+    region_coordinates: &RegionCoordinates,
+    allele_len: usize,
+) -> bcf::header::Header {
     let mut vcf_header = bcf::header::Header::new();
     for line in VCF_LINES.iter() {
         vcf_header.push_record(line.as_bytes());

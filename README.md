@@ -57,7 +57,11 @@ Or
 kivvi -b $WGS_BAM -o $OUTPUT_DIRECTORY -p $OUTPUT_PREFIX d4z4
 ```
 
-Kivvi is single-threaded and generally takes less than 5 minutes per sample.
+Kivvi is single-threaded by default. For D4Z4, optionally use two threads to speed up.
+
+```bash
+kivvi -b $WGS_BAM -o $OUTPUT_DIRECTORY -p $OUTPUT_PREFIX d4z4 --threads 2
+```
 
 ## Output
 
@@ -80,9 +84,6 @@ Tutorials are available for understanding Kivvi output files:
 In these tutorials, Sample HG03453 is used as an example. A bamlet of the KIV2 region for this sample is available [here](example/HG03453_kiv2_extract.bam). A bamlet of the D4Z4 region for this sample is available [here](example/HG03453_d4z4_extract.bam). Note that a warning of `Genome depth is unavailable` is expected when running Kivvi with these two bamlets, as these are not full WGS bams.
 
 ```bash
-# Download human GRCh38 if you don't have one
-wget https://downloads.pacbcloud.com/public/reference-genomes/human_GRCh38_no_alt_analysis_set.tar.2023-12-04.gz
-tar -xpvf human_GRCh38_no_alt_analysis_set.tar.2023-12-04.gz
 # Download the demo data for KIV2
 wget https://raw.githubusercontent.com/PacificBiosciences/kivvi/main/example/HG03453_kiv2_extract.bam
 wget https://raw.githubusercontent.com/PacificBiosciences/kivvi/main/example/HG03453_kiv2_extract.bam.bai

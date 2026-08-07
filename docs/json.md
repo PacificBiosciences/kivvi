@@ -42,20 +42,21 @@ The most important field to check for D4Z4 is the `allele_info` field:
   - distal_haplotype: `qAIntactPolyA`, or `qADisruptedPolyA` or `qB`.
   - allele_type: `assembled`, `partial`, `merged` (two partial alleles merged into one) or `assembled_cis_duplication` (in-cis duplications).
   - allele_size: exact or lower bound (for partial or merged alleles)
-  - methylation: methylation level
+  - methylation: summary methylation level
+  - ending_in_qal: whether the allele is an A-L allele, i.e. the last unit has a ~1.6kb insertion.
 
-More information on methylation can be found in the `methylation` field.
+More information on methylation can be found in the `methylation` field. Methylation is reported as the ratio of methylated reads (ML>=128) out of all reads. Kivvi uses a set of [97 pre-selected CpG sites](../data/d4z4/d4z4_methyl_sites.txt) in the D4Z4 repeat unit for methylation analysis.
 - `methylation`: Kivvi reports the two fields below for complete alleles (`complete_alleles`), as well as all alleles ends (`all_allele_ends`), i.e. all D4Z4 alleles (including partial alleles) containing the last unit. 
-  - `median_methylation_per_unit`: the median methylation level of each repeat unit on each allele (each repeat unit has a value). 
-  - `methylation_per_site`: the methylation level of each CpG site (which is the median of values across supporting reads overlapping the CpG site) on each allele. Kivvi uses a set of 101 pre-selected CpG sites in the D4Z4 repeat unit for methylation analysis, so there are `repeat copy number * 101` values reported for each allele.
+  - `median_methylation_per_unit`: For each repeat unit on each allele, report the ratio of methylated reads out of all reads across all selected CpG sites. 
+  - `methylation_per_site`: For each selected CpG site on each repeat unit of each allele, report the ratio of methylated reads out of all reads.
 
 Other information on D4Z4 can be found in the `additional` field. 
 - `qc_metrics`: two metrics indicating the HiFi data quality of the D4Z4 region.
   - `median_read_length`: median read length of the D4Z4 region
   - `per_allele_depth`: median depth per D4Z4 allele (can be different from the genome average depth as D4Z4 is highly GC rich)
-- `methylation_all_sites`: median methylation level across all D4Z4 units. This value can be used to evaluate the overal methylation level of D4Z4 and is low in FSHD2 samples.
-- `methylation_per_site`: median methylation of each CpG site
-- `methylation_per_unit`: median methylation of each repeat unit
+- `methylation_all_sites`: ratio of methylated reads out of all reads across all D4Z4 units. This value can be used to evaluate the overal methylation level of D4Z4 and is low in FSHD2 samples.
+- `methylation_per_site`: ratio of methylated reads out of all reads covering each CpG site
+- `methylation_per_unit`: ratio of methylated reads out of all reads across all selected CpG sites of each repeat unit
 - `allele_background`: reports three sets of information:
   - The chromosome and distal haplotype for each complete allele (`complete_alleles`), in the format of `x-y` (`x` can be `qAIntactPolyA`, or `qADisruptedPolyA` or `qB`, and `y` can be `chr4` or `chr10`). 
   - The distal haplotype for all allele ends (`all_allele_ends`), i.e. all D4Z4 alleles (including partial alleles) containing the last unit. 
@@ -83,7 +84,8 @@ Part of the HG03453 D4Z4 JSON file is shown below. Kivvi assembles three complet
       "distal_haplotype": "qAIntactPolyA",
       "allele_type": "assembled",
       "allele_size": "28",
-      "methylation": 0.871
+      "methylation": 0.788,
+      "ending_in_qal": false
     },
     {
       "allele_name": "LeftFlank-29-62-32-32-68-69-26-31-24-25-72-27-74-2-58-63-57-30-28-64-65-65-65-66-20-19-20-21-21-19-21-22-21-21-23-RightFlank",
@@ -91,7 +93,8 @@ Part of the HG03453 D4Z4 JSON file is shown below. Kivvi assembles three complet
       "distal_haplotype": "qAIntactPolyA",
       "allele_type": "assembled",
       "allele_size": "35",
-      "methylation": 0.906
+      "methylation": 0.855,
+      "ending_in_qal": false
     },
     {
       "allele_name": "LeftFlank-54-48-73-51-33-44-38-39-38-38-33-35-38-33-33-38-33-61-59-38-45-36-33-55-56-33-60-55-33-55-52-60-52-60-56-61-59-33-53-55-33-33-55-43-33-33-38-37-55-55-55-56-55-33-33-49-RightFlank",
@@ -99,7 +102,8 @@ Part of the HG03453 D4Z4 JSON file is shown below. Kivvi assembles three complet
       "distal_haplotype": "qADisruptedPolyA",
       "allele_type": "assembled",
       "allele_size": "56",
-      "methylation": 0.9
+      "methylation": 0.862,
+      "ending_in_qal": false
     },
     {
       "allele_name": "41-41-41-41-47-71-41-47-38-41-71-38-38-70-RightFlank",
@@ -107,7 +111,8 @@ Part of the HG03453 D4Z4 JSON file is shown below. Kivvi assembles three complet
       "distal_haplotype": "qADisruptedPolyA",
       "allele_type": "partial",
       "allele_size": ">14",
-      "methylation": 0.9
+      "methylation": 0.846,
+      "ending_in_qal": false
     }
   ],
 }

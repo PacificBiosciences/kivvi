@@ -67,7 +67,11 @@ fn load_region_config_for_bam(wgs_bam: &PathBuf) -> Result<paraphase::config::Re
     Ok(region_config)
 }
 
-fn paraphase_gene_bam_path(sample: &str, output_path: &Path, gene: &str) -> Result<PathBuf, DError> {
+fn paraphase_gene_bam_path(
+    sample: &str,
+    output_path: &Path,
+    gene: &str,
+) -> Result<PathBuf, DError> {
     let temp_root = kivvi_temp_root(output_path);
     std::fs::create_dir_all(&temp_root)?;
     Ok(temp_root.join(format!("{sample}.kivvi.paraphase.{gene}.bam")))
