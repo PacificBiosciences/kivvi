@@ -42,7 +42,7 @@ The most important field to check for D4Z4 is the `allele_info` field:
   - distal_haplotype: `qAIntactPolyA`, or `qADisruptedPolyA` or `qB`.
   - allele_type: `assembled`, `partial`, `merged` (two partial alleles merged into one) or `assembled_cis_duplication` (in-cis duplications).
   - allele_size: exact or lower bound (for partial or merged alleles)
-  - methylation: summary methylation level
+  - methylation: summary methylation level, calculated as the ratio of methylated reads out of all reads covering selected CpG sites in the last three repeat units of an allele.
   - ending_in_qal: whether the allele is an A-L allele, i.e. the last unit has a ~1.6kb insertion.
 
 More information on methylation can be found in the `methylation` field. Methylation is reported as the ratio of methylated reads (ML>=128) out of all reads. Kivvi uses a set of [97 pre-selected CpG sites](../data/d4z4/d4z4_methyl_sites.txt) in the D4Z4 repeat unit for methylation analysis.

@@ -1,6 +1,6 @@
 # Kivvi: HiFi genotyper for large-unit variable number tandem repeat
 
-Kivvi is a HiFi-based tool that calls the copy number and sequence variants of large-unit variable number tandem repeats (VNTRs). With the large size of the full repeat and the highly polymorphic nature across individuals, these regions are challenging to resolve using currently available methods. Kivvi identifies unique copies of each repeat and assembles them into alleles. Kivvi has been applied to two medically important VNTRs and can be adapted to more large-unit VNTRs.
+Kivvi is a HiFi-based tool that calls the copy number and sequence variants of macrosatellite repeats, i.e. variable number tandem repeats (VNTRs) with large repeat units. With the large size of the full repeat and the highly polymorphic nature across individuals, these regions are challenging to resolve using currently available methods. Kivvi identifies unique copies of each repeat and assembles them into alleles. Kivvi has been applied to two medically important VNTRs and can be adapted to more large-unit VNTRs.
 - The LPA Kringle IV-type 2 (KIV2) repeat (repeat unit 5.5kb). A short KIV2 allele is associated with a higher risk of cardiovascular diseases.
 - The D4Z4 repeat (repeat unit 3.3kb). D4Z4 is involved in [Facioscapulohumeral Muscular Dystrophy (FSHD)](https://www.ncbi.nlm.nih.gov/books/NBK1443/), which is caused by chromatin relaxation (hypomethylation) and/or contraction of D4Z4.
 
@@ -39,11 +39,11 @@ md5sum -c kivvi.md5
 
 ## Input
 
-The input to Kivvi is a WGS bam (aligned to GRCh38). The WGS must be standard depth (20-30X or higher). Kivvi works better with higher coverage and longer reads. Targeted data is not supported due to the shorter read length.
+The input to Kivvi is a WGS bam (aligned to GRCh38). We recommend 25X-30X WGS depth (ideally 30X or higher for D4Z4). Kivvi works better with higher coverage and longer reads. Targeted data is not supported due to the shorter read length.
 
 Kivvi can take a bamlet of the WGS bam as input. The region needed is (GRCh38):
 - KIV2: `chr6:160605000-160655000`.
-- D4Z4: `chr4:190022510-190093263 chr4:190173122-190192666 chr10:133622567-133685491 chr10:133740609-133775186`. 
+- D4Z4: `chr4:190065229-190093263 chr4:190173122-190198975 chr10:133664430-133690466 chr10:133740609-133781680 chr2:113610062-113623354 chr22:50787557-50800932 chr19:58587874-58600958 chr21:46680534-46692564 chr17:83231427-83242561`. 
 
 ## Running the program
 
