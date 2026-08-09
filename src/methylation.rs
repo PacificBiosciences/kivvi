@@ -1,5 +1,4 @@
 use crate::caller::vec_to_string;
-use crate::depth::median;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
 use crate::util::DError;
 use log::{debug, trace, warn};
@@ -72,9 +71,12 @@ pub fn methyl_prob_by_position(
     for (read_segment_name, site_to_pos) in cpg_sites_per_read.iter() {
         let read_name = read_segment_name
             .split_terminator(':')
-            .collect::<Vec<_>>()
-            .first()
-            .unwrap()
+            .next()
+            .ok_or_else(|| {
+                format!(
+                    "Read segment name is missing a read prefix for methylation lookup: '{read_segment_name}'"
+                )
+            })?
             .to_string();
         if read_methyl_bases.contains_key(&read_name) {
             // index of C -> methylation prob (unnormalized)
@@ -110,7 +112,11 @@ pub fn methyl_prob_by_position(
             meth_per_pos.entry(*pos).or_default().push(*ml_value as i32);
             all_sites_methyl.push(*ml_value as i32);
             if fp_info.grouped_reads.contains_key(read_segment) {
-                let this_segment_fp = fp_info.grouped_reads.get(read_segment).unwrap();
+                let this_segment_fp = fp_info.grouped_reads.get(read_segment).ok_or_else(|| {
+                    format!(
+                        "Read segment '{read_segment}' is missing a grouped fingerprint assignment"
+                    )
+                })?;
                 meth_per_fp
                     .entry(*this_segment_fp)
                     .or_default()
@@ -119,34 +125,44 @@ pub fn methyl_prob_by_position(
         }
     }
     for (pos, this_pos_meth) in &meth_per_pos {
-        let this_pos_meth_median =
-            (1000.0 * median(this_pos_meth).unwrap() / 255.0).round() / 1000.0;
+        let this_pos_meth_percent = (1000.0
+            * this_pos_meth.iter().filter(|x| **x >= 128).count() as f32
+            / this_pos_meth.len() as f32)
+            .round()
+            / 1000.0;
         let this_pos_meth_len = this_pos_meth.len();
-        meth_per_pos_median.insert(*pos, this_pos_meth_median);
-        trace!("methyl positions {pos} nsize {this_pos_meth_len} median methyl value {this_pos_meth_median} methyl values {this_pos_meth:?} ");
+        meth_per_pos_median.insert(*pos, this_pos_meth_percent);
+        trace!("methyl positions {pos} nsize {this_pos_meth_len} median methyl value {this_pos_meth_percent} methyl values {this_pos_meth:?} ");
     }
     for (fp, this_fp_meth) in &meth_per_fp {
         if *fp != 0 {
-            let this_fp_meth_median =
-                (1000.0 * median(this_fp_meth).unwrap() / 255.0).round() / 1000.0;
+            let this_fp_meth_percent = (1000.0
+                * this_fp_meth.iter().filter(|x| **x >= 128).count() as f32
+                / this_fp_meth.len() as f32)
+                .round()
+                / 1000.0;
             let this_fp_meth_len = this_fp_meth.len();
-            meth_per_fp_median.insert(*fp, this_fp_meth_median);
-            trace!("fp {fp} nsize {this_fp_meth_len} median methyl value {this_fp_meth_median} methyl values {this_fp_meth:?} ");
+            meth_per_fp_median.insert(*fp, this_fp_meth_percent);
+            trace!("fp {fp} nsize {this_fp_meth_len} percent methylation {this_fp_meth_percent} methyl values {this_fp_meth:?} ");
         }
     }
-    // median methylation of the sample
-    let all_sites_methyl_median = median(&all_sites_methyl);
-    let all_sites_methyl_median = if all_sites_methyl_median.is_none() {
+    // percent methylation of the sample
+    let all_sites_methyl_percent = if all_sites_methyl.is_empty() {
         None
     } else {
-        Some((1000.0 * all_sites_methyl_median.unwrap() / 255.0).round() / 1000.0)
+        Some(
+            (1000.0 * all_sites_methyl.iter().filter(|x| **x >= 128).count() as f32
+                / all_sites_methyl.len() as f32)
+                .round()
+                / 1000.0,
+        )
     };
 
     Ok((
         MethSummary {
             meth_per_pos_median,
             meth_per_fp_median,
-            all_sites_methyl_median,
+            all_sites_methyl_median: all_sites_methyl_percent,
         },
         segment_methyl_prob,
     ))
@@ -168,7 +184,14 @@ pub fn get_methyl_info(
     cpg_sites_per_read: &BTreeMap<String, BTreeMap<usize, usize>>,
     reads_match_allele_index: &BTreeMap<Vec<i32>, Vec<(String, i32)>>,
     methyl_sites: &Vec<usize>,
-) -> Result<(MethOutput, Vec<BTreeMap<String, Vec<usize>>>), DError> {
+) -> Result<
+    (
+        MethOutput,
+        Vec<BTreeMap<String, Vec<usize>>>,
+        BTreeMap<String, Vec<Vec<i32>>>,
+    ),
+    DError,
+> {
     let read_edges = &fp_info.read_edges;
     let read_positions = &fp_info.read_positions;
     let nsite = methyl_sites.len();
@@ -179,6 +202,8 @@ pub fn get_methyl_info(
     let mut median_methylation_per_unit: BTreeMap<String, Vec<f32>> = BTreeMap::new();
     // allele name -> methylation value, one per site
     let mut methylation_per_site: BTreeMap<String, Vec<f32>> = BTreeMap::new();
+    // allele name -> ml values, one vector per fp
+    let mut ml_per_allele: BTreeMap<String, Vec<Vec<i32>>> = BTreeMap::new();
     // get probability on complete alleles
     let mut allele_index = 0;
     for allele in reads_match_allele_index.keys() {
@@ -241,9 +266,12 @@ pub fn get_methyl_info(
                                 .ok_or("segment_name not in cpg_sites_per_read")?;
                             let read_name = segment_name
                                 .split_terminator(':')
-                                .collect::<Vec<_>>()
-                                .first()
-                                .unwrap()
+                                .next()
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Read segment name is missing a read prefix for methylation lookup: '{segment_name}'"
+                                    )
+                                })?
                                 .to_string();
                             if this_segment_pos.contains_key(&(this_methyl_site - 1)) {
                                 alleles_reads_methyl
@@ -269,9 +297,12 @@ pub fn get_methyl_info(
                                 //trace!("allele {allele:?} uniq_fp_name {uniq_fp_name} i {i} k {k} full_pos {full_pos} segment_name {} prob {}", segment_name.to_string(), *prob);
                                 let read_name = segment_name
                                     .split_terminator(':')
-                                    .collect::<Vec<_>>()
-                                    .first()
-                                    .unwrap()
+                                    .next()
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "Read segment name is missing a read prefix for methylation lookup: '{segment_name}'"
+                                        )
+                                    })?
                                     .to_string();
                                 alleles_reads_methyl
                                     .entry(allele_index)
@@ -288,43 +319,60 @@ pub fn get_methyl_info(
                             }
                         }
                         if !this_fp_this_pos_methyl_probs.is_empty() {
+                            let this_fp_this_pos_methy_perc = (1000.0
+                                * this_fp_this_pos_methyl_probs
+                                    .iter()
+                                    .filter(|x| **x >= 128)
+                                    .count() as f32
+                                / this_fp_this_pos_methyl_probs.len() as f32)
+                                .round()
+                                / 1000.0;
                             this_fp_methyl_probs
-                                .push(median(&this_fp_this_pos_methyl_probs).unwrap());
+                                .push((this_fp_this_pos_methy_perc, this_fp_this_pos_methyl_probs));
+                            //debug!(
+                            //    "at methyl site {this_methyl_site} this_fp_this_pos_methyl_probs {this_fp_this_pos_methyl_probs:?}, methylation percentage {this_fp_this_pos_methy_perc}"
+                            //);
                         } else {
                             trace!(
                                 "at methyl site {this_methyl_site} this_fp_this_pos_methyl_probs {this_fp_this_pos_methyl_probs:?} is empty, cannot get median"
                             );
-                            this_fp_methyl_probs.push(f32::NAN);
+                            this_fp_methyl_probs.push((f32::NAN, this_fp_this_pos_methyl_probs));
                         }
                     }
                 }
                 let allele_name = vec_to_string(&vec![allele.clone()], "-");
-                let mut this_fp_methyl_probs_f32 = this_fp_methyl_probs
-                    .iter()
-                    .map(|x| {
-                        if x.is_nan() {
-                            f32::NAN
-                        } else {
-                            (1000.0 * x / 255.0).round() / 1000.0
-                        }
-                    })
-                    .collect::<Vec<_>>();
+                let mut this_fp_methyl_probs_f32 =
+                    this_fp_methyl_probs.iter().map(|x| x.0).collect::<Vec<_>>();
+
                 methylation_per_site
                     .entry(allele_name[0].clone())
                     .or_default()
                     .append(&mut this_fp_methyl_probs_f32);
+
                 let this_fp_methyl_probs_i32 = this_fp_methyl_probs
                     .iter()
-                    .filter(|x| !x.is_nan())
-                    .map(|x| x.round() as i32)
+                    .map(|x| x.1.clone())
+                    .flatten()
                     .collect::<Vec<_>>();
+                //debug!("this_fp_methyl_probs_i32 {:?}", this_fp_methyl_probs_i32);
+                ml_per_allele
+                    .entry(allele_name[0].clone())
+                    .or_default()
+                    .push(this_fp_methyl_probs_i32.clone());
                 if !this_fp_methyl_probs_i32.is_empty() {
-                    let this_fp_methyl_probs_median =
-                        median(&this_fp_methyl_probs_i32).unwrap() / 255.0;
+                    let this_fp_methyl_percent = (1000.0
+                        * this_fp_methyl_probs_i32
+                            .iter()
+                            .filter(|x| **x >= 128)
+                            .count() as f32
+                        / this_fp_methyl_probs_i32.len() as f32)
+                        .round()
+                        / 1000.0;
+
                     median_methylation_per_unit
                         .entry(allele_name[0].clone())
                         .or_default()
-                        .push((this_fp_methyl_probs_median * 1000.0).round() / 1000.0);
+                        .push(this_fp_methyl_percent);
                 } else {
                     median_methylation_per_unit
                         .entry(allele_name[0].clone())
@@ -370,6 +418,7 @@ pub fn get_methyl_info(
             methylation_per_site: allele_fps_methyl_value_reformat,
         },
         alleles_reads_methyl_value,
+        ml_per_allele,
     ))
 }
 
@@ -422,17 +471,23 @@ pub fn get_methyl_tags(
 pub fn get_methyl_prob(record: &rust_htslib::bam::Record) -> Result<Option<Vec<u8>>, DError> {
     let qname = std::str::from_utf8(record.qname())?;
     let bases = record.seq().as_bytes();
-    let meth = get_mm_tag(record).and_then(|mm_tag| {
-        get_ml_tag(record)
-            .and_then(|ml_tag| parse_meth_tags(mm_tag, ml_tag))
-            .and_then(|tags| {
+    let meth = if let Some(mm_tag) = get_mm_tag(record) {
+        if let Some(ml_tag) = get_ml_tag(record) {
+            let tags = parse_meth_tags(mm_tag, ml_tag, qname)?;
+            tags.map(|tags| {
                 if record.is_reverse() {
-                    decode_on_minus(&bases, &tags)
+                    decode_on_minus(&bases, &tags, qname)
                 } else {
-                    decode_on_plus(&bases, &tags)
+                    decode_on_plus(&bases, &tags, qname)
                 }
             })
-    });
+            .transpose()?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     if let Some(ref meth_values) = meth {
         trace!(
             "read {qname} methylation values {:?} CG count {}",
@@ -447,9 +502,10 @@ pub fn get_methyl_prob(record: &rust_htslib::bam::Record) -> Result<Option<Vec<u
 /// # Arguments
 /// * `bases` - bases on the plus strand
 /// * `meth` - methylation information
+/// * `qname` - read name used for error reporting
 /// # Returns
-/// * `Option<Vec<u8>>` - methylation probabilities on this read
-pub fn decode_on_plus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
+/// * `Vec<u8>` - methylation probabilities on this read
+pub fn decode_on_plus(bases: &[u8], meth: &MethInfo, qname: &str) -> Result<Vec<u8>, DError> {
     let mut profile = Vec::new();
 
     let mut num_cs_skipped = 0;
@@ -470,7 +526,12 @@ pub fn decode_on_plus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
         // TODO: Check if the first condition needed
         if cite_index != meth.poses.len() && num_cs_skipped == meth.poses[cite_index] {
             if dinuc == b"CG" {
-                *profile.last_mut().unwrap() = meth.probs[cite_index];
+                let slot = profile.last_mut().ok_or_else(|| {
+                    format!(
+                        "Read '{qname}' has methylation data for a CpG site before any CpG was decoded on the plus strand"
+                    )
+                })?;
+                *slot = meth.probs[cite_index];
             } else {
                 non_cpgs_called += 1;
             }
@@ -483,19 +544,20 @@ pub fn decode_on_plus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
     }
 
     if non_cpgs_called > 0 {
-        warn!("Warning: non_cpgs_called = {non_cpgs_called}");
+        warn!("observed {non_cpgs_called} non-CpG methylation calls");
     }
 
-    Some(profile)
+    Ok(profile)
 }
 
 /// Decode methylation probabilities on a minus strand
 /// # Arguments
 /// * `bases` - bases on the minus strand
 /// * `meth` - methylation information
+/// * `qname` - read name used for error reporting
 /// # Returns
-/// * `Option<Vec<u8>>` - methylation probabilities on this read
-pub fn decode_on_minus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
+/// * `Vec<u8>` - methylation probabilities on this read
+pub fn decode_on_minus(bases: &[u8], meth: &MethInfo, qname: &str) -> Result<Vec<u8>, DError> {
     let mut profile = Vec::new();
 
     let mut num_cs_skipped = 0;
@@ -517,7 +579,12 @@ pub fn decode_on_minus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
 
         if cite_index != meth.poses.len() && num_cs_skipped == meth.poses[cite_index] {
             if dinuc == b"CG" {
-                *profile.last_mut().unwrap() = meth.probs[cite_index];
+                let slot = profile.last_mut().ok_or_else(|| {
+                    format!(
+                        "Read '{qname}' has methylation data for a CpG site before any CpG was decoded on the minus strand"
+                    )
+                })?;
+                *slot = meth.probs[cite_index];
             } else {
                 non_cpgs_called += 1;
             }
@@ -530,10 +597,10 @@ pub fn decode_on_minus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
     }
 
     if non_cpgs_called > 0 {
-        warn!("Warning: non_cpgs_called = {non_cpgs_called}");
+        warn!("observed {non_cpgs_called} non-CpG methylation calls");
     }
 
-    Some(profile)
+    Ok(profile)
 }
 
 /// Parses methylation tags from a BAM record into a `MethInfo` struct.
@@ -541,13 +608,19 @@ pub fn decode_on_minus(bases: &[u8], meth: &MethInfo) -> Option<Vec<u8>> {
 /// # Arguments
 /// * `mm_tag` - The MM tag from the BAM record.
 /// * `ml_tag` - The ML tag from the BAM record.
+/// * `qname` - Read name used to annotate parsing errors.
 ///
 /// # Returns
 /// Returns an `Option<MethInfo>` which is `Some` if the tags could be parsed, otherwise `None`.
-fn parse_meth_tags(mm_tag: Aux, ml_tag: Aux) -> Option<MethInfo> {
+fn parse_meth_tags(mm_tag: Aux, ml_tag: Aux, qname: &str) -> Result<Option<MethInfo>, DError> {
     let mm_tag = match mm_tag {
         Aux::String(tag) => tag,
-        _ => panic!("Unexpected MM tag format: {:?}", mm_tag),
+        _ => {
+            return Err(format!(
+                "Read '{qname}' has an MM tag with an unexpected format: {mm_tag:?}"
+            )
+            .into())
+        }
     };
 
     // consider other possible modifications in MM
@@ -571,29 +644,60 @@ fn parse_meth_tags(mm_tag: Aux, ml_tag: Aux) -> Option<MethInfo> {
         }
     }
     if c_m_mod.is_none() {
-        return None;
+        return Ok(None);
     }
-    let c_m_mod = c_m_mod.unwrap();
+    let c_m_mod = c_m_mod.ok_or_else(|| {
+        format!("Read '{qname}' is missing the expected C+m methylation modification block")
+    })?;
     let c_m_mod = c_m_mod
         .strip_prefix("C+m?")
-        .or_else(|| c_m_mod.strip_prefix("C+m"))?;
+        .or_else(|| c_m_mod.strip_prefix("C+m"))
+        .ok_or_else(|| {
+            format!(
+                "Read '{qname}' has a C+m methylation block with an unexpected prefix: '{c_m_mod}'"
+            )
+        })?;
     let c_m_mod = c_m_mod.trim_matches(',');
     if c_m_mod == "" {
-        return None;
+        return Ok(None);
     }
     let poses = c_m_mod
         .split(',')
-        .map(|n| n.parse::<usize>().unwrap())
-        .collect::<Vec<usize>>();
+        .map(|n| {
+            n.parse::<usize>().map_err(|e| {
+                format!("Read '{qname}' has an invalid methylation offset '{n}' in the MM tag: {e}")
+            })
+        })
+        .collect::<Result<Vec<usize>, _>>()?;
 
     let mut probs = match ml_tag {
         Aux::ArrayU8(tag) => tag.iter().collect::<Vec<_>>(),
-        _ => panic!("Unexpected ML tag format: {:?}", ml_tag),
+        _ => {
+            return Err(format!(
+                "Read '{qname}' has an ML tag with an unexpected format: {ml_tag:?}"
+            )
+            .into())
+        }
     };
+    if counter + poses.len() > probs.len() {
+        return Err(format!(
+            "Read '{qname}' has fewer ML probabilities ({}) than MM positions require ({})",
+            probs.len(),
+            counter + poses.len()
+        )
+        .into());
+    }
     probs = probs[counter..(counter + poses.len())].to_vec();
-    assert_eq!(poses.len(), probs.len());
+    if poses.len() != probs.len() {
+        return Err(format!(
+            "Read '{qname}' has mismatched MM/ML lengths: {} positions vs {} probabilities",
+            poses.len(),
+            probs.len()
+        )
+        .into());
+    }
 
-    Some(MethInfo { poses, probs })
+    Ok(Some(MethInfo { poses, probs }))
 }
 
 /// Retrieves the MM tag from a BAM record.
@@ -602,8 +706,8 @@ fn parse_meth_tags(mm_tag: Aux, ml_tag: Aux) -> Option<MethInfo> {
 /// * `rec` - A reference to the BAM record.
 ///
 /// # Returns
-/// Returns an `Option<Aux>` which is `Some` if the MM tag is present, otherwise `None`.
-fn get_mm_tag(rec: &Record) -> Option<Aux> {
+/// Returns an `Option<Aux<'_>>` which is `Some` if the MM tag is present, otherwise `None`.
+fn get_mm_tag(rec: &Record) -> Option<Aux<'_>> {
     rec.aux(b"MM").or_else(|_| rec.aux(b"Mm")).ok()
 }
 
@@ -613,7 +717,7 @@ fn get_mm_tag(rec: &Record) -> Option<Aux> {
 /// * `rec` - A reference to the BAM record.
 ///
 /// # Returns
-/// Returns an `Option<Aux>` which is `Some` if the ML tag is present, otherwise `None`.
-fn get_ml_tag(rec: &Record) -> Option<Aux> {
+/// Returns an `Option<Aux<'_>>` which is `Some` if the ML tag is present, otherwise `None`.
+fn get_ml_tag(rec: &Record) -> Option<Aux<'_>> {
     rec.aux(b"ML").or_else(|_| rec.aux(b"Ml")).ok()
 }

@@ -1,3 +1,4 @@
+use crate::util::{invalid_data_error, DError};
 use log::trace;
 use std::cmp::Ordering;
 
@@ -559,13 +560,23 @@ impl Variant {
         })
     }
 
-    /// This will add a prefix to each allele, generally reference genome sequence that will allow for better matching.
+    /// This will add a prefix to each allele, generally reference genome
+    /// sequence that will allow for better matching.
     /// # Arguments
     /// * `prefix` - the sequence to pre-pend to each allele
-    pub fn add_reference_prefix(&mut self, prefix: &[u8]) {
+    /// # Errors
+    /// * if the requested prefix would extend the allele start coordinate below
+    ///   zero relative to the reference position tracked by this variant
+    pub fn add_reference_prefix(&mut self, prefix: &[u8]) -> Result<(), DError> {
         // make sure we don't set our reference start coordinate to less than 0
         let prefix_len: usize = prefix.len();
-        assert!(prefix_len <= self.position as usize - self.prefix_len);
+        let remaining_reference_prefix = (self.position as usize).saturating_sub(self.prefix_len);
+        if prefix_len > remaining_reference_prefix {
+            return Err(invalid_data_error(format!(
+                "Cannot add {prefix_len}bp of reference prefix to variant at position {} with existing prefix length {}",
+                self.position, self.prefix_len
+            )));
+        }
 
         // allele0, pre-pend is basically copy
         let mut new_allele0: Vec<u8> = Vec::with_capacity(self.allele0.len() + prefix_len);
@@ -581,6 +592,7 @@ impl Variant {
 
         // finally, adjust the start coordinates
         self.prefix_len += prefix_len;
+        Ok(())
     }
 
     /// This will add a postfix to each allele, generally reference genome sequence that will allow for better matching.
@@ -596,14 +608,23 @@ impl Variant {
     }
 
     /// This will trim the postfix down to a smaller size.
-    pub fn truncate_reference_postfix(&mut self, truncate_amount: usize) {
+    /// # Errors
+    /// * if `truncate_amount` exceeds the amount of reference postfix already
+    ///   attached to this variant
+    pub fn truncate_reference_postfix(&mut self, truncate_amount: usize) -> Result<(), DError> {
         // sanity check that we are only truncating the postfix
-        assert!(truncate_amount <= self.postfix_len);
+        if truncate_amount > self.postfix_len {
+            return Err(invalid_data_error(format!(
+                "Cannot truncate {truncate_amount}bp of reference postfix when only {}bp are available",
+                self.postfix_len
+            )));
+        }
 
         // truncate the alleles and shrink the postfix size
         self.allele0.truncate(self.allele0.len() - truncate_amount);
         self.allele1.truncate(self.allele1.len() - truncate_amount);
         self.postfix_len -= truncate_amount;
+        Ok(())
     }
 
     pub fn get_vcf_index(&self) -> usize {
@@ -678,7 +699,9 @@ impl Variant {
     /// Returns a tuple of the (allele chosen, min edit distance, other edit distance).
     /// # Arguments
     /// * `allele` - the allele sequence to compare to our internal alleles
-    pub fn closest_allele(&self, allele: &[u8]) -> (AlleleType, usize, usize) {
+    /// # Errors
+    /// * if clipping metadata on the variant is internally inconsistent
+    pub fn closest_allele(&self, allele: &[u8]) -> Result<(AlleleType, usize, usize), DError> {
         self.closest_allele_clip(allele, 0, 0)
     }
 
@@ -689,14 +712,27 @@ impl Variant {
     /// # Arguments
     /// * `allele` - the allele sequence to compare to our internal alleles
     /// * `offset` - will skip this many bases internally for calculating edit distance
+    /// # Errors
+    /// * if `head_clip` exceeds the tracked prefix length
+    /// * if `tail_clip` exceeds the tracked postfix length
     pub fn closest_allele_clip(
         &self,
         allele: &[u8],
         head_clip: usize,
         tail_clip: usize,
-    ) -> (AlleleType, usize, usize) {
-        assert!(head_clip <= self.prefix_len);
-        assert!(tail_clip <= self.postfix_len);
+    ) -> Result<(AlleleType, usize, usize), DError> {
+        if head_clip > self.prefix_len {
+            return Err(invalid_data_error(format!(
+                "Head clip length {head_clip} exceeds reference prefix length {}",
+                self.prefix_len
+            )));
+        }
+        if tail_clip > self.postfix_len {
+            return Err(invalid_data_error(format!(
+                "Tail clip length {tail_clip} exceeds reference postfix length {}",
+                self.postfix_len
+            )));
+        }
         let d0: usize = edit_distance(
             allele,
             &self.allele0[head_clip..(self.allele0.len() - tail_clip)],
@@ -719,30 +755,31 @@ impl Variant {
         );
         match d0.cmp(&d1) {
             // d0 is less, return that
-            Ordering::Less => (AlleleType::Reference, d0, d1),
+            Ordering::Less => Ok((AlleleType::Reference, d0, d1)),
             // d1 is less, return that
-            Ordering::Greater => (AlleleType::Alternate, d1, d0),
+            Ordering::Greater => Ok((AlleleType::Alternate, d1, d0)),
             // equidistant, so undetermined
-            Ordering::Equal => (AlleleType::Ambiguous, d0, d1),
+            Ordering::Equal => Ok((AlleleType::Ambiguous, d0, d1)),
         }
     }
 
     /// This will return the index allele for a given haplotype index.
     /// Input must always be 0 or 1, but it might get converted to something else at multi-allelic sites.
     /// # Arguments
-    /// * `index` - must be 0, 1, or 2 (unknown)
-    /// # Panics
-    /// * if anything other than 0, 1, or 2 is provided
+    /// * `index` - the allele classification to convert into a VCF allele index
+    ///
+    /// Ambiguous and no-overlap classifications are both encoded as `u8::MAX`
+    /// because they do not map to a concrete allele index.
     pub fn convert_index(&self, index: AlleleType) -> u8 {
         if index == AlleleType::Reference {
             self.index_allele0
         } else if index == AlleleType::Alternate {
             self.index_allele1
-        } else if index == AlleleType::Ambiguous {
-            // we just need some indicator that it's undetermined, this will work for now
+        } else if index == AlleleType::Ambiguous || index == AlleleType::NoOverlap {
+            // we just need some indicator that it's undetermined or absent.
             u8::MAX
         } else {
-            panic!("index must be 0, 1, or 2");
+            u8::MAX
         }
     }
 }
@@ -793,7 +830,7 @@ pub fn edit_distance(v1: &[u8], v2: &[u8]) -> usize {
             ]
             .into_iter()
             .min()
-            .unwrap();
+            .unwrap_or(usize::MAX);
         }
 
         // swap the rows at the end of each iteration
@@ -962,7 +999,7 @@ mod tests {
         assert_eq!(variant.get_postfix_len(), 0);
 
         let prefix: Vec<u8> = b"AC".to_vec();
-        variant.add_reference_prefix(&prefix);
+        variant.add_reference_prefix(&prefix).unwrap();
         let postfix: Vec<u8> = b"GGCC".to_vec();
         variant.add_reference_postfix(&postfix);
 
@@ -970,7 +1007,7 @@ mod tests {
         assert_eq!(variant.get_truncated_allele1(), b"AGT");
 
         // trims off the extra 'C' we added
-        variant.truncate_reference_postfix(1);
+        variant.truncate_reference_postfix(1).unwrap();
 
         // make sure nothing here changes
         assert_eq!(variant.get_type(), VariantType::Indel);
@@ -987,25 +1024,96 @@ mod tests {
         assert_eq!(variant.match_allele(b"AG"), 2);
 
         // inexact without the reference data will return weird results
-        assert_eq!(variant.closest_allele(b"A"), (AlleleType::Reference, 5, 7));
         assert_eq!(
-            variant.closest_allele(b"AGT"),
+            variant.closest_allele(b"A").unwrap(),
+            (AlleleType::Reference, 5, 7)
+        );
+        assert_eq!(
+            variant.closest_allele(b"AGT").unwrap(),
             (AlleleType::Reference, 4, 5)
         );
-        assert_eq!(variant.closest_allele(b"AG"), (AlleleType::Reference, 4, 6));
+        assert_eq!(
+            variant.closest_allele(b"AG").unwrap(),
+            (AlleleType::Reference, 4, 6)
+        );
 
         // now lets inexact with the extensions
         assert_eq!(
-            variant.closest_allele(b"ACAGGC"),
+            variant.closest_allele(b"ACAGGC").unwrap(),
             (AlleleType::Reference, 0, 2)
         );
         assert_eq!(
-            variant.closest_allele(b"ACAGTGGC"),
+            variant.closest_allele(b"ACAGTGGC").unwrap(),
             (AlleleType::Alternate, 0, 2)
         );
         assert_eq!(
-            variant.closest_allele(b"ACAGGGC"),
+            variant.closest_allele(b"ACAGGGC").unwrap(),
             (AlleleType::Ambiguous, 1, 1)
         );
+    }
+
+    #[test]
+    fn test_add_reference_prefix_errors_when_it_exceeds_available_reference() {
+        let mut variant =
+            Variant::new_indel(0, 1, 2, b"A".to_vec(), b"AGT".to_vec(), 1, 2).unwrap();
+
+        let error = variant
+            .add_reference_prefix(b"AC")
+            .expect_err("overlong reference prefixes should error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid data: Cannot add 2bp of reference prefix"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_truncate_reference_postfix_errors_when_it_exceeds_postfix() {
+        let mut variant =
+            Variant::new_indel(0, 20, 2, b"A".to_vec(), b"AGT".to_vec(), 1, 2).unwrap();
+
+        let error = variant
+            .truncate_reference_postfix(1)
+            .expect_err("truncating more postfix than available should error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid data: Cannot truncate 1bp of reference postfix"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_closest_allele_clip_errors_on_invalid_clip_lengths() {
+        let variant = Variant::new_indel(0, 20, 2, b"A".to_vec(), b"AGT".to_vec(), 1, 2).unwrap();
+
+        let head_error = variant
+            .closest_allele_clip(b"A", 1, 0)
+            .expect_err("head clips beyond the prefix should error");
+        assert!(
+            head_error
+                .to_string()
+                .contains("invalid data: Head clip length 1 exceeds reference prefix length 0"),
+            "unexpected error: {head_error}"
+        );
+
+        let tail_error = variant
+            .closest_allele_clip(b"A", 0, 1)
+            .expect_err("tail clips beyond the postfix should error");
+        assert!(
+            tail_error
+                .to_string()
+                .contains("invalid data: Tail clip length 1 exceeds reference postfix length 0"),
+            "unexpected error: {tail_error}"
+        );
+    }
+
+    #[test]
+    fn test_convert_index_returns_unknown_for_no_overlap() {
+        let variant = Variant::new_snv(0, 1, b"A".to_vec(), b"C".to_vec(), 0, 1).unwrap();
+        assert_eq!(variant.convert_index(AlleleType::NoOverlap), u8::MAX);
     }
 }

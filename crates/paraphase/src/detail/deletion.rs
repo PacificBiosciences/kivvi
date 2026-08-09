@@ -67,10 +67,14 @@ impl Datum {
     }
 
     #[must_use]
-    pub fn name(&self) -> String { format!("{}_del_{}", self.raw.start + 1, self.raw.len()) }
+    pub fn name(&self) -> String {
+        format!("{}_del_{}", self.raw.start + 1, self.raw.len())
+    }
 
     #[must_use]
-    pub fn size(&self) -> i64 { self.raw.len() as i64 }
+    pub fn size(&self) -> i64 {
+        self.raw.len() as i64
+    }
 
     #[must_use]
     pub fn fivep(&self) -> range::I64 {
@@ -85,5 +89,7 @@ impl Datum {
     }
 
     #[must_use]
-    pub fn range(&self) -> range::I64 { self.raw.clone() }
+    pub fn range(&self) -> range::I64 {
+        self.raw.clone()
+    }
 }

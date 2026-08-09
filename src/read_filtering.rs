@@ -1,10 +1,13 @@
 use crate::bam_operation::start_pos_on_read;
-use crate::util::DError;
+use crate::util::{missing_data_error, DError};
 use log::{debug, trace};
 use rust_htslib::bam::{self, ext::BamRecordExtensions, record::Cigar, Writer};
 use rust_htslib::faidx;
 use std::collections::HashSet;
 use std::path::PathBuf;
+
+// deletion start position, position padding, deletion length, length padding
+type DeletionFilter = (i64, i64, i64, i64);
 
 /// Filter alignments for KIV2
 /// # Arguments
@@ -67,14 +70,7 @@ pub fn filter_realignments_hrnr(
         let reference_start_pos = realn_record.pos();
         let reference_end_pos = realn_record.reference_end();
         let alignment_len = reference_end_pos - reference_start_pos;
-        let qname = std::str::from_utf8(realn_record.qname())?.to_string();
-        let nm = realn_record.aux(b"NM");
-        if let Err(_e) = nm {
-            debug!("missing NM tag for read {qname}");
-        } else {
-            let nm = nm.expect("expect NM tag");
-            let mut nm = i32::try_from(extract_int_tag(&nm).expect("Tag was not integral."))
-                .expect("Could not store nm in i32");
+        if let Some(mut nm) = read_nm_tag(realn_record)? {
             let (longest_insertion_length, longest_deletion_length) =
                 get_longest_insertion_deletion(realn_record)?;
             if longest_insertion_length > 20 && nm > longest_insertion_length as i32 {
@@ -122,14 +118,7 @@ pub fn filter_realignments_nbpf(
         let reference_start_pos = realn_record.pos();
         let reference_end_pos = realn_record.reference_end();
         let alignment_len = reference_end_pos - reference_start_pos;
-        let qname = std::str::from_utf8(realn_record.qname())?.to_string();
-        let nm = realn_record.aux(b"NM");
-        if let Err(_e) = nm {
-            debug!("missing NM tag for read {qname}");
-        } else {
-            let nm = nm.expect("expect NM tag");
-            let mut nm = i32::try_from(extract_int_tag(&nm).expect("Tag was not integral."))
-                .expect("Could not store nm in i32");
+        if let Some(mut nm) = read_nm_tag(realn_record)? {
             let (longest_insertion_length, longest_deletion_length) =
                 get_longest_insertion_deletion(realn_record)?;
             if longest_insertion_length > 120 && nm > longest_insertion_length as i32 {
@@ -169,8 +158,13 @@ pub fn filter_realignments_d4z4(
     mut writer: Writer,
     _reference: &PathBuf,
     realigned_bam: PathBuf,
-) -> Result<(Vec<bam::Record>, Vec<String>), DError> {
+) -> Result<(Vec<bam::Record>, Vec<String>, Vec<String>), DError> {
+    // repeat units with big insertions may sometimes be aligned as extra segment with deletions
+    // we don't want these segments to become a different fingerprint
+    const D4Z4_BLACKLIST_DELETIONS: [DeletionFilter; 2] = [(1574, 5, 1685, 20), (2822, 5, 324, 10)];
+
     let mut white_list_read_segments = Vec::new();
+    let mut blacklist_segments = Vec::new();
     let mut records_to_keep = HashSet::new();
     let mut repeat_records = Vec::<bam::Record>::new();
     for realn_record in &realn_records {
@@ -179,13 +173,7 @@ pub fn filter_realignments_d4z4(
         let alignment_len = reference_end_pos - reference_start_pos;
         let read_start_pos = start_pos_on_read(realn_record);
         let qname = std::str::from_utf8(realn_record.qname())?.to_string();
-        let nm = realn_record.aux(b"NM");
-        if let Err(_e) = nm {
-            debug!("missing NM tag for read {qname}");
-        } else {
-            let nm = nm.expect("expect NM tag");
-            let mut nm = i32::try_from(extract_int_tag(&nm).expect("Tag was not integral."))
-                .expect("Could not store nm in i32");
+        if let Some(mut nm) = read_nm_tag(realn_record)? {
             let (longest_insertion_length, longest_deletion_length) =
                 get_longest_insertion_deletion(realn_record)?;
             if longest_insertion_length > 150 && nm > longest_insertion_length as i32 {
@@ -209,6 +197,15 @@ pub fn filter_realignments_d4z4(
                     keep_record = true;
                 }
             }
+            if keep_record
+                && has_deletion_near_any_position(realn_record, &D4Z4_BLACKLIST_DELETIONS)
+            {
+                let cigar_string = realn_record.cigar().to_string();
+                debug!(
+                    "Found read segment with blacklist deletion: {segment_name} cigar {cigar_string}"
+                );
+                blacklist_segments.push(segment_name.clone());
+            }
             if keep_record {
                 //writer.write(realn_record)?;
                 //repeat_records.push(realn_record.clone());
@@ -229,7 +226,47 @@ pub fn filter_realignments_d4z4(
     }
     drop(writer);
     bam::index::build(&realigned_bam, None, bam::index::Type::Bai, 1)?;
-    Ok((repeat_records, white_list_read_segments))
+    Ok((repeat_records, white_list_read_segments, blacklist_segments))
+}
+
+fn has_deletion_near_any_position(
+    record: &bam::Record,
+    deletion_filters: &[DeletionFilter],
+) -> bool {
+    deletion_filters
+        .iter()
+        .any(|&(target_pos, pos_padding, target_len, len_padding)| {
+            has_deletion_near_position(record, target_pos, pos_padding, target_len, len_padding)
+        })
+}
+
+fn has_deletion_near_position(
+    record: &bam::Record,
+    target_pos: i64,
+    pos_padding: i64,
+    target_len: i64,
+    len_padding: i64,
+) -> bool {
+    let mut ref_pos = record.pos();
+    for cigar in &record.cigar() {
+        match cigar {
+            Cigar::Del(len) => {
+                let deletion_start = ref_pos + 1;
+                let deletion_len = i64::from(*len);
+                if (deletion_start - target_pos).abs() <= pos_padding
+                    && (deletion_len - target_len).abs() <= len_padding
+                {
+                    return true;
+                }
+                ref_pos += deletion_len;
+            }
+            Cigar::Match(len) | Cigar::Equal(len) | Cigar::Diff(len) | Cigar::RefSkip(len) => {
+                ref_pos += i64::from(*len);
+            }
+            Cigar::Ins(_) | Cigar::SoftClip(_) | Cigar::HardClip(_) | Cigar::Pad(_) => {}
+        }
+    }
+    false
 }
 
 /// Filter alignments based on a more detailed mismatch calculation, used for hrnr and nbpf
@@ -247,7 +284,7 @@ fn interval_mismatch_p5_and_p3(
     p5_end: i64,
     p3_start: i64,
 ) -> Result<bool, DError> {
-    //let qname = std::str::from_utf8(record.qname())?;
+    let qname = std::str::from_utf8(record.qname())?;
     let mut region_match_3p = 0;
     let mut new_nm_3p = 0;
     let mut region_match_5p = 0;
@@ -262,8 +299,14 @@ fn interval_mismatch_p5_and_p3(
             let ref_pos = ref_pos as usize;
             if let Some(read_base) = seq.get(read_pos) {
                 let ref_base = ref_reader.fetch_seq(&ref_name, ref_pos, ref_pos)?;
+                let ref_base = ref_base.first().ok_or_else(|| {
+                    format!(
+                        "Reference base lookup returned empty sequence for read '{qname}' at {ref_name}:{}",
+                        ref_pos + 1
+                    )
+                })?;
                 region_match_5p += 1;
-                if read_base != ref_base.first().unwrap() {
+                if read_base != ref_base {
                     new_nm_5p += 1;
                 }
             }
@@ -273,8 +316,14 @@ fn interval_mismatch_p5_and_p3(
             let ref_pos = ref_pos as usize;
             if let Some(read_base) = seq.get(read_pos) {
                 let ref_base = ref_reader.fetch_seq(&ref_name, ref_pos, ref_pos)?;
+                let ref_base = ref_base.first().ok_or_else(|| {
+                    format!(
+                        "Reference base lookup returned empty sequence for read '{qname}' at {ref_name}:{}",
+                        ref_pos + 1
+                    )
+                })?;
                 region_match_3p += 1;
-                if read_base != ref_base.first().unwrap() {
+                if read_base != ref_base {
                     new_nm_3p += 1;
                 }
             }
@@ -313,10 +362,16 @@ fn interval_mismatch_kiv2(
             let ref_pos = ref_pos as usize;
             if let Some(read_base) = seq.get(read_pos) {
                 let ref_base = ref_reader.fetch_seq(&ref_name, ref_pos, ref_pos)?;
+                let ref_base = ref_base.first().ok_or_else(|| {
+                    format!(
+                        "Reference base lookup returned empty sequence for read '{qname}' at {ref_name}:{}",
+                        ref_pos + 1
+                    )
+                })?;
                 //debug!("read_pos {read_pos:?} ref_pos {ref_pos:?} read_base {read_base:?} ref_base {ref_base:?}");
                 region_match += 1;
                 region_match_5p += 1;
-                if read_base != ref_base.first().unwrap() {
+                if read_base != ref_base {
                     new_nm += 1;
                     if ref_pos + 1 < 3560 {
                         new_nm_5p += 1;
@@ -355,18 +410,16 @@ pub fn get_longest_insertion_deletion(record: &bam::Record) -> Result<(i64, i64)
     let ins_length = if insertion_lengths.is_empty() {
         0
     } else {
-        *insertion_lengths
-            .iter()
-            .max()
-            .ok_or("max not found in insertion_lengths")?
+        *insertion_lengths.iter().max().ok_or_else(|| {
+            missing_data_error("maximum insertion length", "non-empty insertion_lengths")
+        })?
     };
     let del_length = if deletion_lengths.is_empty() {
         0
     } else {
-        *deletion_lengths
-            .iter()
-            .max()
-            .ok_or("max not found in deletion_lengths")?
+        *deletion_lengths.iter().max().ok_or_else(|| {
+            missing_data_error("maximum deletion length", "non-empty deletion_lengths")
+        })?
     };
     Ok((ins_length, del_length))
 }
@@ -387,4 +440,28 @@ fn extract_int_tag(tag: &bam::record::Aux) -> Option<i64> {
         rust_htslib::bam::record::Aux::U32(tag) => Some(i64::from(*tag)),
         _ => None,
     }
+}
+
+/// Read the `NM` edit-distance tag from a BAM record.
+/// Missing `NM` tags are treated as non-fatal and return `Ok(None)` so callers
+/// can preserve the existing "skip this record" behavior. Malformed integer
+/// values return an error annotated with the read name.
+/// # Arguments
+/// * `record` - BAM record whose `NM` tag should be inspected
+/// # Returns
+/// * `Option<i32>` - parsed `NM` value when present
+fn read_nm_tag(record: &bam::Record) -> Result<Option<i32>, DError> {
+    let qname = std::str::from_utf8(record.qname())?.to_string();
+    let nm = match record.aux(b"NM") {
+        Ok(nm) => nm,
+        Err(_e) => {
+            debug!("missing NM tag for read {qname}");
+            return Ok(None);
+        }
+    };
+    let nm =
+        extract_int_tag(&nm).ok_or_else(|| format!("Read '{qname}' has a non-integer NM tag"))?;
+    let nm = i32::try_from(nm)
+        .map_err(|_| format!("Read '{qname}' has an NM tag outside the i32 range: {nm}"))?;
+    Ok(Some(nm))
 }

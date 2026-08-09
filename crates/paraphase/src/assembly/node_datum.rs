@@ -33,7 +33,9 @@ pub enum NodeFlagShift {
 
 impl std::ops::Deref for NodeDatum {
     type Target = VString;
-    fn deref(&self) -> &Self::Target { &self.hap }
+    fn deref(&self) -> &Self::Target {
+        &self.hap
+    }
 }
 
 impl NodeDatum {
@@ -44,9 +46,13 @@ impl NodeDatum {
     }
     /// True if the datum has been deleted from the graph.
     #[must_use]
-    pub fn is_del(&self) -> bool { (self.flag & (NodeFlag::IsDel as u32)) != 0 }
+    pub fn is_del(&self) -> bool {
+        (self.flag & (NodeFlag::IsDel as u32)) != 0
+    }
     /// Marks node as deleted.
-    pub fn set_is_del(&mut self) { self.flag |= NodeFlag::IsDel as u32; }
+    pub fn set_is_del(&mut self) {
+        self.flag |= NodeFlag::IsDel as u32;
+    }
 }
 
 static_assertions::const_assert_eq!(std::mem::size_of::<NodeDatum>(), 32);

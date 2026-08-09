@@ -1,12 +1,12 @@
-use vstr::VStr;
+use vstr::VString;
 
 use itertools::{intersperse, Itertools};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Default, PartialEq)]
 pub struct LowConfidenceSites {
-    pub data: BTreeMap<i64, linear_map::set::LinearSet<u8>>,
+    pub data: BTreeMap<i64, BTreeSet<u8>>,
 }
 
 mod defaults {
@@ -14,7 +14,7 @@ mod defaults {
 }
 
 impl std::ops::Deref for LowConfidenceSites {
-    type Target = BTreeMap<i64, linear_map::set::LinearSet<u8>>;
+    type Target = BTreeMap<i64, BTreeSet<u8>>;
     fn deref(&self) -> &Self::Target {
         &self.data
     }
@@ -22,7 +22,7 @@ impl std::ops::Deref for LowConfidenceSites {
 
 impl std::fmt::Debug for LowConfidenceSites {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let format_lset = |x: &linear_map::set::LinearSet<u8>| -> String {
+        let format_lset = |x: &BTreeSet<u8>| -> String {
             intersperse(x.iter().map(|x| *x as char).sorted(), ',').collect::<_>()
         };
         write!(
@@ -1818,10 +1818,10 @@ impl LowConfidenceSites {
     /// Build a `LowConfidenceSites` from a sequence, which marks which bases are trusted at given positions in the reference.a
     /// This is the version from paraphase v2.3.
     ///```
-    /// use paraphase::detail::low_complexity::LowConfidenceSites;
+    /// use paraphase::toolkit::low_complexity::LowConfidenceSites;
     /// use std::collections::BTreeMap;
     /// #[cfg(debug_assertions)]
-    /// paraphase::detail::util::init_log(log::LevelFilter::Debug);
+    /// paraphase::toolkit::util::init_log(log::LevelFilter::Debug);
     /// let seq = b"ACGGATATATTTTTTTTTTTTATAGTTTT";
     /// let hpol = LowConfidenceSites::new(&seq[..], 0, None);
     /// let data = hpol.into_inner();
@@ -1847,7 +1847,7 @@ impl LowConfidenceSites {
     ///         k,
     ///         v.split_terminator(",")
     ///             .map(|x| x.chars().next().unwrap() as u8)
-    ///             .collect::<linear_map::set::LinearSet<u8>>(),
+    ///             .collect::<std::collections::BTreeSet<u8>>(),
     ///     )
     /// })
     /// .collect::<BTreeMap<_, _>>();
@@ -1877,13 +1877,12 @@ impl LowConfidenceSites {
     ///         k,
     ///         v.split_terminator(",")
     ///             .map(|x| x.chars().next().unwrap() as u8)
-    ///             .collect::<linear_map::set::LinearSet<u8>>(),
+    ///             .collect::<std::collections::BTreeSet<u8>>(),
     ///     )
     /// })
     /// .collect::<BTreeMap<_, _>>();
     /// assert_eq!(data, expected);
     /// ```
-    #[cfg(not(feature = "paraphase_2_2"))]
     #[must_use]
     pub fn new(seq: &[u8], offset: i64, window_size: Option<usize>) -> Self {
         use std::collections::btree_map::Entry;
@@ -1892,23 +1891,25 @@ impl LowConfidenceSites {
         const DINUC_LENGTH_THRESHOLD: usize = 8;
         const HALF_DINUC_LENGTH_THRESHOLD: usize = DINUC_LENGTH_THRESHOLD / 2;
 
-        log::debug!("Offset: {offset}");
+        log::debug!("Initializing low-complexity site detection with coordinate offset {offset}");
         if seq.iter().any(u8::is_ascii_lowercase) {
             let seq = seq.to_ascii_uppercase();
             return Self::new(&seq[..], offset, window_size);
         }
         let window_size = window_size.unwrap_or(defaults::HOMOPOLYMER_WINDOW_SIZE);
-        let mut exclude: BTreeMap<i64, linear_map::set::LinearSet<u8>> = BTreeMap::new();
+        let mut exclude: BTreeMap<i64, BTreeSet<u8>> = BTreeMap::new();
         let mut drepeat = DType::new();
         // We  are using the last base, unlike paraphase which skips it.
         // This may be in error.
         for (window_idx, window) in seq.windows(window_size).enumerate() {
-            let counts = window
-                .iter()
-                .copied()
-                .collect::<linear_map::set::LinearSet<u8>>();
-            if counts.len() == 1 && matches!(counts.as_slice()[0].0, b'A' | b'G' | b'C' | b'T') {
-                let nu = counts.as_slice()[0].0;
+            let counts = window.iter().copied().collect::<BTreeSet<u8>>();
+            if counts.len() == 1
+                && matches!(
+                    counts.iter().next().copied(),
+                    Some(b'A' | b'G' | b'C' | b'T')
+                )
+            {
+                let nu = counts.iter().next().copied().unwrap_or_default();
                 for idx in window_idx..(window_idx + window_size) {
                     //log::trace!(
                     //    "Inserting {nu}/{} at {idx} with initial hp extension",
@@ -1923,14 +1924,15 @@ impl LowConfidenceSites {
         loop {
             let mut extend = false;
             for (window_idx, window) in seq.windows(sub_window_size).enumerate() {
-                let counts = window
-                    .iter()
-                    .copied()
-                    .collect::<linear_map::set::LinearSet<u8>>();
+                let counts = window.iter().copied().collect::<BTreeSet<u8>>();
                 //log::trace!("With sub window size = {sub_window_size}, counts are {counts:?}");
-                if counts.len() == 1 && matches!(counts.as_slice()[0].0, b'A' | b'G' | b'C' | b'T')
+                if counts.len() == 1
+                    && matches!(
+                        counts.iter().next().copied(),
+                        Some(b'A' | b'G' | b'C' | b'T')
+                    )
                 {
-                    let nu = counts.as_slice()[0].0;
+                    let nu = counts.iter().next().copied().unwrap_or_default();
                     debug_assert!(window.iter().all(|item| *item == nu));
                     /*
                     log::trace!(
@@ -1980,7 +1982,7 @@ impl LowConfidenceSites {
             }
         }
 
-        log::trace!("drepeat after initial filling: {drepeat:?}");
+        log::trace!("Homopolymer repeat map after initial pass: {drepeat:?}");
 
         let drepeat_keys = drepeat.keys().copied().collect::<Vec<_>>();
         assert!(
@@ -1992,27 +1994,25 @@ impl LowConfidenceSites {
             //log::trace!("Handling idx = {idx} and pos = {pos} with keys = {drepeat_keys:?}");
             let base = *base;
             let adj_pos = pos + 1 + offset;
-            log::trace!(
-                "pos: {pos}. Adj pos {adj_pos}. base: {base}/{}. Next drepeat: {:?}",
-                base as char,
-                drepeat_keys.get(idx + 1)
-            );
+            //log::trace!(
+            //    "pos: {pos}. Adj pos {adj_pos}. base: {base}/{}. Next drepeat: {:?}",
+            //    base as char,
+            //    drepeat_keys.get(idx + 1)
+            //);
             //if !matches!(drepeat_keys.get(idx + 1).copied(), Some(e) if e != pos + 1) {
             if idx + 1 == drepeat.len() || drepeat_keys[idx + 1] != pos + 1 {
-                log::trace!(
-                    "For idx = {idx}, inserting base {base} and '1' at {} because next key is {:?}",
-                    pos + offset + 1 + 1,
-                    drepeat_keys.get(idx + 1).copied()
-                );
+                //log::trace!(
+                //    "Index {idx}: inserting edge markers for base {base} at current/next positions because next key is {:?}",
+                //    drepeat_keys.get(idx + 1).copied()
+                //);
                 exclude.entry(adj_pos).or_default().insert(base);
                 let next = exclude.entry(pos + offset + 1 + 1).or_default();
                 next.insert(base);
                 next.insert(b'1');
             } else if idx == 0 || drepeat_keys[idx - 1] != pos - 1 {
-                log::trace!(
-                    "For idx = {idx}, inserting base {base} at {} and ACGT at {adj_pos}",
-                    pos + offset - 1 + 1
-                );
+                //log::trace!(
+                //    "Index {idx}: inserting left-edge base {base} and full A/C/G/T mask at adjusted position {adj_pos}"
+                //);
                 exclude
                     .entry(pos + offset - 1 + 1)
                     .or_default()
@@ -2022,17 +2022,17 @@ impl LowConfidenceSites {
                     next.insert(*base);
                 }
             } else {
-                log::trace!(
-                    "For idx = {idx}, inserting base {base} at {adj_pos} because not edge case",
-                );
+                //log::trace!(
+                //    "Index {idx}: inserting interior base {base} at adjusted position {adj_pos}"
+                //);
                 exclude.entry(adj_pos).or_default().insert(base);
             }
         }
 
         let exclude = LowConfidenceSites { data: exclude };
-        log::trace!("Exclusion after hp only: {exclude:?}");
+        log::trace!("Exclusion map after homopolymer-only pass: {exclude:?}");
         let mut exclude = exclude.into_inner();
-        let mut drepeat = BTreeMap::<i64, linear_map::set::LinearSet<[u8; 2]>>::new();
+        let mut drepeat = BTreeMap::<i64, BTreeSet<[u8; 2]>>::new();
         for (window_idx, window) in seq.windows(DINUC_LENGTH_THRESHOLD).enumerate() {
             let chunks = window
                 .chunks(2)
@@ -2047,7 +2047,10 @@ impl LowConfidenceSites {
             if chunk[0] == chunk[1] {
                 continue;
             }
-            let dimer: [u8; 2] = chunk.try_into().expect("Wrong slice length");
+            let Ok(dimer): Result<[u8; 2], _> = chunk.try_into() else {
+                log::warn!("Skipping unexpected chunk length in dinucleotide detection: {chunk:?}");
+                continue;
+            };
             for pos in window_idx as i64..((window_idx + DINUC_LENGTH_THRESHOLD) as i64) {
                 drepeat.entry(pos).or_default().insert(dimer);
             }
@@ -2067,7 +2070,13 @@ impl LowConfidenceSites {
                 if chunks.len() != 1 {
                     continue;
                 }
-                let dimer: [u8; 2] = chunks[0].0.try_into().unwrap();
+                let Ok(dimer): Result<[u8; 2], _> = chunks[0].0.try_into() else {
+                    log::warn!(
+                        "Skipping unexpected chunk length while extending dinucleotide repeats: {:?}",
+                        chunks[0].0
+                    );
+                    continue;
+                };
                 let dimer_rev: [u8; 2] = [dimer[1], dimer[0]];
                 if dimer[0] == dimer[1] {
                     continue;
@@ -2082,17 +2091,17 @@ impl LowConfidenceSites {
                         } else {
                             let mid =
                                 &seq[window_idx + HALF_DINUC_LENGTH_THRESHOLD..to_check as usize];
-                            let reduced = mid
-                                .iter()
-                                .copied()
-                                .collect::<linear_map::set::LinearSet<u8>>();
+                            let reduced = mid.iter().copied().collect::<BTreeSet<u8>>();
                             if reduced.len() == 2 {
-                                let (base1, base2) = reduced.into_iter().next_tuple().unwrap();
-                                dimer == [base1, base2]
-                                    || dimer == [base2, base1]
-                                    || !mid.windows(2).any(|window| {
-                                        window == [base1, base1] || window == [base2, base2]
-                                    })
+                                if let Some((base1, base2)) = reduced.into_iter().next_tuple() {
+                                    dimer == [base1, base2]
+                                        || dimer == [base2, base1]
+                                        || !mid.windows(2).any(|window| {
+                                            window == [base1, base1] || window == [base2, base2]
+                                        })
+                                } else {
+                                    false
+                                }
                             } else {
                                 false
                             }
@@ -2114,17 +2123,17 @@ impl LowConfidenceSites {
                             true
                         } else {
                             let mid = &seq[window_idx - j..window_idx];
-                            let reduced = mid
-                                .iter()
-                                .copied()
-                                .collect::<linear_map::set::LinearSet<u8>>();
+                            let reduced = mid.iter().copied().collect::<BTreeSet<u8>>();
                             if reduced.len() == 2 {
-                                let (base1, base2) = reduced.into_iter().next_tuple().unwrap();
-                                dimer == [base1, base2]
-                                    || dimer == [base2, base1]
-                                    || !mid.windows(2).any(|window| {
-                                        window == [base1, base1] || window == [base2, base2]
-                                    })
+                                if let Some((base1, base2)) = reduced.into_iter().next_tuple() {
+                                    dimer == [base1, base2]
+                                        || dimer == [base2, base1]
+                                        || !mid.windows(2).any(|window| {
+                                            window == [base1, base1] || window == [base2, base2]
+                                        })
+                                } else {
+                                    false
+                                }
                             } else {
                                 false
                             }
@@ -2152,34 +2161,34 @@ impl LowConfidenceSites {
                     .flat_map(|dimer| dimer.iter().copied())
                     .sorted()
                     .dedup()
-                    .collect::<linear_map::set::LinearSet<_>>()
+                    .collect::<BTreeSet<_>>()
                 // Consider adding '1' back in.
             });
         }
         let exclude = LowConfidenceSites { data: exclude };
-        log::trace!("Exclusion after dnp : {exclude:?}");
+        log::trace!("Exclusion map after dinucleotide-repeat pass: {exclude:?}");
         let data = exclude.into_inner();
         Self { data }
     }
 
     /// Extract the internal `BTreeMap`.
     #[must_use]
-    pub fn into_inner(self) -> BTreeMap<i64, linear_map::set::LinearSet<u8>> {
+    pub fn into_inner(self) -> BTreeMap<i64, BTreeSet<u8>> {
         self.data
     }
 
     /// Build from `BTreeMap` directly.
     #[must_use]
-    pub fn from_map(src: BTreeMap<i64, linear_map::set::LinearSet<u8>>) -> Self {
+    pub fn from_map(src: BTreeMap<i64, BTreeSet<u8>>) -> Self {
         let data = src;
         Self { data }
     }
 
     #[must_use]
-    pub fn get_0based(&self, idx: i64) -> Option<VStr<'_>> {
+    pub fn get_0based(&self, idx: i64) -> Option<VString> {
         self.data
             .get(&(idx + 1))
-            .map(|x| VStr::from(x.as_slice_unsafe()))
+            .map(|x| VString::from_iter(x.iter().copied()))
     }
 }
 
@@ -2188,13 +2197,84 @@ pub type Sites = LowConfidenceSites;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detail::util;
+    use crate::toolkit::util;
+    use itertools::Itertools;
     use std::collections::BTreeMap;
+
+    fn low_complexity_test(expected: &str, seq: &str) {
+        use crate::toolkit::util::parse_homopolymers;
+        let path = util::test_file(expected);
+        let expected = parse_homopolymers(&path);
+        let seq = util::seq_name_pairs(&util::test_file(seq), true)
+            .expect("failed to read fasta test sequence")
+            .swap_remove(0);
+        let seq = seq.1;
+        let offset = 47_501_354 - 1;
+        assert_eq!(offset, 47_501_353);
+        let found = LowConfidenceSites::new(&seq, offset, None);
+        for k in expected.keys() {
+            if !found.contains_key(k) {
+                log::trace!("Missing key in found {k}");
+            } else if expected.get(k) == found.get(k) {
+                log::trace!(
+                    "Matching value at key {k} in found: {:?}/{:?}",
+                    expected.get(k),
+                    found.get(k)
+                );
+            } else {
+                log::trace!(
+                    "Mismatching value at key {k} in found: {:?}/{:?}",
+                    expected.get(k),
+                    found.get(k)
+                );
+            }
+        }
+        let found_keys = found.keys().copied().sorted().collect::<Vec<_>>();
+        let expected_keys = expected.keys().copied().sorted().collect::<Vec<_>>();
+        let mut fail = false;
+        if found_keys == expected_keys {
+            log::trace!("Key match: found keys {found_keys:?}. Expected {expected_keys:?}");
+        } else {
+            fail = true;
+            log::trace!("Key mismatch: found keys {found_keys:?}. Expected {expected_keys:?}");
+        }
+        let found = found
+            .into_inner()
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    v.into_iter()
+                        .map(|x| x as char)
+                        .sorted()
+                        .collect::<String>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let expected = expected
+            .into_inner()
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    v.into_iter()
+                        .map(|x| x as char)
+                        .sorted()
+                        .collect::<String>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(expected, found, "Expected: {expected:?}. Found: {found:?}");
+        assert!(!fail, "There was a failure");
+    }
+
     #[test]
     fn agap9_complexity_ok() {
-        let seqs =
-            util::seq_name_pairs(&util::test_file("AGAP9_ref.fa"), /* uppercase= */ true)
-                .expect("Failed to get seq names and seqs");
+        let seqs = util::seq_name_pairs(
+            &util::test_file("ref/AGAP9_ref.fa"),
+            /* uppercase= */ true,
+        )
+        .expect("Failed to get seq names and seqs");
         assert_eq!(
             vstr::VString::from(&seqs[0].0).to_string(),
             "chr10_47501354_47524138"
@@ -2209,7 +2289,7 @@ mod tests {
                     *k,
                     v.split_terminator(',')
                         .map(|x| x.chars().next().unwrap() as u8)
-                        .collect::<linear_map::set::LinearSet<u8>>(),
+                        .collect::<std::collections::BTreeSet<u8>>(),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -2221,9 +2301,22 @@ mod tests {
             .keys()
             .filter(|x| !data.contains_key(x))
             .collect::<Vec<_>>();
-        log::debug!("Extras: {extra_in_rust:?}, {extra_in_py:?}");
+        log::debug!(
+            "Set difference summary: extra_in_rust={extra_in_rust:?}, extra_in_py={extra_in_py:?}"
+        );
         assert_eq!(data, expected);
         assert!(extra_in_rust.is_empty());
         assert!(extra_in_py.is_empty());
+    }
+
+    #[test]
+    fn low_complexity_ok() {
+        for pair in [
+            ("agap9-teeny-hpol-expected.txt", "ref/AGAP9_teeny.fa"),
+            ("agap9-tiny-hpol-expected.txt", "ref/AGAP9_tiny.fa"),
+            ("agap9-hpol-expected.txt", "ref/AGAP9_ref.fa"),
+        ] {
+            low_complexity_test(pair.0, pair.1);
+        }
     }
 }

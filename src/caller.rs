@@ -1,31 +1,39 @@
-use crate::assembly::assembler::{build_graph, GraphParameters};
+use crate::assembly::assembler::{build_graph, AssemblyResult, FpGraph, GraphParameters};
 use crate::bam_operation::{
     get_start_end_d4z4, get_start_end_from_genome, realign, tag_reads, ClippedReads,
 };
 use crate::cli::Settings;
+use crate::d4z4::cis_dup::{find_cis_dup, process_alleles};
 use crate::d4z4::d4z4_phasing::{
-    find_cis_dup, get_background_for_allele_ends, get_background_for_allele_starts,
-    haplotype_background, phase_flanking,
+    get_background_for_allele_ends, get_background_for_allele_starts, haplotype_background,
+    merge_phasing_bams, phase_flanking_gene, remove_phasing_bam,
 };
 use crate::d4z4::join_partial_alleles::{join_partial_alleles, AlleleSummary};
 use crate::depth::median;
 use crate::depth::{depth_based_cn, DepthSummary};
-use crate::methylation::{get_methyl_info, methyl_prob_by_position, MethOutput};
+use crate::methylation::{get_methyl_info, methyl_prob_by_position, MethOutput, MethSummary};
 use crate::plot::plot_alleles::plot_alleles_and_reads;
 use crate::read_filtering::{filter_realignments_d4z4, filter_realignments_kiv2};
-use crate::repeat_unit::fingerprint::{get_fingerprint, ReadParameters};
-use crate::repeat_unit::fingerprint_utils::rm_redundant_finger_prints;
-use crate::util::{d4z4_coordinates, kiv2_coordinates, DError, DResult};
+use crate::repeat_unit::fingerprint::{get_fingerprint, FingerprintInfo, ReadParameters};
+use crate::repeat_unit::fingerprint_utils::{
+    handle_deletion_units, handle_last_d4z4_long_insertion, handle_qal_units,
+    rm_redundant_finger_prints,
+};
+use crate::util::{create_kivvi_temp_dir, d4z4_coordinates, kiv2_coordinates, DError, DResult};
 use crate::variant::report_variants;
-use crate::vcf::write_vcf;
+use crate::vcf::{write_empty_vcf, write_vcf};
 use log::{debug, info};
+use paraphase::detail::phaser_util::build_faidx;
 use paraphase::io::json::GeneCall;
+use rust_htslib::bam;
+use rust_htslib::bam::Read;
 //use std::cmp;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str;
+use std::thread;
 
 /// Sample call report
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -48,6 +56,8 @@ pub struct SampleCall {
     pub other_unit_variants: Vec<String>,
     /// summary of methylation information, including complete alleles and all allele ends
     pub methylation: BTreeMap<String, Option<MethOutput>>,
+    /// read name -> edge path string
+    pub read_info: BTreeMap<String, String>,
     /// additional key-value metadata
     pub additional: BTreeMap<String, serde_json::Value>,
 }
@@ -74,28 +84,50 @@ pub struct D4Z4QCMetrics {
     pub per_allele_depth: f32,
 }
 
+struct D4z4PreparedAnalysis {
+    depth_summary: DepthSummary,
+    methyl_probs: BTreeMap<String, Vec<u8>>,
+    cpg_sites_per_read: BTreeMap<String, BTreeMap<usize, usize>>,
+    bases_at_pivot_site: BTreeMap<String, String>,
+    fp_info: FingerprintInfo,
+    qal_units: Vec<i32>,
+    median_read_length: f32,
+    haploid_depth: f32,
+    read_info: BTreeMap<String, BTreeMap<(i32, i64), Vec<u8>>>,
+    fp_graph: FpGraph,
+    assembly_result: AssemblyResult,
+    meth_summary: MethSummary,
+    segment_methyl_prob: BTreeMap<usize, BTreeMap<String, u8>>,
+    kept_starting_haps: Vec<Vec<i32>>,
+    kept_ending_haps: Vec<Vec<i32>>,
+    kept_complete: Vec<Vec<i32>>,
+}
+
 /// Convert alleles from vectors to strings
 /// # Arguments
 /// * `haps` - alleles represented as vectors of fingerprints
 /// * `separater` - symbol to join fingerprints
 /// # Returns
 /// * `Vec<String>` - alleles represented as strings
-pub fn vec_to_string<T: Display>(haps: &Vec<Vec<T>>, separater: &str) -> Vec<String> {
+pub(crate) fn vec_to_string<T: Display>(haps: &[Vec<T>], separater: &str) -> Vec<String> {
     let mut haps_string = Vec::new();
     for hap in haps {
         let mut renamed_hap = Vec::new();
         for fp in hap {
             let fp_string = fp.to_string();
             if fp_string.contains(&String::from("-")) {
-                let fp_int = fp_string.parse::<i64>().unwrap();
-                if fp_int < 0 {
-                    if fp_int > -10 {
-                        renamed_hap.push(String::from("LeftFlank"));
-                    } else if fp_int == -10 {
-                        renamed_hap.push(String::from("RightFlank"));
-                    } else {
-                        renamed_hap.push(String::from("RightFlankB"));
+                if let Ok(fp_int) = fp_string.parse::<i64>() {
+                    if fp_int < 0 {
+                        if fp_int > -10 {
+                            renamed_hap.push(String::from("LeftFlank"));
+                        } else if fp_int == -10 {
+                            renamed_hap.push(String::from("RightFlank"));
+                        } else {
+                            renamed_hap.push(String::from("RightFlankB"));
+                        }
                     }
+                } else {
+                    renamed_hap.push(fp_string);
                 }
             } else {
                 renamed_hap.push(fp_string);
@@ -107,14 +139,53 @@ pub fn vec_to_string<T: Display>(haps: &Vec<Vec<T>>, separater: &str) -> Vec<Str
     haps_string
 }
 
-/// Remove a file if it exists
-/// # Arguments
-/// * `path` - path to the file
-fn remove_if_exists(path: impl AsRef<Path>) -> DResult {
-    let path = path.as_ref();
-    if path.exists() {
-        std::fs::remove_file(path)?;
+/// Convert read edge vectors to joined strings for JSON output
+pub fn read_info_to_string(read_edges: &BTreeMap<String, Vec<i32>>) -> BTreeMap<String, String> {
+    read_edges
+        .iter()
+        .map(|(read_name, edges)| {
+            let edge_string = edges
+                .iter()
+                .map(|edge| edge.to_string())
+                .collect::<Vec<_>>()
+                .join("-");
+            (read_name.clone(), edge_string)
+        })
+        .collect()
+}
+
+/// Build an empty sample call for runs that complete without callable target reads.
+fn build_empty_sample_call() -> SampleCall {
+    SampleCall {
+        allele_cn: String::from("NA"),
+        ..Default::default()
     }
+}
+
+/// Write one sample call report to the target JSON path.
+fn write_sample_call_json(output_json: &Path, sample_call: &SampleCall) -> DResult {
+    let mut writer = std::io::BufWriter::new(std::fs::File::create(output_json)?);
+    writeln!(writer, "{}", serde_json::to_string_pretty(sample_call)?)?;
+    Ok(())
+}
+
+/// Write a machine-readable empty-call JSON result for a sample with no target-overlapping reads.
+fn write_empty_call_json(output_json: &Path) -> DResult {
+    let mut sample_call = build_empty_sample_call();
+    sample_call.additional.insert(
+        String::from("call_status"),
+        String::from("failed_due_to_no_reads").into(),
+    );
+    write_sample_call_json(output_json, &sample_call)
+}
+
+/// Finalize and index a realigned BAM that contains only a header and no kept records.
+fn finalize_empty_realigned_bam(
+    realigned_bam: &PathBuf,
+    writer: rust_htslib::bam::Writer,
+) -> DResult {
+    drop(writer);
+    bam::index::build(realigned_bam, None, bam::index::Type::Bai, 1)?;
     Ok(())
 }
 
@@ -134,10 +205,177 @@ pub fn get_predefined_variants(
             .split_terminator('\n')
             .map(std::borrow::ToOwned::to_owned)
             .collect::<Vec<_>>();
-        debug!("predefined variants are {:?}", variants.clone());
+        debug!("predefined variants are {:?}", variants);
         predefined_variants = Some(variants);
     }
     Ok(predefined_variants)
+}
+
+/// First phase of D4Z4 analysis, can be run when paraphase of D4Z4 downstream region is running in parallel
+fn prepare_d4z4_analysis(
+    cli_settings: &Settings,
+    sample_id: &str,
+    region_coordinates: &crate::util::RegionCoordinates,
+    reference: &PathBuf,
+    realigned_bam: &PathBuf,
+    d4z4_read_parameters: &ReadParameters,
+    d4z4_graph_parameters: &GraphParameters,
+    sensitive: bool,
+) -> Result<Option<D4z4PreparedAnalysis>, DError> {
+    debug!("realigning reads to repeat unit");
+    let (realn_records_unfiltered, read_length, writer, methyl_tags, methyl_probs) = realign(
+        cli_settings.bam_filename.clone(),
+        region_coordinates.clone(),
+        reference,
+        realigned_bam.clone(),
+        true,
+    )?;
+    if realn_records_unfiltered.is_empty() {
+        finalize_empty_realigned_bam(realigned_bam, writer)?;
+        debug!(
+            "No reads found for sample '{sample_id}' during read extraction/realignment; returning empty D4Z4 call"
+        );
+        return Ok(None);
+    }
+    let (repeat_records, mut white_list_read_segments, blacklist_segments) =
+        filter_realignments_d4z4(
+            realn_records_unfiltered,
+            writer,
+            reference,
+            realigned_bam.clone(),
+        )?;
+    if repeat_records.is_empty() {
+        debug!(
+            "No reads found for sample '{sample_id}' during alignment filtering; returning empty D4Z4 call"
+        );
+        return Ok(None);
+    }
+
+    debug!("collecting flanking reads");
+    let (flanking_reads, clipped_reads) = get_start_end_d4z4(
+        realigned_bam.clone(),
+        reference,
+        read_length.clone(),
+        region_coordinates.clone(),
+    )?;
+    debug!("flanking reads: {:?}", flanking_reads);
+    for read_segment in &flanking_reads.start_segment {
+        let read_name = read_segment
+            .split(':')
+            .next()
+            .ok_or("next not in read_segment")?
+            .to_string();
+        if flanking_reads.end.contains(&read_name) {
+            white_list_read_segments.push(read_name);
+        }
+    }
+
+    debug!("white_list_read_segments {:?}", white_list_read_segments);
+    debug!("calculating read depth");
+    let depth_summary = depth_based_cn(
+        cli_settings.bam_filename.clone(),
+        realigned_bam.clone(),
+        region_coordinates.clone(),
+    )?;
+
+    debug!("building fingerprints");
+    let (mut fp_info, bases_at_pivot_site, cpg_sites_per_read) = get_fingerprint(
+        realigned_bam.clone(),
+        reference,
+        region_coordinates.clone(),
+        flanking_reads,
+        clipped_reads,
+        &read_length,
+        d4z4_read_parameters.clone(),
+        white_list_read_segments,
+        blacklist_segments.clone(),
+        true,
+        sensitive,
+    )?;
+
+    debug!("removing redundant fingerprints");
+    loop {
+        let (new_fp_info, changed) = rm_redundant_finger_prints(
+            fp_info,
+            d4z4_read_parameters.max_read_count_to_correct,
+            true,
+        )?;
+        fp_info = new_fp_info;
+        if !changed {
+            break;
+        }
+    }
+
+    // handle insertions and deletions related to qAL units and another common long insertion
+    let blacklist_segments = blacklist_segments.into_iter().collect::<HashSet<_>>();
+    handle_deletion_units(&mut fp_info, &blacklist_segments);
+    let rename_long_insertion_fingerprint = !blacklist_segments.is_empty();
+    let (mut fp_info, qal_units) = handle_qal_units(fp_info, rename_long_insertion_fingerprint)?;
+    if rename_long_insertion_fingerprint {
+        fp_info = handle_last_d4z4_long_insertion(fp_info)?;
+    }
+
+    let all_read_length = read_length
+        .iter()
+        .filter(|(x, _y)| fp_info.read_edges.contains_key(*x))
+        .map(|(_x, y)| *y as i32)
+        .collect::<Vec<i32>>();
+    let median_read_length = median(&all_read_length).ok_or_else(|| {
+        format!("No read lengths remained for sample '{sample_id}' after fingerprint filtering")
+    })?;
+    let mut starting_reads_count = 0.0;
+    for read_edges in fp_info.read_edges.values() {
+        if read_edges.iter().any(|x| *x < 0 && *x > -10) {
+            starting_reads_count += 1.0;
+        }
+    }
+    let haploid_depth = starting_reads_count / 4.0;
+
+    let read_info = fp_info.read_bases.clone();
+    debug!("tagging reads with fingerprints");
+    let _tag_success = tag_reads(
+        repeat_records,
+        fp_info.grouped_reads.clone(),
+        realigned_bam.clone(),
+        region_coordinates.clone(),
+        methyl_tags,
+        reference,
+    )?;
+
+    debug!("Assemble alleles...");
+    let mut fp_graph = build_graph(
+        fp_info.read_edges.clone(),
+        d4z4_graph_parameters.min_overlap,
+    );
+    let assembly_result = fp_graph.run(d4z4_graph_parameters.clone())?;
+    debug!(
+        "complete_haps {:?} incomplete_haps {:?}",
+        assembly_result.complete, assembly_result.incomplete
+    );
+
+    let (meth_summary, segment_methyl_prob) =
+        methyl_prob_by_position(&methyl_probs, &cpg_sites_per_read, &fp_info)?;
+    let (kept_starting_haps, kept_ending_haps, kept_complete) =
+        process_alleles(&assembly_result, &fp_info)?;
+
+    Ok(Some(D4z4PreparedAnalysis {
+        depth_summary,
+        methyl_probs,
+        cpg_sites_per_read,
+        bases_at_pivot_site,
+        fp_info,
+        qal_units,
+        median_read_length,
+        haploid_depth,
+        read_info,
+        fp_graph,
+        assembly_result,
+        meth_summary,
+        segment_methyl_prob,
+        kept_starting_haps,
+        kept_ending_haps,
+        kept_complete,
+    }))
 }
 
 /// Main function to genotype KIV2
@@ -166,15 +404,21 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     let output_svg = output_path.join(format!("{sample_id}.kivvi.kiv2.svg"));
     // other region specific resources
     let region_coordinates = kiv2_coordinates();
+    let temp_dir = create_kivvi_temp_dir(output_path)?;
     // create temporary reference file
-    let reference = output_path.join(format!("{sample_id}.kiv2.ref.fa"));
-    std::fs::write(&reference, region_coordinates.clone().reference_seq)
-        .expect("Unable to write temporary reference file");
+    let reference = temp_dir.path().join(format!("{sample_id}.kiv2.ref.fa"));
+    std::fs::write(&reference, region_coordinates.clone().reference_seq).map_err(|e| {
+        format!(
+            "Unable to write temporary KIV2 reference file '{}': {e}",
+            reference.display()
+        )
+    })?;
+    build_faidx(&reference)?;
     // predefined variant list
-    let predefined_variants = get_predefined_variants(cli_settings.variant_list)?;
+    let predefined_variants = get_predefined_variants(cli_settings.variant_list.clone())?;
 
     // realign reads and filter alignments
-    debug!("Realign reads to repeat unit...");
+    debug!("realigning reads to repeat unit");
     let (realn_records_unfiltered, read_length, writer, _methyl_tags, _methyl_probs) = realign(
         cli_settings.bam_filename.clone(),
         region_coordinates.clone(),
@@ -182,15 +426,30 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
         realigned_bam.clone(),
         false,
     )?;
+    if realn_records_unfiltered.is_empty() {
+        finalize_empty_realigned_bam(&realigned_bam, writer)?;
+        write_empty_call_json(&output_json)?;
+        write_empty_vcf(&output_vcf, region_coordinates.clone())?;
+        temp_dir.close()?;
+        info!("Completed kivvi analysis on KIV2 with no callable target reads...");
+        return Ok(());
+    }
     let repeat_records = filter_realignments_kiv2(
         realn_records_unfiltered,
         writer,
         &reference,
         realigned_bam.clone(),
     )?;
+    if repeat_records.is_empty() {
+        write_empty_call_json(&output_json)?;
+        write_empty_vcf(&output_vcf, region_coordinates.clone())?;
+        temp_dir.close()?;
+        info!("Completed kivvi analysis on KIV2 with no callable target reads...");
+        return Ok(());
+    }
 
     // get flanking reads
-    debug!("Get flanking reads...");
+    debug!("collecting flanking reads");
     let flanking_reads = get_start_end_from_genome(
         cli_settings.bam_filename.clone(),
         region_coordinates.clone(),
@@ -200,7 +459,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     debug!("ending_reads_flank: {:?}", flanking_reads.end);
 
     // get genome depth and repeat depth
-    debug!("Get read depth...");
+    debug!("calculating read depth");
     let depth_summary = depth_based_cn(
         cli_settings.bam_filename.clone(),
         realigned_bam.clone(),
@@ -208,7 +467,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     )?;
 
     // get fingerprints
-    debug!("Get fingerprints...");
+    debug!("building fingerprints");
     let (mut fp_info, _bases_at_pivot_site, _cpg_sites_per_read) = get_fingerprint(
         realigned_bam.clone(),
         &reference,
@@ -218,30 +477,31 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
         &read_length,
         kiv2_read_parameters.clone(),
         vec![],
+        vec![],
         false,
         cli_settings.sensitive,
     )?;
 
     // remove redundant fingerprints
-    debug!("Remove redundant fingerprints...");
+    debug!("removing redundant fingerprints");
     loop {
         let (new_fp_info, changed) = rm_redundant_finger_prints(
             fp_info,
             kiv2_read_parameters.max_read_count_to_correct,
             false,
         )?;
-        fp_info = new_fp_info.clone();
+        fp_info = new_fp_info;
         if !changed {
             break;
         }
     }
-    let read_info = fp_info.clone().read_bases;
+    let read_info = fp_info.read_bases.clone();
 
     // tag reads in bam by fingerprints
-    debug!("Tag reads with fingerprints...");
+    debug!("tagging reads with fingerprints");
     let _ = tag_reads(
         repeat_records,
-        fp_info.clone().grouped_reads,
+        fp_info.grouped_reads.clone(),
         realigned_bam.clone(),
         region_coordinates.clone(),
         BTreeMap::new(),
@@ -249,9 +509,9 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     )?;
 
     // graph assembler
-    debug!("Assemble alleles...");
+    debug!("assembling alleles");
     let mut fp_graph = build_graph(
-        fp_info.clone().read_edges,
+        fp_info.read_edges.clone(),
         kiv2_graph_parameters.min_overlap,
     );
     let assembly_result = fp_graph.run(kiv2_graph_parameters.clone())?;
@@ -261,7 +521,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     );
 
     // call variants on fingerprints
-    debug!("Call variants...");
+    debug!("calling variants");
     let variant_report = report_variants(
         fp_info.clone(),
         assembly_result.clone(),
@@ -272,15 +532,27 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
     )?;
 
     // write to json
-    debug!("Write to json...");
+    debug!("writing JSON output");
     // convert supporting reads to renamed alleles
+    let nonunique_reads: HashSet<&str> = assembly_result
+        .nonunique_reads
+        .iter()
+        .map(String::as_str)
+        .collect();
     let mut support: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (hap, reads) in assembly_result.supporting_reads.iter() {
         let allele_name = vec_to_string(&vec![hap.to_vec()], "-");
         let hap_string = &allele_name[0];
-        support
-            .entry(hap_string.to_string())
-            .or_insert(reads.iter().cloned().collect::<Vec<String>>());
+        let unique_reads = reads
+            .iter()
+            .filter(|read| !nonunique_reads.contains(read.as_str()))
+            .cloned()
+            .collect::<Vec<String>>();
+        if !unique_reads.is_empty() {
+            support
+                .entry(hap_string.to_string())
+                .or_insert(unique_reads);
+        }
     }
     let allele_cn = &assembly_result
         .complete
@@ -303,9 +575,9 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
             .collect::<Vec<_>>();
         complete_allele_variants.insert(
             vec_to_string(&vec![allele], "-")
-                .first()
-                .unwrap()
-                .to_string(),
+                .into_iter()
+                .next()
+                .ok_or("Missing allele name after formatting complete allele variants")?,
             allele_variants_reformat,
         );
     }
@@ -315,6 +587,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
         complete_alleles: final_complete,
         partial_alleles: vec_to_string(&assembly_result.incomplete, "-"),
         supporting_reads: support,
+        read_info: read_info_to_string(&fp_info.read_edges),
         complete_allele_variants,
         methylation: BTreeMap::new(),
         other_unit_variants: variant_report
@@ -325,8 +598,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
         allele_info: Vec::new(),
         ..Default::default()
     };
-    let mut writer = std::io::BufWriter::new(std::fs::File::create(output_json)?);
-    writeln!(writer, "{}", serde_json::to_string_pretty(&sample_call)?)?;
+    write_sample_call_json(&output_json, &sample_call)?;
 
     // write to vcf
     debug!("Write to VCF...");
@@ -346,10 +618,7 @@ pub fn call_kiv(cli_settings: Settings) -> DResult {
         plot_alleles_and_reads(&output_svg, to_plot)?;
     }
 
-    // remove temporary reference file
-    remove_if_exists(reference)?;
-    let fai_file = output_path.join(format!("{sample_id}.kiv2.ref.fa.fai"));
-    remove_if_exists(fai_file)?;
+    temp_dir.close()?;
 
     info!("Completed kivvi analysis on KIV2...");
     Ok(())
@@ -382,171 +651,237 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     //let output_methyl_svg = output_path.join(format!("{sample_id}.kivvi.d4z4.methyl.svg"));
     // other region specific resources
     let region_coordinates = d4z4_coordinates();
-    debug!("region_coordinates: {:?}", region_coordinates);
+    // debug!("region_coordinates: {:?}", region_coordinates);
+    let temp_dir = create_kivvi_temp_dir(output_path)?;
     // create temporary reference file
-    let reference = output_path.join(format!("{sample_id}.d4z4.ref.fa"));
-    std::fs::write(&reference, region_coordinates.clone().reference_seq)
-        .expect("Unable to write temporary reference file");
+    let reference = temp_dir.path().join(format!("{sample_id}.d4z4.ref.fa"));
+    std::fs::write(&reference, region_coordinates.clone().reference_seq).map_err(|e| {
+        format!(
+            "Unable to write temporary D4Z4 reference file '{}': {e}",
+            reference.display()
+        )
+    })?;
+    build_faidx(&reference)?;
     // create tempory file for the modified genome reference, specially made for d4z4
     lazy_static::lazy_static! {
         pub static ref GENOME_REFERENCE: &'static [u8] = std::include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/d4z4/chr4_mod.fa"));
     }
-    let d4z4_genome_reference_seq = str::from_utf8(&GENOME_REFERENCE).unwrap().to_string();
-    let genome_reference = output_path.join(format!("{sample_id}.d4z4.genome.fa"));
-    std::fs::write(&genome_reference, d4z4_genome_reference_seq)
-        .expect("Unable to write temporary genome reference file");
+    let bam_reader = bam::Reader::from_path(&cli_settings.bam_filename)?;
+    let bam_uses_chr = bam_reader
+        .header()
+        .target_names()
+        .into_iter()
+        .any(|name| name.starts_with(b"chr"));
+    let genome_reference_bytes = str::from_utf8(&GENOME_REFERENCE)
+        .map_err(|e| format!("Embedded D4Z4 genome reference is not valid UTF-8: {e}"))?;
+    let d4z4_genome_reference_seq = if bam_uses_chr {
+        genome_reference_bytes.to_string()
+    } else {
+        genome_reference_bytes
+            .lines()
+            .map(|line| {
+                if line.starts_with(">chr") {
+                    line.replacen(">chr", ">", 1)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let genome_reference = temp_dir.path().join(format!("{sample_id}.d4z4.genome.fa"));
+    std::fs::write(&genome_reference, d4z4_genome_reference_seq).map_err(|e| {
+        format!(
+            "Unable to write temporary D4Z4 genome reference file '{}': {e}",
+            genome_reference.display()
+        )
+    })?;
+    build_faidx(&genome_reference)?;
 
     // predefined variant list
-    let predefined_variants = get_predefined_variants(cli_settings.variant_list)?;
+    let predefined_variants = get_predefined_variants(cli_settings.variant_list.clone())?;
+    let (num_threads, nopp) = match &cli_settings.command {
+        crate::cli::Command::D4z4(args) => (args.threads, args.nopp),
+        crate::cli::Command::Kiv2(_) => (1, false),
+    };
 
-    // phase flanking region with paraphase
-    let mut phasing_result: BTreeMap<String, GeneCall> = BTreeMap::new();
-    if !cli_settings.nopp {
-        phasing_result = phase_flanking(
+    let write_paraphase_bam = cli_settings.verbosity > 0;
+    let (phasing_result, prepared) = if nopp {
+        let mut phasing_result: BTreeMap<String, GeneCall> = BTreeMap::new();
+        phasing_result.insert(String::from("DUX4p5"), GeneCall::default());
+        phasing_result.insert(String::from("DUX4"), GeneCall::default());
+        let prepared = prepare_d4z4_analysis(
+            &cli_settings,
+            sample_id,
+            &region_coordinates,
+            &reference,
+            &realigned_bam,
+            &d4z4_read_parameters,
+            &d4z4_graph_parameters,
+            cli_settings.sensitive,
+        )?;
+        (phasing_result, prepared)
+    } else if num_threads == 1 {
+        // run paraphase in single thread
+        let mut phasing_result = BTreeMap::<String, GeneCall>::new();
+        let (dux4p5_call, dux4p5_bam) = phase_flanking_gene(
             sample_id,
             output_path,
             &cli_settings.bam_filename,
             &genome_reference,
-            cli_settings.verbosity > 0,
+            "DUX4p5",
+            write_paraphase_bam,
         )?;
-    } else {
-        phasing_result.insert(String::from("DUX4p5"), GeneCall::default());
-        phasing_result.insert(String::from("DUX4"), GeneCall::default());
-    }
-    //debug!("phasing_result {:?}", phasing_result);
-
-    // realign reads and filter alignments
-    debug!("Realign reads to repeat unit...");
-    let (realn_records_unfiltered, read_length, writer, methyl_tags, methyl_probs) = realign(
-        cli_settings.bam_filename.clone(),
-        region_coordinates.clone(),
-        &reference,
-        realigned_bam.clone(),
-        true,
-    )?;
-    let (repeat_records, mut white_list_read_segments) = filter_realignments_d4z4(
-        realn_records_unfiltered,
-        writer,
-        &reference,
-        realigned_bam.clone(),
-    )?;
-    //debug!("white_list_read_segments {:?}", white_list_read_segments);
-
-    // get flanking reads
-    debug!("Get flanking reads...");
-    let (flanking_reads, clipped_reads) = get_start_end_d4z4(
-        realigned_bam.clone(),
-        &reference,
-        read_length.clone(),
-        region_coordinates.clone(),
-    )?;
-    debug!("flanking reads: {:?}", flanking_reads);
-    // give green light to fully spanning reads
-    for read_segment in &flanking_reads.start_segment {
-        let read_name = read_segment
-            .split(':')
-            .next()
-            .ok_or("next not in read_segment")?
-            .to_string();
-        if flanking_reads.end.contains(&read_name) {
-            white_list_read_segments.push(read_name.to_string());
-        }
-    }
-
-    debug!("white_list_read_segments {:?}", white_list_read_segments);
-
-    // get genome depth and repeat depth
-    debug!("Get read depth...");
-    let depth_summary = depth_based_cn(
-        cli_settings.bam_filename.clone(),
-        realigned_bam.clone(),
-        region_coordinates.clone(),
-    )?;
-
-    // get fingerprints
-    debug!("Get fingerprints...");
-    let (mut fp_info, bases_at_pivot_site, cpg_sites_per_read) = get_fingerprint(
-        realigned_bam.clone(),
-        &reference,
-        region_coordinates.clone(),
-        flanking_reads.clone(),
-        clipped_reads,
-        &read_length,
-        d4z4_read_parameters.clone(),
-        white_list_read_segments,
-        true,
-        cli_settings.sensitive,
-    )?;
-
-    // remove redundant fingerprints
-    debug!("Remove redundant fingerprints...");
-    if true {
-        loop {
-            let (new_fp_info, changed) = rm_redundant_finger_prints(
-                fp_info,
-                d4z4_read_parameters.max_read_count_to_correct,
-                true,
+        let (dux4_call, dux4_bam) = phase_flanking_gene(
+            sample_id,
+            output_path,
+            &cli_settings.bam_filename,
+            &genome_reference,
+            "DUX4",
+            write_paraphase_bam,
+        )?;
+        phasing_result.insert(String::from("DUX4p5"), dux4p5_call);
+        phasing_result.insert(String::from("DUX4"), dux4_call);
+        if write_paraphase_bam {
+            let dux4p5_bam = dux4p5_bam.ok_or(
+                "Paraphase did not return a DUX4p5 BAM path when BAM output was requested",
             )?;
-            fp_info = new_fp_info.clone();
-            if !changed {
-                break;
+            let dux4_bam = dux4_bam
+                .ok_or("Paraphase did not return a DUX4 BAM path when BAM output was requested")?;
+            merge_phasing_bams(
+                sample_id,
+                output_path,
+                &cli_settings.bam_filename,
+                &[dux4p5_bam, dux4_bam],
+            )?;
+        } else {
+            remove_phasing_bam(sample_id, output_path)?;
+        }
+        let prepared = prepare_d4z4_analysis(
+            &cli_settings,
+            sample_id,
+            &region_coordinates,
+            &reference,
+            &realigned_bam,
+            &d4z4_read_parameters,
+            &d4z4_graph_parameters,
+            cli_settings.sensitive,
+        )?;
+        (phasing_result, prepared)
+    } else {
+        // run paraphase in two threads, one for each region
+        thread::scope(|scope| -> Result<_, DError> {
+            let dux4_handle = scope.spawn(|| {
+                phase_flanking_gene(
+                    sample_id,
+                    output_path,
+                    &cli_settings.bam_filename,
+                    &genome_reference,
+                    "DUX4",
+                    write_paraphase_bam,
+                )
+                .map_err(|e| e.to_string())
+            });
+            let (dux4p5_call, dux4p5_bam) = phase_flanking_gene(
+                sample_id,
+                output_path,
+                &cli_settings.bam_filename,
+                &genome_reference,
+                "DUX4p5",
+                write_paraphase_bam,
+            )?;
+            let prepared = prepare_d4z4_analysis(
+                &cli_settings,
+                sample_id,
+                &region_coordinates,
+                &reference,
+                &realigned_bam,
+                &d4z4_read_parameters,
+                &d4z4_graph_parameters,
+                cli_settings.sensitive,
+            )?;
+
+            let (dux4_call, dux4_bam) = dux4_handle
+                .join()
+                .map_err(|_| "DUX4 Paraphase worker thread panicked")?
+                .map_err(|e| -> DError { e.into() })?;
+
+            let mut phasing_result = BTreeMap::<String, GeneCall>::new();
+            phasing_result.insert(String::from("DUX4p5"), dux4p5_call);
+            phasing_result.insert(String::from("DUX4"), dux4_call);
+
+            if write_paraphase_bam {
+                let dux4p5_bam = dux4p5_bam.ok_or(
+                    "Paraphase did not return a DUX4p5 BAM path when BAM output was requested",
+                )?;
+                let dux4_bam = dux4_bam.ok_or(
+                    "Paraphase did not return a DUX4 BAM path when BAM output was requested",
+                )?;
+                merge_phasing_bams(
+                    sample_id,
+                    output_path,
+                    &cli_settings.bam_filename,
+                    &[dux4p5_bam, dux4_bam],
+                )?;
+            } else {
+                remove_phasing_bam(sample_id, output_path)?;
             }
-        }
-    }
 
-    // qc metrics
-    let all_read_length = read_length
-        .iter()
-        .filter(|(x, _y)| fp_info.read_edges.contains_key(*x))
-        .map(|(_x, y)| *y as i32)
-        .collect::<Vec<i32>>();
-    let median_read_length = median(&all_read_length).unwrap();
-    let mut starting_reads_count = 0.0;
-    for (_read, read_edges) in &fp_info.read_edges {
-        if read_edges.iter().any(|x| *x < 0 && *x > -10) {
-            starting_reads_count += 1.0;
-        }
-    }
-    let haploid_depth = starting_reads_count / 4.0;
+            Ok((phasing_result, prepared))
+        })?
+    };
 
-    let read_info = fp_info.clone().read_bases;
-    // tag reads in bam by fingerprints
-    debug!("Tag reads with fingerprints...");
-    let _tag_success = tag_reads(
-        repeat_records,
-        fp_info.clone().grouped_reads,
-        realigned_bam.clone(),
-        region_coordinates.clone(),
-        methyl_tags,
-        &reference,
-    )?;
+    let Some(prepared) = prepared else {
+        write_empty_call_json(&output_json)?;
+        write_empty_vcf(&output_vcf, region_coordinates.clone())?;
+        temp_dir.close()?;
+        info!("Completed kivvi analysis on D4Z4 with no callable target reads...");
+        return Ok(());
+    };
 
-    // graph assembler
-    debug!("Assemble alleles...");
-    let mut fp_graph = build_graph(
-        fp_info.clone().read_edges,
-        d4z4_graph_parameters.min_overlap,
-    );
-    let assembly_result = fp_graph.run(d4z4_graph_parameters.clone())?;
-    debug!(
-        "complete_haps {:?} incomplete_haps {:?}",
-        assembly_result.complete, assembly_result.incomplete
-    );
-
-    // methylation info
-    let (meth_summary, segment_methyl_prob) =
-        methyl_prob_by_position(&methyl_probs, &cpg_sites_per_read, &fp_info)?;
+    let D4z4PreparedAnalysis {
+        depth_summary,
+        methyl_probs,
+        cpg_sites_per_read,
+        bases_at_pivot_site,
+        fp_info,
+        qal_units,
+        median_read_length,
+        haploid_depth,
+        read_info,
+        fp_graph,
+        assembly_result,
+        meth_summary,
+        segment_methyl_prob,
+        kept_starting_haps,
+        kept_ending_haps,
+        kept_complete,
+    } = prepared;
 
     // find in-cis duplications
-    debug!("Find in-cis duplications...");
-    let (cis_dups, cis_dups_match_index) =
-        find_cis_dup(&assembly_result, &fp_graph, &fp_info, &phasing_result)?;
+    debug!("finding in-cis duplications");
+    let all_haps = kept_starting_haps
+        .iter()
+        .chain(kept_ending_haps.iter())
+        .chain(kept_complete.iter())
+        .cloned()
+        .collect::<HashSet<Vec<i32>>>()
+        .into_iter()
+        .collect::<Vec<Vec<i32>>>();
+    let (cis_dups, cis_dups_match_index) = find_cis_dup(
+        &all_haps,
+        &fp_graph,
+        &fp_info,
+        &phasing_result,
+        qal_units.clone(),
+        &assembly_result.special_incomplete,
+    )?;
     debug!("cis_dups_match_index {cis_dups_match_index:?}");
 
     // get all starting haps
-    let (all_starts_hap_backgrounds, all_starts_upstream_haplotypes) =
+    let (mut all_starts_hap_backgrounds, all_starts_upstream_haplotypes) =
         get_background_for_allele_starts(
-            &assembly_result,
+            &kept_starting_haps,
             &fp_graph,
             &phasing_result,
             &bases_at_pivot_site,
@@ -554,9 +889,9 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         )?;
 
     // get all ending haps
-    let (all_ends_hap_backgrounds, all_ends_reads_match_allele_index_renamed_to_string) =
+    let (mut all_ends_hap_backgrounds, all_ends_reads_match_allele_index_renamed_to_string) =
         get_background_for_allele_ends(
-            &assembly_result,
+            &kept_ending_haps,
             &fp_graph,
             &phasing_result,
             &bases_at_pivot_site,
@@ -565,8 +900,9 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         )?;
     // all ends methylation
     let mut all_ends_allele_methyl: Option<MethOutput> = None;
+    let mut all_ends_ml_per_allele: Option<BTreeMap<String, Vec<Vec<i32>>>> = None;
     if !methyl_probs.is_empty() {
-        let (all_ends_meth_out, _all_ends_reads_methyl_value) = get_methyl_info(
+        let (all_ends_meth_out, _all_ends_reads_methyl_value, ml_per_allele) = get_methyl_info(
             &fp_info,
             &segment_methyl_prob,
             &cpg_sites_per_read,
@@ -574,10 +910,11 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
             &region_coordinates.methyl_sites,
         )?;
         all_ends_allele_methyl = Some(all_ends_meth_out);
+        all_ends_ml_per_allele = Some(ml_per_allele);
     }
 
     // call variants on fingerprints
-    debug!("Call variants...");
+    debug!("calling variants");
     let variant_report = report_variants(
         fp_info.clone(),
         assembly_result.clone(),
@@ -591,7 +928,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     let mut allele_methyl: Option<MethOutput> = None;
     if !methyl_probs.is_empty() {
         if variant_report.fp_suppporting_reads.is_some() {
-            let (meth_out, _alleles_reads_methyl_value) = get_methyl_info(
+            let (meth_out, _alleles_reads_methyl_value, _ml_per_allele) = get_methyl_info(
                 &fp_info,
                 &segment_methyl_prob,
                 &cpg_sites_per_read,
@@ -604,12 +941,12 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     }
 
     // haplotype backgrounds
-    let complete_haps = assembly_result.complete.clone();
+    let complete_haps = kept_complete.clone();
     let complete_read_support = fp_graph
-        .process_complete_haps(complete_haps, None, false, false)?
+        .process_complete_haps(&complete_haps, None, false, false)?
         .supporting_reads;
     let (mut hap_backgrounds, _upstream_haplotypes) = haplotype_background(
-        &assembly_result.complete,
+        &kept_complete,
         &phasing_result,
         &complete_read_support,
         Some(&fp_info),
@@ -624,13 +961,13 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         let mut distal_hap = hap_background_parts[0].to_string();
         let mut chr = hap_background_parts[1].to_string();
         if distal_hap.contains("unknown") {
-            if all_ends_hap_backgrounds.contains_key(hap) {
-                distal_hap = all_ends_hap_backgrounds.get(hap).unwrap().to_string();
+            if let Some(background) = all_ends_hap_backgrounds.get(hap) {
+                distal_hap = background.to_string();
             }
         }
         if chr.contains("unknown") {
-            if all_starts_hap_backgrounds.contains_key(hap) {
-                chr = all_starts_hap_backgrounds.get(hap).unwrap().to_string();
+            if let Some(background) = all_starts_hap_backgrounds.get(hap) {
+                chr = background.to_string();
             }
         }
         updated_hap_backgrounds.insert(hap.clone(), format!("{distal_hap}-{chr}"));
@@ -638,21 +975,29 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     hap_backgrounds = updated_hap_backgrounds;
 
     // join partial alleles
-    debug!("Join partial alleles...");
+    debug!("joining partial alleles");
     let allele_summaries = join_partial_alleles(
-        &all_starts_hap_backgrounds,
-        &all_ends_hap_backgrounds,
-        &hap_backgrounds,
+        &mut all_starts_hap_backgrounds,
+        &mut all_ends_hap_backgrounds,
+        &mut hap_backgrounds,
+        &cis_dups,
         &variant_report,
         &region_coordinates,
         &fp_graph,
         &fp_info,
-        &all_ends_allele_methyl,
+        &all_ends_ml_per_allele,
+        qal_units,
+        haploid_depth,
     )?;
 
     // write to json
-    debug!("Write to json...");
+    debug!("writing JSON output");
     // convert supporting reads to renamed alleles
+    let nonunique_reads: HashSet<&str> = assembly_result
+        .nonunique_reads
+        .iter()
+        .map(String::as_str)
+        .collect();
     let mut support: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for allele in &assembly_result.complete {
         if assembly_result.supporting_reads.contains_key(allele) {
@@ -662,9 +1007,16 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
                 .ok_or("hap not in assembly_result.supporting_reads.")?;
             let allele_name = vec_to_string(&vec![allele.clone()], "-");
             let hap_string = &allele_name[0];
-            support
-                .entry(hap_string.to_string())
-                .or_insert(reads.iter().cloned().collect::<Vec<String>>());
+            let unique_reads = reads
+                .iter()
+                .filter(|read| !nonunique_reads.contains(read.as_str()))
+                .cloned()
+                .collect::<Vec<String>>();
+            if !unique_reads.is_empty() {
+                support
+                    .entry(hap_string.to_string())
+                    .or_insert(unique_reads);
+            }
         }
     }
 
@@ -680,8 +1032,12 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     let final_complete = vec_to_string(&assembly_result.complete, "-");
 
     // summarize upstream/downstream haplotype backgrounds
-    let upstream_phasing_result = phasing_result.get(&String::from("DUX4p5")).unwrap();
-    let downstream_phasing_result = phasing_result.get(&String::from("DUX4")).unwrap();
+    let upstream_phasing_result = phasing_result
+        .get(&String::from("DUX4p5"))
+        .ok_or("Missing DUX4p5 phasing result after D4Z4 analysis")?;
+    let downstream_phasing_result = phasing_result
+        .get(&String::from("DUX4"))
+        .ok_or("Missing DUX4 phasing result after D4Z4 analysis")?;
     let mut flanking_phasing_info: BTreeMap<String, AlleleFlankingPhasing> = BTreeMap::new();
     let downstream_haps = &downstream_phasing_result.final_haplotypes;
     let downstream_reads = &downstream_phasing_result.unique_supporting_reads;
@@ -724,9 +1080,9 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
             .collect::<Vec<_>>();
         complete_allele_variants.insert(
             vec_to_string(&vec![allele], "-")
-                .first()
-                .unwrap()
-                .to_string(),
+                .into_iter()
+                .next()
+                .ok_or("Missing allele name after formatting D4Z4 complete allele variants")?,
             allele_variants_reformat,
         );
     }
@@ -746,6 +1102,7 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         complete_alleles: final_complete,
         partial_alleles: vec_to_string(&assembly_result.incomplete, "-"),
         supporting_reads: support,
+        read_info: read_info_to_string(&fp_info.read_edges),
         complete_allele_variants,
         methylation: allele_methyl_info,
         other_unit_variants: variant_report
@@ -820,15 +1177,15 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         .collect::<Vec<_>>();
 
     sample_call.additional.insert(
-        String::from("median_methylation_all_sites"),
+        String::from("methylation_all_sites"),
         meth_summary.all_sites_methyl_median.into(),
     );
     sample_call.additional.insert(
-        String::from("median_methylation_per_unit"),
+        String::from("methylation_per_unit"),
         serde_json::to_value(&meth_per_fp_median_reformat)?.into(),
     );
     sample_call.additional.insert(
-        String::from("median_methylation_per_site"),
+        String::from("methylation_per_site"),
         serde_json::to_value(&meth_per_pos_median_reformat)?.into(),
     );
     sample_call.additional.insert(
@@ -844,11 +1201,10 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
         serde_json::to_value(&d4z4_qc_metrics)?.into(),
     );
 
-    let mut writer = std::io::BufWriter::new(std::fs::File::create(output_json)?);
-    writeln!(writer, "{}", serde_json::to_string_pretty(&sample_call)?)?;
+    write_sample_call_json(&output_json, &sample_call)?;
 
     // write to vcf
-    debug!("Write to VCF...");
+    debug!("writing VCF output");
     std::fs::File::create(output_vcf.clone())?;
     write_vcf(
         &output_vcf,
@@ -859,20 +1215,33 @@ pub fn call_d4z4(cli_settings: Settings) -> DResult {
     )?;
 
     // plot
-    debug!("Plot alleles...");
+    debug!("plotting alleles");
     let alleles_for_plot = variant_report.alleles_for_plot;
     if let Some(to_plot) = alleles_for_plot {
         plot_alleles_and_reads(&output_svg, to_plot)?;
     }
 
-    // remove temporary reference file
-    remove_if_exists(reference)?;
-    let fai_file = output_path.join(format!("{sample_id}.d4z4.ref.fa.fai"));
-    remove_if_exists(fai_file)?;
-    remove_if_exists(genome_reference)?;
-    let fai_file = output_path.join(format!("{sample_id}.d4z4.genome.fa.fai"));
-    remove_if_exists(fai_file)?;
+    temp_dir.close()?;
 
     info!("Completed kivvi analysis on D4Z4...");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_info_to_string;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn read_info_to_string_joins_edges_per_read() {
+        let read_edges = BTreeMap::from([
+            ("read1".to_string(), vec![1, 3, 9]),
+            ("read2".to_string(), vec![0, -10]),
+        ]);
+
+        let result = read_info_to_string(&read_edges);
+
+        assert_eq!(result.get("read1"), Some(&"1-3-9".to_string()));
+        assert_eq!(result.get("read2"), Some(&"0--10".to_string()));
+    }
 }

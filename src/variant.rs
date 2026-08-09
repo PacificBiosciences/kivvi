@@ -1,6 +1,6 @@
 use crate::assembly::assembler::AssemblyResult;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
-use crate::util::{DError, RegionCoordinates};
+use crate::util::{invalid_data_error, missing_data_error, DError, RegionCoordinates};
 use itertools::Itertools;
 use log::{debug, trace};
 use regex::Regex;
@@ -87,6 +87,48 @@ pub struct VariantInfoByVariant {
     pub nread: usize,
 }
 
+/// Parse the genomic position encoded in a variant string.
+/// Accepts both `pos:REF>ALT` and `tid-pos:REF>ALT` formats used internally.
+/// # Arguments
+/// * `variant_name` - variant identifier
+/// # Returns
+/// * `i64` - parsed genomic position
+fn parse_variant_position(variant_name: &str) -> Result<i64, DError> {
+    let position_field = variant_name
+        .split_terminator(':')
+        .next()
+        .ok_or_else(|| missing_data_error("variant position field", variant_name))?;
+    let position_token = position_field
+        .split_terminator('-')
+        .next_back()
+        .ok_or_else(|| {
+            invalid_data_error(format!(
+                "variant name has an empty position field: '{variant_name}'"
+            ))
+        })?;
+    position_token
+        .parse::<i64>()
+        .map_err(|e| format!("Failed to parse variant position from '{variant_name}': {e}").into())
+}
+
+/// Parse the REF/ALT allele strings encoded in an internal variant identifier.
+/// # Arguments
+/// * `variant_name` - variant identifier
+/// # Returns
+/// * `(String, String)` - reference allele and alternate allele
+fn parse_variant_alleles(variant_name: &str) -> Result<(String, String), DError> {
+    let allele_field = variant_name
+        .split_terminator(':')
+        .next_back()
+        .ok_or_else(|| missing_data_error("variant allele field", variant_name))?;
+    let (ref_allele, alt_allele) = allele_field.split_once('>').ok_or_else(|| {
+        invalid_data_error(format!(
+            "variant allele field is not REF>ALT in '{variant_name}'"
+        ))
+    })?;
+    Ok((ref_allele.to_string(), alt_allele.to_string()))
+}
+
 /// Report variants on each KIV2 unit of each allele
 /// # Arguments
 /// * `fp_info` - fingerprint information
@@ -105,14 +147,16 @@ pub fn report_variants(
     region_coordinates: RegionCoordinates,
     predefined_variant_list: Option<Vec<String>>,
 ) -> Result<VariantReport, DError> {
-    let alleles = assembly_result.complete;
-    let supporting_reads = assembly_result.supporting_reads;
-    let nonunique_reads = assembly_result.nonunique_reads.clone();
-    let fp_info_clone = fp_info.clone();
-    let read_edges = fp_info_clone.read_edges;
-    let read_positions = fp_info_clone.read_positions;
-    let grouped_reads = fp_info_clone.grouped_reads;
-    let good_name_to_seq = fp_info_clone.good_name_to_seq;
+    let AssemblyResult {
+        complete: alleles,
+        supporting_reads,
+        nonunique_reads,
+        ..
+    } = &assembly_result;
+    let read_edges = &fp_info.read_edges;
+    let read_positions = &fp_info.read_positions;
+    let grouped_reads = &fp_info.grouped_reads;
+    let good_name_to_seq = &fp_info.good_name_to_seq;
     // ref
     let ref_reader = faidx::Reader::from_path(reference)?;
 
@@ -125,16 +169,16 @@ pub fn report_variants(
     let mut variant_name_old_format: BTreeMap<String, String> = BTreeMap::new();
     // position reads onto alleles
     let reads_match_allele_index =
-        get_read_position_in_allele(read_edges.clone(), alleles, supporting_reads, false)?;
+        get_read_position_in_allele(read_edges, alleles, supporting_reads, false)?;
     debug!("reads_match_allele_index {reads_match_allele_index:?}");
     let mut fp_to_read: Option<BTreeMap<String, HashSet<String>>> = None;
     if !reads_match_allele_index.is_empty() {
         // for each fingerprint, get all reads and all bases
         let fp_bases = get_fp_bases(
-            read_edges.clone(),
+            read_edges,
             read_positions,
-            reads_match_allele_index.clone(),
-            read_info.clone(),
+            &reads_match_allele_index,
+            &read_info,
             nonunique_reads,
         )?;
         fp_to_read = Some(fp_bases.suppporting_reads);
@@ -156,15 +200,15 @@ pub fn report_variants(
                     let this_fp_bases = fp_pileup.get(&fp_name_on_allele);
                     let this_fp_bases_all = fp_pileup_all.get(&fp_name_on_allele);
                     let mut fp_var = Vec::new();
-                    if !this_fp_bases_all.is_none() {
-                        let this_fp_bases_all = this_fp_bases_all.unwrap();
+                    if let Some(this_fp_bases_all) = this_fp_bases_all {
                         for (pos, site_all_bases) in this_fp_bases_all.iter() {
                             let tid = pos.0;
                             let ref_name = ref_reader.seq_name(tid as i32)?;
                             let ref_len = ref_reader.fetch_seq_len(&ref_name);
                             let ref_seq = ref_reader.fetch_seq(&ref_name, 0, ref_len as usize)?;
-                            let this_offset =
-                                region_coordinates.genome_offset.get(&ref_name).unwrap();
+                            let this_offset = region_coordinates.genome_offset.get(&ref_name).ok_or_else(|| {
+                                format!("Missing genome offset for reference '{ref_name}' while reporting variants")
+                            })?;
                             let this_offset = *this_offset as i64;
                             if !region_coordinates
                                 .exclude_sites_vcf
@@ -176,17 +220,16 @@ pub fn report_variants(
                             // else, use only positions within the specified repeat length
                             {
                                 let mut fp_base_consensus: VariantInfoByFP =
-                                    get_consensus_var(site_all_bases.clone(), (*pos).1, &ref_seq)?;
+                                    get_consensus_var(site_all_bases, (*pos).1, &ref_seq)?;
                                 // use unique reads if there are enough of them
-                                if !this_fp_bases.is_none() {
-                                    let this_fp_bases = this_fp_bases.unwrap();
+                                if let Some(this_fp_bases) = this_fp_bases {
                                     if this_fp_bases.contains_key(pos) {
                                         let site_all_bases_uniq = this_fp_bases
                                             .get(pos)
                                             .ok_or("position not found in this_fp_bases")?;
                                         if site_all_bases_uniq.len() >= 3 {
                                             fp_base_consensus = get_consensus_var(
-                                                site_all_bases_uniq.clone(),
+                                                site_all_bases_uniq,
                                                 (*pos).1,
                                                 &ref_seq,
                                             )?;
@@ -200,7 +243,9 @@ pub fn report_variants(
                                         fp_base_consensus.ref_base,
                                         consensus
                                     );
-                                    let original_base = fp_base_consensus.original_base.unwrap();
+                                    let original_base = fp_base_consensus.original_base.ok_or_else(|| {
+                                        format!("Consensus variant for fp '{fp_name_on_allele}' at position {} is missing its original-base representation", (*pos).1)
+                                    })?;
                                     let ref_base = vec![ref_seq[(*pos).1 as usize]];
                                     let ref_base_string =
                                         std::str::from_utf8(&ref_base)?.to_string();
@@ -212,8 +257,8 @@ pub fn report_variants(
                                         original_base
                                     );
                                     variant_name_old_format
-                                        .entry(variant_name_old.clone())
-                                        .or_insert(variant_name.clone());
+                                        .entry(variant_name_old)
+                                        .or_insert_with(|| variant_name.clone());
 
                                     fp_var.push(variant_name.clone());
                                     let this_var = VariantInfoByVariant {
@@ -223,7 +268,7 @@ pub fn report_variants(
                                         nread: fp_base_consensus.nread,
                                     };
                                     variant_summary
-                                        .entry(variant_name.clone())
+                                        .entry(variant_name)
                                         .or_default()
                                         .push(this_var);
                                 }
@@ -231,18 +276,22 @@ pub fn report_variants(
                         }
                     } else {
                         debug!(
-                        "this_fp_bases_all not found for fp {original_fp_name} fp_name_on_allele {}",
-                        fp_name_on_allele.clone()
-                    );
+                            "this_fp_bases_all not found for fp {original_fp_name} fp_name_on_allele {}",
+                            fp_name_on_allele
+                        );
                     }
-                    fp_var.sort_by(|a, b| {
-                        let pos1 = a.split(":").nth(0).unwrap().parse::<i64>().unwrap();
-                        let pos2 = b.split(":").nth(0).unwrap().parse::<i64>().unwrap();
-                        pos1.cmp(&pos2)
-                    });
+                    let mut fp_var_with_pos = fp_var
+                        .into_iter()
+                        .map(|name| Ok((parse_variant_position(&name)?, name)))
+                        .collect::<Result<Vec<_>, DError>>()?;
+                    fp_var_with_pos.sort_by(|a, b| a.0.cmp(&b.0));
+                    let fp_var = fp_var_with_pos
+                        .into_iter()
+                        .map(|(_, name)| name)
+                        .collect::<Vec<_>>();
                     fps_on_complete_alleles.push(*original_fp_name);
                     complete_allele_variants
-                        .entry(allele.to_vec())
+                        .entry(allele.clone())
                         .or_default()
                         .insert((q, *original_fp_name), fp_var.clone());
                 }
@@ -270,7 +319,9 @@ pub fn report_variants(
                 let ref_name = ref_reader.seq_name(tid as i32)?;
                 let ref_len = ref_reader.fetch_seq_len(&ref_name);
                 let ref_seq = ref_reader.fetch_seq(&ref_name, 0, ref_len as usize)?;
-                let this_offset = region_coordinates.genome_offset.get(&ref_name).unwrap();
+                let this_offset = region_coordinates.genome_offset.get(&ref_name).ok_or_else(|| {
+                    format!("Missing genome offset for reference '{ref_name}' while reporting variants")
+                })?;
                 let this_offset = *this_offset as i64;
                 if !region_coordinates
                     .exclude_sites_vcf
@@ -279,8 +330,7 @@ pub fn report_variants(
                     && ((*pos).1 < region_coordinates.repeat_len as i64
                         || region_coordinates.genome_offset.len() > 1)
                 {
-                    let fp_base_consensus =
-                        get_consensus_var(fp_bases.clone(), (*pos).1, &ref_seq)?;
+                    let fp_base_consensus = get_consensus_var(fp_bases, (*pos).1, &ref_seq)?;
                     if let Some(consensus) = fp_base_consensus.base {
                         let variant_name = format!(
                             "{}:{}>{}",
@@ -288,14 +338,19 @@ pub fn report_variants(
                             fp_base_consensus.ref_base,
                             consensus
                         );
-                        let original_base = fp_base_consensus.original_base.unwrap();
+                        let original_base = fp_base_consensus.original_base.ok_or_else(|| {
+                            format!(
+                                "Consensus variant for fingerprint '{fp_name}' at position {} is missing its original-base representation",
+                                (*pos).1
+                            )
+                        })?;
                         let ref_base = vec![ref_seq[(*pos).1 as usize]];
                         let ref_base_string = std::str::from_utf8(&ref_base)?.to_string();
                         let variant_name_old =
                             format!("{}-{}:{}>{}", tid, (*pos).1, ref_base_string, original_base);
                         variant_name_old_format
-                            .entry(variant_name_old.clone())
-                            .or_insert(variant_name.clone());
+                            .entry(variant_name_old)
+                            .or_insert_with(|| variant_name.clone());
                         fp_var.push(variant_name.clone());
                         let this_var = VariantInfoByVariant {
                             fingerprint: *fp_name,
@@ -304,17 +359,21 @@ pub fn report_variants(
                             nread: fp_base_consensus.nread,
                         };
                         variant_summary
-                            .entry(variant_name.clone())
+                            .entry(variant_name)
                             .or_default()
                             .push(this_var);
                     }
                 }
             }
-            fp_var.sort_by(|a, b| {
-                let pos1 = a.split(":").nth(0).unwrap().parse::<i64>().unwrap();
-                let pos2 = b.split(":").nth(0).unwrap().parse::<i64>().unwrap();
-                pos1.cmp(&pos2)
-            });
+            let mut fp_var_with_pos = fp_var
+                .into_iter()
+                .map(|name| Ok((parse_variant_position(&name)?, name)))
+                .collect::<Result<Vec<_>, DError>>()?;
+            fp_var_with_pos.sort_by(|a, b| a.0.cmp(&b.0));
+            let fp_var = fp_var_with_pos
+                .into_iter()
+                .map(|(_, name)| name)
+                .collect::<Vec<_>>();
             fps_on_incomplete_alleles.entry(*fp_name).or_insert(fp_var);
         }
     }
@@ -359,7 +418,7 @@ pub fn report_variants(
 /// # Returns
 /// * `VariantInfoByFP` - variant at this position from this fingerprint (this set of reads)
 fn get_consensus_var(
-    bases: Vec<Vec<u8>>,
+    bases: &[Vec<u8>],
     pos: i64,
     ref_seq: &[u8],
 ) -> Result<VariantInfoByFP, DError> {
@@ -377,13 +436,15 @@ fn get_consensus_var(
     // count number of unique bases
     let mut bases_count: HashMap<Vec<u8>, usize> = HashMap::new();
     for base in bases {
-        *bases_count.entry(base).or_default() += 1;
+        *bases_count.entry(base.clone()).or_default() += 1;
     }
     let mut bases_count2 = bases_count
         .iter()
         .map(|(x, y)| (x.clone(), *y))
         .collect::<Vec<_>>();
-    bases_count2.sort_by(|a, b| b.1.cmp(&a.1));
+    // Make equal-depth consensus selection deterministic by falling back to a
+    // stable lexical ordering of the observed allele strings.
+    bases_count2.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     if bases_count2.is_empty() {
         return Ok(none_var.clone());
     }
@@ -394,8 +455,12 @@ fn get_consensus_var(
             return Ok(none_var.clone());
         }
     }
+    let consensus_count = bases_count2[0].1;
     let fp_base_consensus = bases_count2[0].0.clone();
     if fp_base_consensus != ref_base && !fp_base_consensus.contains(&b'*') {
+        if consensus_count < 2 && depth > 1 {
+            return Ok(none_var.clone());
+        }
         let fp_base_consensus_string = std::str::from_utf8(&fp_base_consensus)?.to_string();
         // check neighboring bases on ref for indels
         if fp_base_consensus.len() > 1 && fp_base_consensus.contains(&b'-') {
@@ -425,7 +490,7 @@ fn get_consensus_var(
                 base: Some(ref_base_string.clone()),
                 ref_base: std::str::from_utf8(&new_ref_base)?.to_string(),
                 depth,
-                nread: bases_count2[0].1,
+                nread: consensus_count,
                 original_base: Some(fp_base_consensus_string),
             });
         }
@@ -455,7 +520,7 @@ fn get_consensus_var(
                 base: Some(std::str::from_utf8(&variant_base)?.to_string()),
                 ref_base: ref_base_string.clone(),
                 depth,
-                nread: bases_count2[0].1,
+                nread: consensus_count,
                 original_base: Some(fp_base_consensus_string),
             });
         }
@@ -466,12 +531,12 @@ fn get_consensus_var(
                 base: Some(fp_base_consensus_string.clone()),
                 ref_base: ref_base_string.clone(),
                 depth,
-                nread: bases_count2[0].1,
+                nread: consensus_count,
                 original_base: Some(fp_base_consensus_string.clone()),
             });
         }
     }
-    Ok(none_var.clone())
+    Ok(none_var)
 }
 
 /// Get the supporting reads and all bases of each fingerprint on each allele
@@ -484,26 +549,31 @@ fn get_consensus_var(
 /// # Returns
 /// * `AlleleFingerprintVariantInfo` - fingerprints on each allele and their variants
 fn get_fp_bases(
-    read_edges: BTreeMap<String, Vec<i32>>,
-    read_positions: BTreeMap<String, Vec<i32>>,
-    reads_match_allele_index: BTreeMap<Vec<i32>, Vec<(String, i32)>>,
-    read_info: BTreeMap<String, BTreeMap<(i32, i64), Vec<u8>>>,
-    nonunique_reads: Vec<String>,
+    read_edges: &BTreeMap<String, Vec<i32>>,
+    read_positions: &BTreeMap<String, Vec<i32>>,
+    reads_match_allele_index: &BTreeMap<Vec<i32>, Vec<(String, i32)>>,
+    read_info: &BTreeMap<String, BTreeMap<(i32, i64), Vec<u8>>>,
+    nonunique_reads: &[String],
 ) -> Result<AlleleFingerprintVariantInfo, DError> {
     let mut fp_names: BTreeMap<String, i32> = BTreeMap::new();
     let mut suppporting_reads: BTreeMap<String, HashSet<String>> = BTreeMap::new();
     let mut bases: BTreeMap<String, BTreeMap<(i32, i64), Vec<Vec<u8>>>> = BTreeMap::new();
     let mut bases_all: BTreeMap<String, BTreeMap<(i32, i64), Vec<Vec<u8>>>> = BTreeMap::new();
     let mut allele_index = 0;
-    for (allele, read_fp_matches) in reads_match_allele_index.iter() {
+    for (allele, read_fp_matches) in reads_match_allele_index {
         allele_index += 1;
         for (read, fp_index) in read_fp_matches {
-            if read_positions.contains_key(read) {
-                let this_read_positions = read_positions[read].clone();
+            if let Some(this_read_positions) = read_positions.get(read) {
                 let read_nodes = read_edges
                     .get(read)
-                    .ok_or("key not found: read in read_edges")?;
-                assert!(this_read_positions.len() == read_nodes.len());
+                    .ok_or_else(|| missing_data_error("read in read_edges", read))?;
+                if this_read_positions.len() != read_nodes.len() {
+                    return Err(invalid_data_error(format!(
+                        "Read '{read}' has {} fingerprint positions but {} fingerprint nodes while collecting allele fingerprint bases",
+                        this_read_positions.len(),
+                        read_nodes.len()
+                    )));
+                }
                 for (j, this_fp) in read_nodes.iter().enumerate() {
                     let fp_index_on_allele = j + *fp_index as usize;
                     if *this_fp > 0
@@ -519,27 +589,16 @@ fn get_fp_bases(
                             .entry(uniq_fp_name.clone())
                             .or_default()
                             .insert(read_new_name.clone());
-                        if read_info.contains_key(&read_new_name) {
-                            let read_bases = read_info.get(&read_new_name).ok_or(format!(
-                                "key not found: read_new_name {read_new_name:?} in read_info"
-                            ))?;
+                        let fp_bases_unique = bases.entry(uniq_fp_name.clone()).or_default();
+                        let fp_bases_all = bases_all.entry(uniq_fp_name).or_default();
+                        if let Some(read_bases) = read_info.get(&read_new_name) {
                             if !nonunique_reads.contains(read) {
                                 for (pos, base) in read_bases.iter() {
-                                    bases
-                                        .entry(uniq_fp_name.clone())
-                                        .or_default()
-                                        .entry(*pos)
-                                        .or_default()
-                                        .push(base.to_vec());
+                                    fp_bases_unique.entry(*pos).or_default().push(base.to_vec());
                                 }
                             }
                             for (pos, base) in read_bases.iter() {
-                                bases_all
-                                    .entry(uniq_fp_name.clone())
-                                    .or_default()
-                                    .entry(*pos)
-                                    .or_default()
-                                    .push(base.to_vec());
+                                fp_bases_all.entry(*pos).or_default().push(base.to_vec());
                             }
                         }
                     }
@@ -564,23 +623,23 @@ fn get_fp_bases(
 /// # Returns
 /// * `reads_match_allele_index` - alleles -> (read name, starting index on allele)
 pub fn get_read_position_in_allele(
-    read_edges: BTreeMap<String, Vec<i32>>,
-    alleles: Vec<Vec<i32>>,
-    supporting_reads: BTreeMap<Vec<i32>, HashSet<String>>,
+    read_edges: &BTreeMap<String, Vec<i32>>,
+    alleles: &[Vec<i32>],
+    supporting_reads: &BTreeMap<Vec<i32>, HashSet<String>>,
     allow_incomplete_allele: bool,
 ) -> Result<BTreeMap<Vec<i32>, Vec<(String, i32)>>, DError> {
     let mut reads_match_allele_index: BTreeMap<Vec<i32>, Vec<(String, i32)>> = BTreeMap::new();
     for allele in alleles {
         let allele_len = allele.len();
-        if supporting_reads.contains_key(&allele) {
-            let allele_reads = supporting_reads
-                .get(&allele)
-                .ok_or("key not found: allele in supporting_reads")?;
+        if supporting_reads.contains_key(allele) {
+            let allele_reads = supporting_reads.get(allele).ok_or_else(|| {
+                missing_data_error("allele in supporting_reads", format!("{allele:?}"))
+            })?;
             for read in allele_reads {
                 if read_edges.contains_key(read) {
                     let read_nodes = read_edges
                         .get(read)
-                        .ok_or("key not found: read in read_edges")?;
+                        .ok_or_else(|| missing_data_error("read in read_edges", read))?;
                     let read_nodes_len = read_nodes.len();
                     let mut found_match = false;
                     // allele incomplete. read can start earlier than allele
@@ -616,7 +675,7 @@ pub fn get_read_position_in_allele(
                             reads_match_allele_index
                                 .entry(allele.clone())
                                 .or_default()
-                                .push((read.to_string(), 0 - i_index));
+                                .push((read.clone(), 0 - i_index));
                         }
                     }
                     if !found_match && allele_len >= read_nodes_len {
@@ -648,7 +707,7 @@ pub fn get_read_position_in_allele(
                             reads_match_allele_index
                                 .entry(allele.clone())
                                 .or_default()
-                                .push((read.to_string(), i_index));
+                                .push((read.clone(), i_index));
                         }
                     }
                 }
@@ -691,10 +750,10 @@ pub fn make_data_for_alleles(
     let mut out_vec = Vec::new();
     let read_edges = &fp_info.read_edges;
     let read_positions = &fp_info.read_positions;
-    let alleles = reads_match_allele_index.keys();
+    let alleles = reads_match_allele_index.keys().collect::<Vec<_>>();
     let mut all_var_original = Vec::new();
-    if !variant_list.is_none() {
-        all_var_original = variant_list.unwrap();
+    if let Some(variant_list) = variant_list {
+        all_var_original = variant_list;
     } else {
         for variant in variant_name_old_format.keys() {
             if !all_var_original.contains(variant) {
@@ -705,33 +764,21 @@ pub fn make_data_for_alleles(
     let mut all_var_pos_original = Vec::new();
     let mut indel_pos = Vec::new();
     for var in &all_var_original {
-        let fields = var.split_terminator(':').collect::<Vec<_>>();
-        //let var_pos = fields.first().unwrap().parse::<i64>().unwrap();
-        let var_pos = fields
-            .first()
-            .unwrap()
-            .split_terminator('-')
-            .collect::<Vec<_>>()
-            .last()
-            .unwrap()
-            .parse::<i64>()?;
-        let fields2 = fields
-            .last()
-            .unwrap()
-            .split_terminator('>')
-            .collect::<Vec<_>>();
-        let var_alt = fields2.last().unwrap();
+        let var_pos = parse_variant_position(var)?;
+        let (_var_ref, var_alt) = parse_variant_alleles(var)?;
         if var_alt.contains('-') {
             // handle positions in a deletion
             let var_len = var_alt
                 .split('-')
                 .nth(1)
-                .unwrap()
+                .ok_or_else(|| {
+                    format!("Deletion variant is missing a deleted sequence length: '{var}'")
+                })?
                 .chars()
                 .take_while(|c| c.is_ascii_digit())
                 .collect::<String>()
                 .parse::<i64>()
-                .unwrap();
+                .map_err(|e| format!("Failed to parse deletion length from '{var}': {e}"))?;
             for pos in var_pos..(var_pos + var_len + 1) {
                 all_var_pos_original.push(pos);
             }
@@ -744,15 +791,7 @@ pub fn make_data_for_alleles(
     }
     let mut all_var_pos = Vec::new();
     for var in &all_var_original {
-        let fields = var.split_terminator(':').collect::<Vec<_>>();
-        let pos = fields
-            .first()
-            .unwrap()
-            .split_terminator('-')
-            .collect::<Vec<_>>()
-            .last()
-            .unwrap()
-            .parse::<i64>()?;
+        let pos = parse_variant_position(var)?;
         let pos_count = all_var_pos_original.iter().filter(|x| **x == pos).count();
         // take only positions with only one variant
         if pos_count == 1 && !indel_pos.contains(&pos) {
@@ -762,242 +801,242 @@ pub fn make_data_for_alleles(
     all_var_pos.sort();
     let all_var_sorted = all_var_original
         .iter()
-        .filter(|x| {
-            let fields = x.split_terminator(':').collect::<Vec<_>>();
-            let pos = fields
-                .first()
-                .unwrap()
-                .split_terminator('-')
-                .collect::<Vec<_>>()
-                .last()
-                .unwrap()
-                .parse::<i64>()
-                .unwrap();
-            all_var_pos.contains(&pos)
-        })
-        .map(|x| {
-            let fields = x.split_terminator(':').collect::<Vec<_>>();
-            let pos = fields
-                .first()
-                .unwrap()
-                .split_terminator('-')
-                .collect::<Vec<_>>()
-                .last()
-                .unwrap()
-                .parse::<i64>()
-                .unwrap();
-            (x, pos)
-        })
+        .map(|x| Ok((x.clone(), parse_variant_position(x)?)))
+        .collect::<Result<Vec<_>, DError>>()?
+        .into_iter()
+        .filter(|(_, pos)| all_var_pos.contains(pos))
         .sorted_by(|a, b| a.1.cmp(&b.1))
-        .map(|(x, _y)| x.clone())
+        .map(|(x, _y)| x)
         .collect::<Vec<String>>();
 
     debug!("all_var_sorted {all_var_sorted:?}");
 
     let nvar = all_var_sorted.len() as i64;
     let mut allele_lens = Vec::new();
-    for allele in alleles.clone() {
-        let allele_len = allele.len() - 2;
-        allele_lens.push(allele_len);
+    for allele in &alleles {
+        let allele = *allele;
+        allele_lens.push(allele.len() - 2);
     }
     let allele_len_max = *allele_lens
         .iter()
         .max()
         .ok_or("cannot find max of allele_lens")? as i64;
     // go through each allele
-    for allele in alleles.clone() {
-        let this_allele_variants = complete_allele_variants
-            .get(allele)
-            .ok_or("key not found: allele in complete_allele_variants")?;
-        let mut out_vec_allele = Vec::new();
-        let allele_len = allele.len() - 2;
-        let allele2 = allele.to_vec();
-        // first the allele itself
-        let mut allele_line: Vec<usize> = Vec::new();
-        // add left flank
-        allele_line.push(4);
-        for repeat_index in 0..allele_len_max {
-            if repeat_index < allele_len as i64 {
-                let mut fp_var = &vec![];
-                let node_name = allele2[repeat_index as usize + 1];
-                let node_on_allele = (repeat_index as usize + 1, node_name);
-                if this_allele_variants.contains_key(&node_on_allele) {
-                    fp_var = this_allele_variants.get(&node_on_allele).unwrap();
-                } else {
-                    if fps_on_incomplete_alleles.contains_key(&node_name) {
-                        fp_var = fps_on_incomplete_alleles.get(&node_name).unwrap();
+    for allele in &alleles {
+        let allele = *allele;
+        if complete_allele_variants.contains_key(allele) {
+            let this_allele_variants = complete_allele_variants
+                .get(allele)
+                .ok_or("key not found: allele in complete_allele_variants")?;
+            let mut out_vec_allele = Vec::new();
+            let allele_len = allele.len() - 2;
+            // first the allele itself
+            let mut allele_line: Vec<usize> = Vec::new();
+            // add left flank
+            allele_line.push(4);
+            for repeat_index in 0..allele_len_max {
+                if repeat_index < allele_len as i64 {
+                    let mut fp_var = &vec![];
+                    let node_name = allele[repeat_index as usize + 1];
+                    let node_on_allele = (repeat_index as usize + 1, node_name);
+                    if this_allele_variants.contains_key(&node_on_allele) {
+                        fp_var = this_allele_variants.get(&node_on_allele).ok_or_else(|| {
+                            format!(
+                                "Missing complete-allele variant entry for node {node_on_allele:?}"
+                            )
+                        })?;
+                    } else if fps_on_incomplete_alleles.contains_key(&node_name) {
+                        fp_var = fps_on_incomplete_alleles.get(&node_name).ok_or_else(|| {
+                            format!(
+                                "Missing incomplete-allele variant entry for node '{node_name}'"
+                            )
+                        })?;
                     }
-                }
-                for var in &all_var_sorted {
-                    let new_var_name = variant_name_old_format.get(var).unwrap();
-                    if fp_var.contains(new_var_name) {
-                        allele_line.push(1);
-                    } else {
-                        allele_line.push(0);
+                    for var in &all_var_sorted {
+                        let new_var_name = variant_name_old_format.get(var).ok_or_else(|| {
+                            format!("Missing new-format variant name for old-format key '{var}'")
+                        })?;
+                        if fp_var.contains(new_var_name) {
+                            allele_line.push(1);
+                        } else {
+                            allele_line.push(0);
+                        }
                     }
                 }
             }
-        }
-        // add right flank
-        allele_line.push(4);
-        out_vec_allele.push(ReadInfoForPlotting {
-            start_position: 0,
-            bases: allele_line,
-            is_nonuniq: false,
-        });
-        // go through each read to get bases at each position for this allele
-        let mut read_lines = Vec::new();
-        for (read, read_index_on_allele) in reads_match_allele_index[allele].iter() {
-            let mut read_line = Vec::new();
-            // before read start
-            let n_copy_before: i64 = if *read_index_on_allele < 1 {
-                0
-            } else {
-                *read_index_on_allele as i64 - 1
-            };
+            // add right flank
+            allele_line.push(4);
+            out_vec_allele.push(ReadInfoForPlotting {
+                start_position: 0,
+                bases: allele_line,
+                is_nonuniq: false,
+            });
+            // go through each read to get bases at each position for this allele
+            let mut read_lines = Vec::new();
+            for (read, read_index_on_allele) in reads_match_allele_index[allele].iter() {
+                let mut read_line = Vec::new();
+                // before read start
+                let n_copy_before: i64 = if *read_index_on_allele < 1 {
+                    0
+                } else {
+                    *read_index_on_allele as i64 - 1
+                };
 
-            let this_read_nodes = read_edges[read].clone();
-            let this_read_positions = read_positions[read].clone();
-            let mut read_map_index = 0;
-            for (read_node, read_position) in this_read_nodes.iter().zip(this_read_positions.iter())
-            {
-                read_map_index += 1;
-                if *read_index_on_allele + read_map_index - 1 > 0
-                    && *read_index_on_allele + read_map_index - 1 < allele_len as i32 + 1
-                    && *read_node >= 0
+                let this_read_nodes = &read_edges[read];
+                let this_read_positions = &read_positions[read];
+                if this_read_nodes.len() != this_read_positions.len() {
+                    return Err(invalid_data_error(format!(
+                        "Read '{read}' has {} fingerprint nodes but {} fingerprint positions while mapping variant support onto alleles",
+                        this_read_nodes.len(),
+                        this_read_positions.len()
+                    )));
+                }
+                let mut read_map_index = 0;
+                for (read_node, read_position) in
+                    this_read_nodes.iter().zip(this_read_positions.iter())
                 {
-                    let new_read_name = format!("{}:{}", read, *read_position);
-                    if read_info.contains_key(&new_read_name) {
-                        let this_read_bases = read_info
-                            .get(&new_read_name)
-                            .ok_or("key not found: new_read_name in read_info")?;
-                        for (variant_index, pos) in all_var_pos.iter().enumerate() {
-                            let expected_variant_old = &all_var_sorted[variant_index];
-                            let expected_variant = expected_variant_old
-                                .split_terminator('>')
-                                .collect::<Vec<_>>()
-                                .last()
-                                .ok_or("last not found in expected_variant_new")?
-                                .parse::<String>()?;
-                            let expected_ref = expected_variant_old
-                                .split_terminator(':')
-                                .collect::<Vec<_>>()
-                                .last()
-                                .unwrap()
-                                .split_terminator('>')
-                                .collect::<Vec<_>>()
-                                .first()
-                                .unwrap()
-                                .parse::<String>()?;
-                            let fields = expected_variant_old
-                                .split_terminator(':')
-                                .collect::<Vec<_>>();
-                            let variant_tid = fields
-                                .first()
-                                .unwrap()
-                                .split_terminator('-')
-                                .collect::<Vec<_>>()
-                                .first()
-                                .unwrap()
-                                .parse::<i32>()?;
-                            let tid = this_read_bases.first_key_value().unwrap().0 .0;
-                            let ref_name = ref_reader.seq_name(tid as i32)?;
-                            let ref_len = ref_reader.fetch_seq_len(&ref_name);
-                            if *pos >= ref_len as i64 {
-                                debug!("read {new_read_name:?} node {read_node} {expected_variant_old:?} pos {pos} is out of range for ref {ref_name}");
-                                read_line.push(0);
-                            } else if !this_read_bases.contains_key(&(tid, *pos)) {
-                                trace!("read {new_read_name:?} node {read_node} {expected_variant_old:?}, ({tid}, {pos}) not in this_read_bases");
-                                read_line.push(2);
-                            } else if variant_tid == tid {
-                                let this_read_base = this_read_bases
-                                    .get(&(tid, *pos))
-                                    .ok_or("index not found in this_read_bases")?;
-                                let this_read_base_string =
-                                    std::str::from_utf8(this_read_base)?.to_string();
-                                if this_read_base_string == expected_variant {
-                                    read_line.push(1);
-                                } else if this_read_base_string == expected_ref {
+                    read_map_index += 1;
+                    if *read_index_on_allele + read_map_index - 1 > 0
+                        && *read_index_on_allele + read_map_index - 1 < allele_len as i32 + 1
+                        && *read_node >= 0
+                    {
+                        let new_read_name = format!("{}:{}", read, *read_position);
+                        if read_info.contains_key(&new_read_name) {
+                            let this_read_bases = read_info
+                                .get(&new_read_name)
+                                .ok_or_else(|| missing_data_error("read bases", &new_read_name))?;
+                            for (variant_index, pos) in all_var_pos.iter().enumerate() {
+                                let expected_variant_old = &all_var_sorted[variant_index];
+                                let (expected_ref, expected_variant) =
+                                    parse_variant_alleles(expected_variant_old)?;
+                                let variant_tid = expected_variant_old
+                                    .split_terminator(':')
+                                    .next()
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "Variant name is missing a tid-position field: '{expected_variant_old}'"
+                                        )
+                                    })?
+                                    .split_terminator('-')
+                                    .next()
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "Variant name is missing a tid field: '{expected_variant_old}'"
+                                        )
+                                    })?
+                                    .parse::<i32>()?;
+                                let tid = this_read_bases
+                                    .first_key_value()
+                                    .ok_or_else(|| invalid_data_error(format!(
+                                        "read bases map is empty while plotting variants for '{new_read_name}'"
+                                    )))?
+                                    .0
+                                     .0;
+                                let ref_name = ref_reader.seq_name(tid as i32)?;
+                                let ref_len = ref_reader.fetch_seq_len(&ref_name);
+                                if *pos >= ref_len as i64 {
+                                    debug!("read {new_read_name:?} node {read_node} {expected_variant_old:?} pos {pos} is out of range for ref {ref_name}");
                                     read_line.push(0);
-                                } else {
-                                    trace!("read {new_read_name:?} node {read_node} pos {pos} {expected_variant_old:?} expected_variant {expected_variant:?} this_read_base_string {this_read_base_string:?}");
+                                } else if !this_read_bases.contains_key(&(tid, *pos)) {
+                                    trace!("read {new_read_name:?} node {read_node} {expected_variant_old:?}, ({tid}, {pos}) not in this_read_bases");
                                     read_line.push(2);
+                                } else if variant_tid == tid {
+                                    let this_read_base =
+                                        this_read_bases.get(&(tid, *pos)).ok_or_else(|| {
+                                            missing_data_error(
+                                                "read base at requested tid/position",
+                                                format!(
+                                                    "read '{new_read_name}', tid {tid}, pos {pos}"
+                                                ),
+                                            )
+                                        })?;
+                                    let this_read_base_string =
+                                        std::str::from_utf8(this_read_base)?.to_string();
+                                    if this_read_base_string == expected_variant {
+                                        read_line.push(1);
+                                    } else if this_read_base_string == expected_ref {
+                                        read_line.push(0);
+                                    } else {
+                                        trace!("read {new_read_name:?} node {read_node} pos {pos} {expected_variant_old:?} expected_variant {expected_variant:?} this_read_base_string {this_read_base_string:?}");
+                                        read_line.push(2);
+                                    }
+                                } else {
+                                    // variant is on a different tid
+                                    read_line.push(0);
                                 }
-                            } else {
-                                // variant is on a different tid
-                                read_line.push(0);
+                            }
+                        } else if *read_node == 0 {
+                            debug!("read {new_read_name:?} node {read_node} not in read_info");
+                            for (_variant_index, _pos) in all_var_pos.iter().enumerate() {
+                                read_line.push(2);
                             }
                         }
-                    } else if *read_node == 0 {
-                        debug!("read {new_read_name:?} node {read_node} not in read_info");
-                        for (_variant_index, _pos) in all_var_pos.iter().enumerate() {
-                            read_line.push(2);
-                        }
                     }
                 }
-            }
-            assert_eq!(read_map_index, this_read_nodes.len() as i32);
-            let mut beginning_unknown: usize = 0;
-            for a in &read_line {
-                if *a == 2 {
-                    beginning_unknown += 1;
-                } else {
-                    break;
+                let mut beginning_unknown: usize = 0;
+                for a in &read_line {
+                    if *a == 2 {
+                        beginning_unknown += 1;
+                    } else {
+                        break;
+                    }
                 }
-            }
-            let start_position = nvar * n_copy_before + beginning_unknown as i64;
-            let mut read_line_new = read_line[beginning_unknown..].to_vec();
-            // add left and right flanks
-            if start_position == 0 {
-                let first_node = this_read_nodes
-                    .first()
-                    .ok_or("first not found in this_read_nodes")?;
-                if *first_node < 0 && *first_node > -10 {
-                    read_line_new.insert(0, 4);
+                let start_position = nvar * n_copy_before + beginning_unknown as i64;
+                let mut read_line_new = read_line.split_off(beginning_unknown);
+                // add left and right flanks
+                if start_position == 0 {
+                    let first_node = this_read_nodes
+                        .first()
+                        .ok_or_else(|| missing_data_error("first fingerprint node", read))?;
+                    if *first_node < 0 && *first_node > -10 {
+                        read_line_new.insert(0, 4);
+                    }
                 }
-            }
-            let last_node = this_read_nodes
-                .last()
-                .ok_or("last not found in this_read_nodes")?;
-            if *last_node <= -10 {
-                read_line_new.push(4);
-            } else {
-                while *read_line_new
+                let last_node = this_read_nodes
                     .last()
-                    .ok_or("last not found in read_line_new")?
-                    == 2
-                {
-                    read_line_new.pop();
-                }
-                //let total_expect_len = nvar * (allele_len as i64);
-                //let read_end = nvar * n_copy_before + read_line_new.len() as i64;
-                //while read_end > total_expect_len {
-                //    read_line.pop();
-                //}
-            }
-            read_lines.push(ReadInfoForPlotting {
-                start_position,
-                bases: read_line_new,
-                is_nonuniq: nonunique_reads.contains(read),
-            });
-        }
-        read_lines.sort_by(|a, b| a.start_position.cmp(&b.start_position));
-        for a in read_lines {
-            if a.bases.contains(&4) || a.bases.len() > nvar as usize {
-                // other reads not overlapping left flank need to shift right by one
-                let new_start = if a.bases.starts_with(&[4]) {
-                    a.start_position
+                    .ok_or_else(|| missing_data_error("last fingerprint node", read))?;
+                if *last_node <= -10 {
+                    read_line_new.push(4);
                 } else {
-                    a.start_position + 1
-                };
-                out_vec_allele.push(ReadInfoForPlotting {
-                    start_position: new_start,
-                    bases: a.bases,
-                    is_nonuniq: a.is_nonuniq,
+                    while *read_line_new
+                        .last()
+                        .ok_or_else(|| invalid_data_error(format!(
+                            "trimmed read line is unexpectedly empty while plotting variants for read '{read}'"
+                        )))?
+                        == 2
+                    {
+                        read_line_new.pop();
+                    }
+                    //let total_expect_len = nvar * (allele_len as i64);
+                    //let read_end = nvar * n_copy_before + read_line_new.len() as i64;
+                    //while read_end > total_expect_len {
+                    //    read_line.pop();
+                    //}
+                }
+                read_lines.push(ReadInfoForPlotting {
+                    start_position,
+                    bases: read_line_new,
+                    is_nonuniq: nonunique_reads.contains(read),
                 });
             }
+            read_lines.sort_by(|a, b| a.start_position.cmp(&b.start_position));
+            for a in read_lines {
+                if a.bases.contains(&4) || a.bases.len() > nvar as usize {
+                    // other reads not overlapping left flank need to shift right by one
+                    let new_start = if a.bases.starts_with(&[4]) {
+                        a.start_position
+                    } else {
+                        a.start_position + 1
+                    };
+                    out_vec_allele.push(ReadInfoForPlotting {
+                        start_position: new_start,
+                        bases: a.bases,
+                        is_nonuniq: a.is_nonuniq,
+                    });
+                }
+            }
+            out_vec.push(out_vec_allele);
         }
-        out_vec.push(out_vec_allele);
     }
     Ok(AlleleInfoForPlotting {
         reads: out_vec,
@@ -1028,7 +1067,7 @@ mod tests {
         set1.insert(String::from("read2"));
         supporting_reads.entry(vec![1, 2, 3]).or_insert(set1);
         let reads_match_allele_index =
-            get_read_position_in_allele(read_edges, alleles, supporting_reads, false).unwrap();
+            get_read_position_in_allele(&read_edges, &alleles, &supporting_reads, false).unwrap();
         println!("reads_match_allele_index {:?}", reads_match_allele_index);
         assert!(reads_match_allele_index.contains_key(&vec![1, 2, 3]));
         let hap1_reads = reads_match_allele_index[&vec![1, 2, 3]].clone();
@@ -1054,7 +1093,7 @@ mod tests {
         set1.insert(String::from("read3"));
         supporting_reads.entry(vec![1, 2, 3, 7]).or_insert(set1);
         let reads_match_allele_index =
-            get_read_position_in_allele(read_edges, alleles, supporting_reads, true).unwrap();
+            get_read_position_in_allele(&read_edges, &alleles, &supporting_reads, true).unwrap();
         assert!(reads_match_allele_index.contains_key(&vec![1, 2, 3, 7]));
         let hap1_reads = reads_match_allele_index[&vec![1, 2, 3, 7]].clone();
         assert!(hap1_reads.contains(&(String::from("read1"), -1)));
@@ -1071,8 +1110,23 @@ mod tests {
             String::from("C").as_bytes().to_vec(),
         ];
         let refseq = &[b'T', b'A', b'T'];
-        let consensus_var = get_consensus_var(bases, 0, refseq).unwrap();
+        let consensus_var = get_consensus_var(&bases, 0, refseq).unwrap();
         assert_eq!(consensus_var.base, Some(String::from("A")));
+
+        let bases = vec![String::from("A").as_bytes().to_vec()];
+        let refseq = &[b'T', b'A', b'T'];
+        let consensus_var = get_consensus_var(&bases, 0, refseq).unwrap();
+        assert_eq!(consensus_var.base, Some(String::from("A")));
+        assert_eq!(consensus_var.nread, 1);
+
+        let bases = vec![
+            String::from("A").as_bytes().to_vec(),
+            String::from("C").as_bytes().to_vec(),
+        ];
+        let refseq = &[b'T', b'A', b'T'];
+        let consensus_var = get_consensus_var(&bases, 0, refseq).unwrap();
+        assert_eq!(consensus_var.base, None);
+        assert_eq!(consensus_var.nread, 0);
 
         let bases = vec![
             String::from("A").as_bytes().to_vec(),
@@ -1080,7 +1134,7 @@ mod tests {
             String::from("C").as_bytes().to_vec(),
         ];
         let refseq = &[b'T', b'A', b'T'];
-        let consensus_var = get_consensus_var(bases, 1, refseq).unwrap();
+        let consensus_var = get_consensus_var(&bases, 1, refseq).unwrap();
         assert_eq!(consensus_var.base, None);
 
         let bases = vec![
@@ -1090,7 +1144,7 @@ mod tests {
             String::from("C").as_bytes().to_vec(),
         ];
         let refseq = &[b'T', b'A', b'T'];
-        let consensus_var = get_consensus_var(bases, 1, refseq).unwrap();
+        let consensus_var = get_consensus_var(&bases, 1, refseq).unwrap();
         assert_eq!(consensus_var.base, None);
 
         // indel, unfiltered
@@ -1101,7 +1155,7 @@ mod tests {
             String::from("C").as_bytes().to_vec(),
         ];
         let refseq = &[b'T', b'A', b'T', b'C'];
-        let consensus_var = get_consensus_var(bases, 1, refseq).unwrap();
+        let consensus_var = get_consensus_var(&bases, 1, refseq).unwrap();
         assert_eq!(consensus_var.base, Some(String::from("AT")));
         assert_eq!(consensus_var.nread, 3);
         assert_eq!(consensus_var.depth, 4);
@@ -1114,7 +1168,7 @@ mod tests {
             String::from("C").as_bytes().to_vec(),
         ];
         let refseq = &[b'T', b'A', b'T', b'C'];
-        let consensus_var = get_consensus_var(bases, 1, refseq).unwrap();
+        let consensus_var = get_consensus_var(&bases, 1, refseq).unwrap();
         assert_eq!(consensus_var.base, Some(String::from("A")));
         assert_eq!(consensus_var.ref_base, String::from("AT"));
 
@@ -1127,7 +1181,7 @@ mod tests {
             String::from("C").as_bytes().to_vec(),
         ];
         let refseq = &[b'T', b'A', b'T', b'T'];
-        let consensus_var = get_consensus_var(bases, 1, refseq).unwrap();
+        let consensus_var = get_consensus_var(&bases, 1, refseq).unwrap();
         assert_eq!(consensus_var.base, None);
 
         // indel, filtered
@@ -1138,8 +1192,59 @@ mod tests {
             String::from("C").as_bytes().to_vec(),
         ];
         let refseq = &[b'T', b'A', b'T', b'T'];
-        let consensus_var = get_consensus_var(bases, 1, refseq).unwrap();
+        let consensus_var = get_consensus_var(&bases, 1, refseq).unwrap();
         assert_eq!(consensus_var.base, None);
         */
+    }
+
+    #[test]
+    fn test_get_fp_bases_errors_on_mismatched_read_lengths() {
+        let read_edges = BTreeMap::from([(String::from("read1"), vec![1, 2])]);
+        let read_positions = BTreeMap::from([(String::from("read1"), vec![100])]);
+        let reads_match_allele_index =
+            BTreeMap::from([(vec![0, 1, 2, 0], vec![(String::from("read1"), 0)])]);
+        let read_info: BTreeMap<String, BTreeMap<(i32, i64), Vec<u8>>> = BTreeMap::new();
+
+        let error = get_fp_bases(
+            &read_edges,
+            &read_positions,
+            &reads_match_allele_index,
+            &read_info,
+            &[],
+        )
+        .expect_err("mismatched read node/position counts should error");
+
+        assert!(
+            error.to_string().contains(
+                "invalid data: Read 'read1' has 1 fingerprint positions but 2 fingerprint nodes"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_parse_variant_position_errors_on_missing_position() {
+        let error = parse_variant_position(":A>G")
+            .expect_err("variant names without a position should error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid data: variant name has an empty position field"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_parse_variant_alleles_errors_on_invalid_format() {
+        let error = parse_variant_alleles("123:A/G")
+            .expect_err("variant allele fields without REF>ALT should error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid data: variant allele field is not REF>ALT"),
+            "unexpected error: {error}"
+        );
     }
 }

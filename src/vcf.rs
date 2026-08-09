@@ -1,4 +1,6 @@
-use crate::util::{DError, DResult, RegionCoordinates};
+use crate::util::{
+    invalid_data_error, missing_data_error, DError, DResult, RegionCoordinates, FULL_VERSION,
+};
 use crate::variant::VariantInfoByVariant;
 use itertools::Itertools;
 use rust_htslib::bcf::{self, record::GenotypeAllele, Format};
@@ -12,6 +14,37 @@ const VCF_LINES: [&str; 3] = [
     r#"##INFO=<ID=RU,Number=.,Type=String,Description="Repeat unit that the variant is in. The four values for each repeat unit are repeat unit ID, repeat unit position on allele, read depth and number of reads supporting the variant">"#,
     r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">"#,
 ];
+
+/// Build the shared VCF header for both populated and header-only Kivvi outputs.
+fn build_vcf_header(
+    region_coordinates: &RegionCoordinates,
+    allele_len: usize,
+) -> bcf::header::Header {
+    let mut vcf_header = bcf::header::Header::new();
+    for line in VCF_LINES.iter() {
+        vcf_header.push_record(line.as_bytes());
+    }
+
+    let contig_line = format!(
+        r#"##contig=<ID={},length={}>"#,
+        region_coordinates.chromosome_output, region_coordinates.chromosome_len
+    );
+    vcf_header.push_record(contig_line.as_bytes());
+
+    let args: Vec<String> = env::args().collect();
+    let command_line = args.join(" ");
+    let line = format!("##{}Command={}", env!("CARGO_PKG_NAME"), command_line);
+    vcf_header.push_record(line.as_bytes());
+    let version_line = format!("##{}Version={}", env!("CARGO_PKG_NAME"), &*FULL_VERSION);
+    vcf_header.push_record(version_line.as_bytes());
+
+    for i in 0..allele_len {
+        let allele_name = format!("allele{}", i + 1);
+        vcf_header.push_sample(allele_name.as_bytes());
+    }
+
+    vcf_header
+}
 
 /// Write variants to VCF
 /// # Arguments
@@ -30,15 +63,8 @@ pub fn write_vcf(
     // sort variant_summary
     let variant_summary_pos = variant_summary
         .keys()
-        .map(|x| {
-            x.split_terminator(':')
-                .collect::<Vec<_>>()
-                .first()
-                .unwrap()
-                .parse::<i64>()
-                .unwrap()
-        })
-        .collect::<Vec<i64>>();
+        .map(|x| parse_variant_key(x).map(|parsed| parsed.position))
+        .collect::<Result<Vec<i64>, DError>>()?;
     let all_var_sorted = variant_summary
         .keys()
         .zip(variant_summary_pos.iter())
@@ -46,46 +72,23 @@ pub fn write_vcf(
         .map(|(x, _y)| x.clone())
         .collect::<Vec<String>>();
 
-    let mut vcf_header = bcf::header::Header::new();
-    // add header
-    for line in VCF_LINES.iter() {
-        vcf_header.push_record(line.as_bytes());
-    }
-
-    let contig_line = format!(
-        r#"##contig=<ID={},length={}>"#,
-        region_coordinates.chromosome_output, region_coordinates.chromosome_len
-    );
-    vcf_header.push_record(contig_line.as_bytes());
-
-    let args: Vec<String> = env::args().collect();
-    let command_line = args.join(" ");
-    let line = format!("##{}Command={}", env!("CARGO_PKG_NAME"), command_line);
-    vcf_header.push_record(line.as_bytes());
-    //vcf_header.push_sample(sample_name.as_bytes());
-    for i in 0..allele_len {
-        let allele_name = format!("allele{}", i + 1);
-        vcf_header.push_sample(allele_name.as_bytes());
-    }
+    let vcf_header = build_vcf_header(&region_coordinates, allele_len);
 
     let mut writer = bcf::Writer::from_path(output_path, &vcf_header, true, Format::Vcf)
         .map_err(|_| format!("Invalid VCF output path: {}", output_path.display()))?;
 
     for variant in all_var_sorted {
-        let variant_info = variant_summary.get(&variant).ok_or("key not found")?;
+        let variant_info = variant_summary
+            .get(&variant)
+            .ok_or_else(|| missing_data_error("variant summary entry", &variant))?;
         let mut record = writer.empty_record();
+        let parsed_variant = parse_variant_key(&variant)?;
 
         let contig = region_coordinates.chromosome_output.as_bytes();
         let rid = writer.header().name2rid(contig)?;
         record.set_rid(Some(rid));
 
-        let variant_pos = variant
-            .clone()
-            .split_terminator(':')
-            .collect::<Vec<_>>()
-            .first()
-            .ok_or("first not found")?
-            .parse::<i64>()?;
+        let variant_pos = parsed_variant.position;
         record.set_pos(variant_pos - 1);
 
         // variant quality?
@@ -95,30 +98,10 @@ pub fn write_vcf(
         let (data, alleles_per_variant) = encode_ru_field(variant_info.to_vec())?;
         record.push_info_string(b"RU", &[data.as_bytes()])?;
 
-        let ref_base = variant
-            .clone()
-            .split_terminator(':')
-            .collect::<Vec<_>>()
-            .last()
-            .ok_or("last not found")?
-            .split_terminator('>')
-            .collect::<Vec<_>>()
-            .first()
-            .ok_or("first not found")?
-            .to_string();
-        let alt_base = variant
-            .clone()
-            .split_terminator(':')
-            .collect::<Vec<_>>()
-            .last()
-            .ok_or("last not found")?
-            .split_terminator('>')
-            .collect::<Vec<_>>()
-            .last()
-            .ok_or("last not found")?
-            .to_string();
-
-        let alleles: &[&[u8]] = &[ref_base.as_bytes(), alt_base.as_bytes()];
+        let alleles: &[&[u8]] = &[
+            parsed_variant.ref_base.as_bytes(),
+            parsed_variant.alt_base.as_bytes(),
+        ];
         record.set_alleles(alleles)?;
         record.set_filters(&["PASS".as_bytes()])?;
 
@@ -136,6 +119,18 @@ pub fn write_vcf(
         writer.write(&record)?;
     }
 
+    Ok(())
+}
+
+/// Write a header-only VCF for a successful run with no callable target-overlapping reads.
+/// # Arguments
+/// * `output_path` - output VCF
+/// * `region_coordinates` - region coordinates for the target locus
+pub fn write_empty_vcf(output_path: &PathBuf, region_coordinates: RegionCoordinates) -> DResult {
+    let mut vcf_header = build_vcf_header(&region_coordinates, 0);
+    vcf_header.push_record(br#"##kivviStatus=no_target_reads"#);
+    let _writer = bcf::Writer::from_path(output_path, &vcf_header, true, Format::Vcf)
+        .map_err(|_| format!("Invalid VCF output path: {}", output_path.display()))?;
     Ok(())
 }
 
@@ -157,13 +152,19 @@ fn encode_ru_field(results: Vec<VariantInfoByVariant>) -> Result<(String, HashSe
         if let Some(allele_name_string) = allele_name {
             encoding += allele_name_string;
             let allele_index = allele_name_string
-                .to_string()
                 .split_terminator('.')
-                .collect::<Vec<_>>()
-                .first()
-                .ok_or("first not found")?
+                .next()
+                .ok_or_else(|| {
+                    invalid_data_error(format!(
+                        "Unexpected allele name format in RU field: '{allele_name_string}'"
+                    ))
+                })?
                 .parse::<i64>()
-                .unwrap();
+                .map_err(|e| {
+                    format!(
+                        "Failed to parse allele index from RU field '{allele_name_string}': {e}"
+                    )
+                })?;
             alleles.insert(allele_index);
         } else {
             encoding += "Unknown";
@@ -175,4 +176,39 @@ fn encode_ru_field(results: Vec<VariantInfoByVariant>) -> Result<(String, HashSe
         encoding += &hap.nread.to_string();
     }
     Ok((encoding, alleles))
+}
+
+/// Parsed components of the internal variant key format used while building VCF
+/// records.
+struct ParsedVariantKey<'a> {
+    position: i64,
+    ref_base: &'a str,
+    alt_base: &'a str,
+}
+
+/// Parse a variant key of the form `POSITION:...:REF>ALT`.
+/// # Arguments
+/// * `variant` - internal variant identifier used by Kivvi
+/// # Returns
+/// * `ParsedVariantKey` - parsed position and allele components for VCF output
+fn parse_variant_key(variant: &str) -> Result<ParsedVariantKey<'_>, DError> {
+    let mut fields = variant.split_terminator(':');
+    let position = fields
+        .next()
+        .ok_or_else(|| missing_data_error("variant key position", variant))?
+        .parse::<i64>()
+        .map_err(|e| format!("Failed to parse variant position from '{variant}': {e}"))?;
+    let allele_field = fields
+        .next_back()
+        .ok_or_else(|| missing_data_error("variant key allele field", variant))?;
+    let (ref_base, alt_base) = allele_field.split_once('>').ok_or_else(|| {
+        invalid_data_error(format!(
+            "Variant allele field is not REF>ALT in '{variant}'"
+        ))
+    })?;
+    Ok(ParsedVariantKey {
+        position,
+        ref_base,
+        alt_base,
+    })
 }

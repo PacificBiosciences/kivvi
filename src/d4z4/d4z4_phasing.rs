@@ -1,12 +1,9 @@
-use crate::assembly::assembler::{
-    build_graph, match_reads_and_haplotypes, AssemblyResult, FpGraph,
-};
-use crate::assembly::assembler_utils::{
-    compare_two_haps_same_length, find_overlapping_alleles, redundant_haplotype_allowed,
-};
+use crate::assembly::assembler::FpGraph;
 use crate::caller::vec_to_string;
 use crate::repeat_unit::fingerprint::FingerprintInfo;
-use crate::util::DError;
+use crate::util::{
+    create_kivvi_temp_dir, invalid_data_error, kivvi_temp_root, missing_data_error, DError,
+};
 use crate::variant::get_read_position_in_allele;
 use log::{debug, trace};
 use paraphase::config::region::try_load;
@@ -17,6 +14,180 @@ use rust_htslib::bam::{self, Read, Record};
 use std::cmp;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+
+const PARAPHASE_D4Z4_CONFIG: &[u8] = std::include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/d4z4/paraphase_d4z4_config.yaml"
+));
+
+fn strip_chr_region_token(token: &str) -> String {
+    if let Some((chr, rest)) = token.split_once(':') {
+        format!("{}:{rest}", chr.strip_prefix("chr").unwrap_or(chr))
+    } else {
+        token.to_string()
+    }
+}
+
+fn strip_chr_in_region_config_yaml(input: &[u8]) -> Result<Vec<u8>, DError> {
+    let text = std::str::from_utf8(input)?;
+    let mut out = Vec::<String>::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(value) = trimmed.strip_prefix("realign_region: ") {
+            let updated = strip_chr_region_token(value.trim());
+            out.push(format!("  realign_region: {updated}"));
+        } else if let Some(value) = trimmed.strip_prefix("extract_regions: ") {
+            let updated = value
+                .split_whitespace()
+                .map(strip_chr_region_token)
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push(format!("  extract_regions: {updated}"));
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    Ok(out.join("\n").into_bytes())
+}
+
+fn load_region_config_for_bam(wgs_bam: &PathBuf) -> Result<paraphase::config::Region, DError> {
+    let reader = bam::Reader::from_path(wgs_bam)?;
+    let bam_uses_chr = reader
+        .header()
+        .target_names()
+        .into_iter()
+        .any(|name| name.starts_with(b"chr"));
+    let loaded_config_bytes = if bam_uses_chr {
+        PARAPHASE_D4Z4_CONFIG.to_vec()
+    } else {
+        strip_chr_in_region_config_yaml(PARAPHASE_D4Z4_CONFIG)?
+    };
+    let region_config = try_load(Some(&loaded_config_bytes))?;
+    debug!("paraphase region config {:?}", region_config);
+    Ok(region_config)
+}
+
+fn paraphase_gene_bam_path(
+    sample: &str,
+    output_path: &Path,
+    gene: &str,
+) -> Result<PathBuf, DError> {
+    let temp_root = kivvi_temp_root(output_path);
+    std::fs::create_dir_all(&temp_root)?;
+    Ok(temp_root.join(format!("{sample}.kivvi.paraphase.{gene}.bam")))
+}
+
+fn combined_paraphase_bam_path(sample: &str, output_path: &Path) -> PathBuf {
+    output_path.join(format!("{sample}.kivvi.paraphase.bam"))
+}
+
+/// Fetch a named Paraphase gene call from the phasing result map.
+/// # Arguments
+/// * `phasing_result` - Paraphase gene calls keyed by gene name
+/// * `gene` - gene name to look up
+/// # Returns
+/// * `&GeneCall` - gene call for the requested gene
+fn get_paraphase_gene_call<'a>(
+    phasing_result: &'a BTreeMap<String, GeneCall>,
+    gene: &str,
+) -> Result<&'a GeneCall, DError> {
+    phasing_result
+        .get(gene)
+        .ok_or_else(|| missing_data_error("Paraphase result for gene", gene))
+}
+
+pub fn phase_flanking_gene(
+    sample: &str,
+    output_path: &Path,
+    wgs_bam: &PathBuf,
+    genome_reference: &PathBuf,
+    gene: &str,
+    write_bam: bool,
+) -> Result<(GeneCall, Option<PathBuf>), DError> {
+    debug!("Running Paraphase for flanking region {gene}");
+    let region_config = load_region_config_for_bam(wgs_bam)?;
+    let tmp_dir = create_kivvi_temp_dir(output_path)?;
+    let reader = bam::Reader::from_path(wgs_bam)?;
+    let settings = phaser::Settings::new(
+        sample,
+        (genome_reference, wgs_bam),
+        tmp_dir.path(),
+        gene.to_string(),
+        &region_config,
+        /* genome depth= */ None,
+        /* sex = */ None,
+        String::from("38"),
+        None,
+        0.03,
+        false,
+    );
+
+    let mut phaser = phaser::Phaser::new(
+        settings,
+        Some(config::Gene::default()),
+        None, // Option<SiteSelectionSettings>
+        None, // Option<RealignSettings>
+    );
+    let res = phaser.run()?;
+
+    let bam_path = if write_bam {
+        let output_bam = paraphase_gene_bam_path(sample, output_path, gene)?;
+        let mut writer = bam::Writer::from_path(
+            &output_bam,
+            &bam::Header::from_template(reader.header()),
+            bam::Format::Bam,
+        )?;
+        let bam_writer = BamWriter::new(&phaser, &res);
+        for item in bam_writer.write_bams()? {
+            writer.write(&item)?;
+        }
+        Some(output_bam)
+    } else {
+        None
+    };
+    tmp_dir.close()?;
+    Ok((res, bam_path))
+}
+
+pub fn merge_phasing_bams(
+    sample: &str,
+    output_path: &Path,
+    wgs_bam: &PathBuf,
+    bam_paths: &[PathBuf],
+) -> Result<(), DError> {
+    let output_bam = combined_paraphase_bam_path(sample, output_path);
+    let header_reader = bam::Reader::from_path(wgs_bam)?;
+    let mut writer = bam::Writer::from_path(
+        &output_bam,
+        &bam::Header::from_template(header_reader.header()),
+        bam::Format::Bam,
+    )?;
+    let mut records = Vec::<Record>::new();
+    for bam_path in bam_paths {
+        let mut reader = bam::Reader::from_path(bam_path)?;
+        for record in reader.records() {
+            records.push(record?);
+        }
+    }
+    records.sort_by(|a, b| a.tid().cmp(&b.tid()).then(a.pos().cmp(&b.pos())));
+    for record in &records {
+        writer.write(record)?;
+    }
+    for bam_path in bam_paths {
+        if bam_path.exists() {
+            std::fs::remove_file(bam_path)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn remove_phasing_bam(sample: &str, output_path: &Path) -> Result<(), DError> {
+    let output_bam = combined_paraphase_bam_path(sample, output_path);
+    if output_bam.exists() {
+        std::fs::remove_file(output_bam)?;
+    }
+    Ok(())
+}
 
 /// Use paraphase to phase upstream regions
 /// # Arguments
@@ -35,73 +206,33 @@ pub fn phase_flanking(
     write_bam: bool,
 ) -> Result<BTreeMap<String, GeneCall>, DError> {
     debug!("Running Paraphase for flanking region");
-    const DATA: &[u8] = std::include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/data/d4z4/paraphase_d4z4_config.yaml"
-    ));
-    let region_config = try_load(Some(DATA))?;
-    debug!("paraphase region config {:?}", region_config);
-    let genes = region_config.keys().cloned().rev().collect::<Vec<_>>();
-    let mut ret = BTreeMap::<String, _>::new();
-    let mut bam_ret = std::collections::BTreeMap::<u64, Vec<bam::Record>>::new();
-
-    // temp dir
-    let tmp_dir = tempfile::TempDir::new()?;
-    let reader = bam::Reader::from_path(wgs_bam)?;
-    let output_bam = output_path.join(format!("{sample}.kivvi.paraphase.bam"));
-    let mut writer = bam::Writer::from_path(
-        &output_bam,
-        &bam::Header::from_template(reader.header()),
-        bam::Format::Bam,
+    let (dux4p5, dux4p5_bam) = phase_flanking_gene(
+        sample,
+        output_path,
+        wgs_bam,
+        genome_reference,
+        "DUX4p5",
+        write_bam,
     )?;
-
-    // Compute for each gene
-    for gene in genes {
-        let settings = phaser::Settings::new(
-            sample,
-            (genome_reference, wgs_bam),
-            //&args.outdir,
-            tmp_dir.path(),
-            gene.clone(),
-            &region_config,
-            /* genome depth= */ None,
-            /* sex = */ None,
-            String::from("38"),
-            None,
-            0.03,
-            false,
-        );
-
-        let mut phaser = phaser::Phaser::new(
-            settings,
-            Some(config::Gene::default()),
-            None, // Option<SiteSelectionSettings>
-            None, // Option<RealignSettings>
-        );
-        let res = phaser.run()?;
-
-        // write to bam
-        if write_bam {
-            let bam_writer = BamWriter::new(&phaser, &res);
-            let bam_records_out: Vec<Record> = bam_writer.write_bams()?;
-            for item in bam_records_out {
-                let tid_pos = ((item.tid() as u64) << 32) | item.pos() as u64;
-                bam_ret.entry(tid_pos).or_default().push(item);
-            }
-        }
-        ret.insert(gene, res);
-    }
-    let alignments = bam_ret
-        .into_values()
-        .flat_map(std::iter::IntoIterator::into_iter)
-        .collect::<Vec<_>>();
-    for align in &alignments {
-        writer.write(align)?;
-    }
-    //bam::index::build(&output_bam, None, bam::index::Type::Bai, 1)?;
-    tmp_dir.close()?;
-    if !write_bam && output_bam.exists() {
-        std::fs::remove_file(output_bam)?;
+    let (dux4, dux4_bam) = phase_flanking_gene(
+        sample,
+        output_path,
+        wgs_bam,
+        genome_reference,
+        "DUX4",
+        write_bam,
+    )?;
+    let mut ret = BTreeMap::<String, _>::new();
+    ret.insert(String::from("DUX4p5"), dux4p5);
+    ret.insert(String::from("DUX4"), dux4);
+    if write_bam {
+        let dux4p5_bam = dux4p5_bam
+            .ok_or_else(|| missing_data_error("DUX4p5 Paraphase BAM path", "BAM output request"))?;
+        let dux4_bam = dux4_bam
+            .ok_or_else(|| missing_data_error("DUX4 Paraphase BAM path", "BAM output request"))?;
+        merge_phasing_bams(sample, output_path, wgs_bam, &[dux4p5_bam, dux4_bam])?;
+    } else {
+        remove_phasing_bam(sample, output_path)?;
     }
     Ok(ret)
 }
@@ -120,7 +251,7 @@ pub fn phase_flanking(
 /// * `BTreeMap<String, String>` - allele -> background
 /// * `BTreeMap<String, Vec<String>>` - map an allele to its upstream paraphase haplotypes
 pub fn haplotype_background(
-    complete_alleles: &Vec<Vec<i32>>,
+    complete_alleles: &[Vec<i32>],
     phasing_result: &BTreeMap<String, GeneCall>,
     supporting_reads: &BTreeMap<Vec<i32>, HashSet<String>>,
     fp_info: Option<&FingerprintInfo>,
@@ -132,21 +263,10 @@ pub fn haplotype_background(
     let mut hap_backgrounds = BTreeMap::new();
     let mut upstream_haplotypes = BTreeMap::new();
     // phasing upstream
-    let paraphase_reads = &phasing_result
-        .get(&String::from("DUX4p5"))
-        .unwrap()
-        .unique_supporting_reads
-        .clone();
-    let paraphase_reads_nonunique = &phasing_result
-        .get(&String::from("DUX4p5"))
-        .unwrap()
-        .nonunique_supporting_reads
-        .clone();
-    let paraphase_phasing_sites = &phasing_result
-        .get(&String::from("DUX4p5"))
-        .unwrap()
-        .sites_for_phasing
-        .clone();
+    let upstream_phasing = get_paraphase_gene_call(phasing_result, "DUX4p5")?;
+    let paraphase_reads = &upstream_phasing.unique_supporting_reads;
+    let paraphase_reads_nonunique = &upstream_phasing.nonunique_supporting_reads;
+    let paraphase_phasing_sites = &upstream_phasing.sites_for_phasing;
     let important_sites = vec![
         "54271_T_A",
         "54812_C_G",
@@ -165,7 +285,7 @@ pub fn haplotype_background(
     let important_sites_index = important_sites
         .iter()
         .filter(|x| paraphase_phasing_sites.contains(x))
-        .map(|x| paraphase_phasing_sites.iter().position(|y| y == x).unwrap())
+        .filter_map(|x| paraphase_phasing_sites.iter().position(|y| y == x))
         .collect::<Vec<usize>>();
     let mut var_to_group = BTreeMap::new();
     var_to_group.insert("1112111111".to_string(), String::from("Group1.1"));
@@ -195,7 +315,9 @@ pub fn haplotype_background(
             if supporting_reads.contains_key(allele) {
                 reads = supporting_reads
                     .get(allele)
-                    .ok_or("hap not in assembly_result.supporting_reads.")?
+                    .ok_or_else(|| {
+                        missing_data_error("supporting reads for allele", format!("{allele:?}"))
+                    })?
                     .iter()
                     .map(|x| x.to_string())
                     .collect::<Vec<_>>();
@@ -206,25 +328,37 @@ pub fn haplotype_background(
                 debug!("reads_found_by_paraphase {reads_found_by_paraphase:?}");
                 this_allele_paraphase_hap = reads_found_by_paraphase
                     .iter()
-                    .map(|x| paraphase_read_to_hap.get(*x).unwrap().to_string())
-                    .collect::<Vec<String>>();
+                    .map(|x| {
+                        paraphase_read_to_hap.get(*x).cloned().ok_or_else(|| {
+                            missing_data_error("Paraphase read-to-haplotype entry", x.to_string())
+                        })
+                    })
+                    .collect::<Result<Vec<String>, _>>()?;
             }
             debug!("reads first attempt {reads:?}");
             debug!("this_allele_paraphase_hap first attempt {this_allele_paraphase_hap:?}");
             if this_allele_paraphase_hap.is_empty() {
-                if fp_info.is_some() {
-                    let fp_info = fp_info.unwrap();
+                if let Some(fp_info) = fp_info {
                     let read_nodes = &fp_info.read_edges;
                     for (read, this_read_nodes) in read_nodes.iter() {
-                        let this_read_nodes_first = this_read_nodes.first().unwrap();
+                        let Some(this_read_nodes_first) = this_read_nodes.first() else {
+                            continue;
+                        };
                         let this_read_len = this_read_nodes.len();
                         if *this_read_nodes_first < 0 && *this_read_nodes_first > -10 {
                             let check_size = cmp::min(3, allele.len());
                             if this_read_len >= check_size
                                 && this_read_nodes[0..check_size] == allele[0..check_size]
                             {
-                                let read_name =
-                                    read.split_terminator(':').collect::<Vec<_>>()[0].to_string();
+                                let read_name = read
+                                    .split_terminator(':')
+                                    .next()
+                                    .ok_or_else(|| {
+                                        invalid_data_error(format!(
+                                            "Read segment key is missing a read name prefix: '{read}'"
+                                        ))
+                                    })?
+                                    .to_string();
                                 reads.push(read_name);
                             }
                         }
@@ -232,8 +366,15 @@ pub fn haplotype_background(
                     this_allele_paraphase_hap = reads
                         .iter()
                         .filter(|x| paraphase_read_to_hap.contains_key(*x))
-                        .map(|x| paraphase_read_to_hap.get(x).unwrap().to_string())
-                        .collect::<Vec<String>>();
+                        .map(|x| {
+                            paraphase_read_to_hap.get(x).cloned().ok_or_else(|| {
+                                missing_data_error(
+                                    "Paraphase read-to-haplotype entry",
+                                    x.to_string(),
+                                )
+                            })
+                        })
+                        .collect::<Result<Vec<String>, _>>()?;
                     debug!("reads looser check{reads:?}");
                     debug!("this_allele_paraphase_hap looser check {this_allele_paraphase_hap:?}");
                 }
@@ -241,7 +382,7 @@ pub fn haplotype_background(
 
             let mut matching_paraphase_haplotype_segments = Vec::new();
             for hap in &this_allele_paraphase_hap {
-                let this_hap_chars = hap.clone().chars().collect::<Vec<char>>();
+                let this_hap_chars = hap.chars().collect::<Vec<char>>();
                 let this_hap_segment = important_sites_index
                     .iter()
                     .map(|x| this_hap_chars[*x].to_string())
@@ -258,15 +399,27 @@ pub fn haplotype_background(
                     .all(|x| *x == matching_paraphase_haplotype_segments[0]);
                 if all_same {
                     let variant_segment = &matching_paraphase_haplotype_segments[0];
-                    if var_to_group.contains_key(variant_segment) {
-                        upstream_group = var_to_group.get(variant_segment).unwrap().to_string();
+                    if let Some(group) = var_to_group.get(variant_segment) {
+                        upstream_group = group.to_string();
                     }
                 }
             }
 
             let this_allele_paraphase_hap_assignment = this_allele_paraphase_hap
                 .iter()
-                .map(|x| paraphase_haplotypes_assignment.get(x).unwrap().to_string())
+                .map(|x| {
+                    paraphase_haplotypes_assignment
+                        .get(x)
+                        .cloned()
+                        .ok_or_else(|| {
+                            missing_data_error(
+                                "chromosome assignment for Paraphase haplotype",
+                                x.to_string(),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<String>, _>>()?
+                .into_iter()
                 .collect::<counter::Counter<String, i64>>()
                 .most_common_ordered();
 
@@ -293,16 +446,26 @@ pub fn haplotype_background(
                 for read in &reads {
                     if paraphase_reads_nonunique.contains_key(read) {
                         let mut this_read_assignment_nonunique = Vec::new();
-                        let nonunique = paraphase_reads_nonunique.get(read).unwrap();
+                        let nonunique = paraphase_reads_nonunique.get(read).ok_or_else(|| {
+                            missing_data_error(
+                                "Paraphase nonunique supporting reads for read",
+                                read.to_string(),
+                            )
+                        })?;
                         for hap in nonunique {
                             let hap_assignment = paraphase_haplotypes_assignment
                                 .get(hap)
-                                .unwrap()
-                                .to_string();
+                                .cloned()
+                                .ok_or_else(|| {
+                                    missing_data_error(
+                                        "chromosome assignment for Paraphase haplotype",
+                                        hap.to_string(),
+                                    )
+                                })?;
                             this_allele_paraphase_haps.insert(hap.clone());
                             this_read_assignment_nonunique.push(hap_assignment);
 
-                            let this_hap_chars = hap.clone().chars().collect::<Vec<char>>();
+                            let this_hap_chars = hap.chars().collect::<Vec<char>>();
                             let this_hap_found_segment = important_sites_index
                                 .iter()
                                 .map(|x| this_hap_chars[*x].to_string())
@@ -344,8 +507,8 @@ pub fn haplotype_background(
                         .all(|x| *x == this_allele_paraphase_hap_groups[0]);
                     if all_same {
                         let variant_segment = &this_allele_paraphase_hap_groups[0];
-                        if var_to_group.contains_key(variant_segment) {
-                            upstream_group = var_to_group.get(variant_segment).unwrap().to_string();
+                        if let Some(group) = var_to_group.get(variant_segment) {
+                            upstream_group = group.to_string();
                         }
                     }
                 }
@@ -355,26 +518,28 @@ pub fn haplotype_background(
         if all_ends_reads_match_allele_index.contains_key(allele) {
             let reads = all_ends_reads_match_allele_index
                 .get(allele)
-                .ok_or("hap not in assembly_result.supporting_reads.")?;
-            if !fp_info.is_none() {
-                polya = get_polya(allele, reads, bases_at_pivot_site, fp_info.unwrap())?;
+                .ok_or_else(|| {
+                    missing_data_error(
+                        "reads matching allele index for allele",
+                        format!("{allele:?}"),
+                    )
+                })?;
+            if let Some(fp_info) = fp_info {
+                polya = get_polya(allele, reads, bases_at_pivot_site, fp_info)?;
             }
         }
         let allele_name = vec_to_string(&vec![allele.clone()], "-");
-        let hap_string = &allele_name[0];
+        let hap_string = allele_name
+            .into_iter()
+            .next()
+            .ok_or_else(|| missing_data_error("formatted allele name", format!("{allele:?}")))?;
         upstream_haplotypes.insert(hap_string.clone(), flanking.clone());
         if check_chromosome && check_polya {
-            hap_backgrounds.insert(
-                hap_string.to_string(),
-                format!("{polya}-{chromosome}:{upstream_group}"),
-            );
+            hap_backgrounds.insert(hap_string, format!("{polya}-{chromosome}:{upstream_group}"));
         } else if check_chromosome {
-            hap_backgrounds.insert(
-                hap_string.to_string(),
-                format!("{chromosome}:{upstream_group}"),
-            );
+            hap_backgrounds.insert(hap_string, format!("{chromosome}:{upstream_group}"));
         } else if check_polya {
-            hap_backgrounds.insert(hap_string.to_string(), polya);
+            hap_backgrounds.insert(hap_string, polya);
         }
     }
     Ok((hap_backgrounds, upstream_haplotypes))
@@ -394,7 +559,9 @@ fn get_polya(
     bases_at_pivot_site: &BTreeMap<String, String>,
     fp_info: &FingerprintInfo,
 ) -> Result<String, DError> {
-    let hap_last = allele_old.last().ok_or("last not in allele_old")?;
+    let hap_last = allele_old
+        .last()
+        .ok_or_else(|| missing_data_error("last node of allele", format!("{allele_old:?}")))?;
     if *hap_last < -10 {
         return Ok(String::from("qB"));
     }
@@ -404,8 +571,18 @@ fn get_polya(
     let read_positions = &fp_info.read_positions;
     let read_nodes = &fp_info.read_edges;
     for (read, index) in reads {
-        let this_read_nodes = read_nodes.get(read).unwrap();
-        let this_read_positions = read_positions.get(read).unwrap();
+        let this_read_nodes = read_nodes.get(read).ok_or_else(|| {
+            missing_data_error(
+                "read-node path while inferring polyA status",
+                read.to_string(),
+            )
+        })?;
+        let this_read_positions = read_positions.get(read).ok_or_else(|| {
+            missing_data_error(
+                "read-position path while inferring polyA status",
+                read.to_string(),
+            )
+        })?;
         let end_index_on_read = allele_old.len() as i32 - 2 - *index;
         trace!(
             "{allele_old:?} {read} {this_read_nodes:?} {this_read_positions:?} {} {end_index_on_read}",
@@ -416,9 +593,9 @@ fn get_polya(
             let segment_name = format!("{read}:{end_position_on_read}");
             trace!("{allele_old:?} {read} {this_read_nodes:?} {this_read_positions:?} {} {end_index_on_read} {end_position_on_read}", *index);
             if bases_at_pivot_site.contains_key(&segment_name) {
-                let read_base = bases_at_pivot_site
-                    .get(&segment_name)
-                    .ok_or("segment_name not in bases_at_pivot_site")?;
+                let read_base = bases_at_pivot_site.get(&segment_name).ok_or_else(|| {
+                    missing_data_error("pivot-site base for read segment", segment_name.to_string())
+                })?;
                 polya_site_this_allele.push(read_base);
             }
         }
@@ -442,14 +619,22 @@ fn get_polya(
                 }
             }
             if found_ending_node {
-                let this_read_positions = read_positions.get(read).unwrap();
+                let this_read_positions = read_positions.get(read).ok_or_else(|| {
+                    missing_data_error(
+                        "read-position path while inferring polyA status",
+                        read.to_string(),
+                    )
+                })?;
                 let end_position_on_read = this_read_positions[ending_node_index as usize];
                 let segment_name = format!("{read}:{end_position_on_read}");
                 trace!("{allele_old:?} {read} {this_read_nodes:?} {this_read_positions:?} {ending_node_index} {end_position_on_read}");
                 if bases_at_pivot_site.contains_key(&segment_name) {
-                    let read_base = bases_at_pivot_site
-                        .get(&segment_name)
-                        .ok_or("segment_name not in bases_at_pivot_site")?;
+                    let read_base = bases_at_pivot_site.get(&segment_name).ok_or_else(|| {
+                        missing_data_error(
+                            "pivot-site base for read segment",
+                            segment_name.to_string(),
+                        )
+                    })?;
                     polya_site_this_allele.push(read_base);
                 }
             }
@@ -480,7 +665,9 @@ fn get_polya(
             } else if count_t <= 1 {
                 polya = String::from("qADisruptedPolyA");
             }
-            log::debug!("allele {allele_old:?} polyA site {common_base:?} all_count {all_count} count_t {count_t}");
+            debug!(
+                "allele {allele_old:?} polyA site {common_base:?} all_count {all_count} count_t {count_t}"
+            );
         }
     }
     Ok(polya)
@@ -498,16 +685,19 @@ fn assign_paraphase_haplotypes_to_chromsome(
         env!("CARGO_MANIFEST_DIR"),
         "/data/d4z4/chr4_chr10_diff_sites.txt"
     ));
-    let diff_sites = std::str::from_utf8(data)
-        .unwrap()
+    let diff_sites = std::str::from_utf8(data)?
         .split_terminator('\n')
         .map(std::borrow::ToOwned::to_owned)
         .collect::<Vec<_>>();
-    let phasing_result = phasing_result.get(&String::from("DUX4p5")).unwrap();
+    let phasing_result = get_paraphase_gene_call(phasing_result, "DUX4p5")?;
     let mut chromosome_assignment = BTreeMap::new();
     for (hap_seq, hap_name) in &phasing_result.final_haplotypes {
         let mut assignment = String::from("chromosome_unknown");
-        let first_site = hap_seq.as_bytes().first().unwrap();
+        let first_site = hap_seq.as_bytes().first().ok_or_else(|| {
+            invalid_data_error(format!(
+                "Paraphase haplotype sequence is empty for hap '{hap_name}'"
+            ))
+        })?;
         if *first_site != b'x' {
             if *first_site == b'0' {
                 assignment = String::from("chr10");
@@ -518,21 +708,29 @@ fn assign_paraphase_haplotypes_to_chromsome(
             let hap_detail = &phasing_result
                 .haplotype_details
                 .get(hap_name)
-                .ok_or("hap_name not in haplotype_details")?;
+                .ok_or_else(|| {
+                    missing_data_error("Paraphase haplotype details", hap_name.to_string())
+                })?;
             let hap_boundary = &hap_detail.boundary;
             let bounds = hap_boundary
                 .split_terminator('-')
-                .map(std::borrow::ToOwned::to_owned)
-                .map(|x| x.parse::<i64>().unwrap())
-                .collect::<Vec<_>>();
+                .map(|x| {
+                    x.parse::<i64>().map_err(|e| {
+                        format!(
+                            "Failed to parse Paraphase boundary '{hap_boundary}' for hap '{hap_name}': {e}"
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let hap_variants = &hap_detail.variants;
             let nsites_covered = diff_sites
                 .iter()
                 .filter(|x| {
-                    let pos = x.split_terminator('_').collect::<Vec<_>>()[0]
-                        .parse::<i64>()
-                        .unwrap();
-                    pos > bounds[0] && pos < bounds[1]
+                    let pos = x
+                        .split_terminator('_')
+                        .next()
+                        .and_then(|value| value.parse::<i64>().ok());
+                    pos.is_some_and(|pos| pos > bounds[0] && pos < bounds[1])
                 })
                 .count();
             let nvariants_overlap = diff_sites
@@ -576,7 +774,12 @@ fn assign_paraphase_haplotypes_to_chromsome(
             .iter()
             .filter(|(_x, y)| *y == "chromosome_unknown")
             .next()
-            .unwrap()
+            .ok_or_else(|| {
+                missing_data_error(
+                    "unknown chromosome assignment entry",
+                    "exactly one unresolved Paraphase haplotype",
+                )
+            })?
             .0
             .clone();
         debug!("unknown_hap {unknown_hap}");
@@ -592,75 +795,59 @@ fn assign_paraphase_haplotypes_to_chromsome(
     Ok(chromosome_assignment)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_paraphase_gene_call_errors_on_missing_gene() {
+        let error = get_paraphase_gene_call(&BTreeMap::new(), "DUX4p5")
+            .expect_err("missing Paraphase genes should error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing Paraphase result for gene: DUX4p5"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_get_polya_errors_on_missing_read_nodes() {
+        let fp_info = FingerprintInfo {
+            read_edges: BTreeMap::new(),
+            grouped_reads: BTreeMap::new(),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::new(),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+
+        let error = get_polya(
+            &vec![1, 2, 3],
+            &vec![(String::from("read1"), 0)],
+            &BTreeMap::new(),
+            &fp_info,
+        )
+        .expect_err("missing read paths should error while inferring polyA");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing read-node path while inferring polyA status: read1"),
+            "unexpected error: {error}"
+        );
+    }
+}
+
 /// Remove redundant haps from a list of haps
 /// # Arguments
 /// * `haps_to_assess` - list of haps to assess
 /// * `assembly_result` - assembly result
 /// # Returns
 /// * `Vec<Vec<i32>>` - list of haps after removing redundant ones
-fn remove_redundant_haps(
-    haps_to_assess: &Vec<Vec<i32>>,
-    assembly_result: &AssemblyResult,
-) -> Result<Vec<Vec<i32>>, DError> {
-    let complete = &assembly_result.complete;
-    // if there are less than 4 haps, return the original list
-    if haps_to_assess.len() <= 4 {
-        return Ok(haps_to_assess.clone());
-    }
-    let overlapping_haps = find_overlapping_alleles(haps_to_assess.clone(), Some(5))?.1;
-    let mut redundant_haps = Vec::new();
-    for (hap1, hap1_overlaps) in overlapping_haps.iter() {
-        let hap1_len = hap1.len();
-        for (hap2, overlap_len) in hap1_overlaps.iter() {
-            let hap2_len = hap2.len();
-            if complete.contains(hap1) {
-                if hap2_len == *overlap_len {
-                    redundant_haps.push(hap2.clone());
-                } else if redundant_haplotype_allowed(hap1, hap2, overlap_len)? {
-                    redundant_haps.push(hap2.clone());
-                }
-            } else if hap1_len >= hap2_len {
-                if hap2_len == *overlap_len {
-                    redundant_haps.push(hap2.clone());
-                } else if redundant_haplotype_allowed(hap1, hap2, overlap_len)? {
-                    redundant_haps.push(hap2.clone());
-                }
-            }
-        }
-    }
-    for hap1 in haps_to_assess {
-        for hap2 in haps_to_assess {
-            if hap1 != hap2 {
-                let hap1_len = hap1.len();
-                let hap2_len = hap2.len();
-                if hap1_len >= hap2_len {
-                    if hap2_len > 5 && hap1[1..hap2_len] == hap2[1..hap2_len] {
-                        if !redundant_haps.contains(hap2) {
-                            redundant_haps.push(hap2.clone());
-                            debug!("{hap2:?} is redundant with {hap1:?}");
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let redundant_haps = redundant_haps
-        .iter()
-        .filter(|x| !complete.contains(x))
-        .map(|x| x.clone())
-        .collect::<Vec<_>>();
-    debug!("redundant_haps {redundant_haps:?}");
-    let haps_to_return: Vec<Vec<i32>> = haps_to_assess
-        .iter()
-        .filter(|x| !redundant_haps.contains(x))
-        .cloned()
-        .collect();
-    if haps_to_return.len() < 4 {
-        return Ok(haps_to_assess.clone());
-    }
-    Ok(haps_to_return)
-}
-
 /// get the background of all starting haps
 /// # Arguments
 /// * `assembly_result` - assembly result
@@ -672,40 +859,20 @@ fn remove_redundant_haps(
 /// * `BTreeMap<String, String>` - allele -> background
 /// * `BTreeMap<String, Vec<String>>` - map an allele to its upstream paraphase haplotypes
 pub fn get_background_for_allele_starts(
-    assembly_result: &AssemblyResult,
+    kept_starting_haps: &[Vec<i32>],
     fp_graph: &FpGraph,
     phasing_result: &BTreeMap<String, GeneCall>,
     bases_at_pivot_site: &BTreeMap<String, String>,
     fp_info: &FingerprintInfo,
 ) -> Result<(BTreeMap<String, String>, BTreeMap<String, Vec<String>>), DError> {
-    let mut all_starting_haps = HashSet::new();
-    for hap in &assembly_result.complete {
-        let hap_first = hap.first().unwrap();
-        if *hap_first < 0 && *hap_first > -10 {
-            all_starting_haps.insert(hap.clone());
-        }
-    }
-    for hap in &assembly_result.incomplete {
-        let hap_first = hap.first().unwrap();
-        if *hap_first < 0 && *hap_first > -10 {
-            all_starting_haps.insert(hap.clone());
-        }
-    }
-    debug!("all_starting_haps before removing redundant {all_starting_haps:?}");
-    let all_starting_haps_vec: Vec<Vec<i32>> = all_starting_haps
-        .iter()
-        .map(|x| x.clone())
-        .collect::<Vec<_>>();
-    let all_starting_haps_vec = remove_redundant_haps(&all_starting_haps_vec, assembly_result)?;
-    debug!("all_starting_haps after removing redundant {all_starting_haps_vec:?}");
     let all_starting_read_support = fp_graph
-        .process_complete_haps(all_starting_haps_vec.clone(), Some(1), true, false)?
+        .process_complete_haps(kept_starting_haps, Some(1), true, false)?
         .supporting_reads;
     debug!("all_starting_read_support {:?}", all_starting_read_support);
 
     // haplotype backgrounds
     let (all_starts_hap_backgrounds, upstream_haplotypes) = haplotype_background(
-        &all_starting_haps_vec,
+        kept_starting_haps,
         phasing_result,
         &all_starting_read_support,
         Some(fp_info),
@@ -733,7 +900,7 @@ pub fn get_background_for_allele_starts(
 /// * `BTreeMap<String, String>` - allele -> background
 /// * `BTreeMap<Vec<i32>, Vec<(String, i32)>>` - all_ends_reads_match_allele_index
 pub fn get_background_for_allele_ends(
-    assembly_result: &AssemblyResult,
+    kept_ending_haps: &[Vec<i32>],
     fp_graph: &FpGraph,
     phasing_result: &BTreeMap<String, GeneCall>,
     bases_at_pivot_site: &BTreeMap<String, String>,
@@ -746,35 +913,15 @@ pub fn get_background_for_allele_ends(
     ),
     DError,
 > {
-    let mut all_ending_haps = HashSet::new();
-    for hap in &assembly_result.complete {
-        let hap_end = hap.last().unwrap();
-        if *hap_end <= -10 {
-            all_ending_haps.insert(hap.clone());
-        }
-    }
-    for hap in &assembly_result.incomplete {
-        let hap_end = hap.last().unwrap();
-        if *hap_end <= -10 {
-            all_ending_haps.insert(hap.clone());
-        }
-    }
-    debug!("all_ending_haps before removing redundant {all_ending_haps:?}");
-    let all_ending_haps_vec: Vec<Vec<i32>> = all_ending_haps
-        .iter()
-        .map(|x| x.clone())
-        .collect::<Vec<_>>();
-    let all_ending_haps_vec = remove_redundant_haps(&all_ending_haps_vec, assembly_result)?;
-    debug!("all_ending_haps after removing redundant {all_ending_haps_vec:?}");
     let all_ending_read_support = fp_graph
-        .process_complete_haps(all_ending_haps_vec.clone(), Some(1), true, false)?
+        .process_complete_haps(kept_ending_haps, Some(1), true, false)?
         .supporting_reads;
     debug!("all_ending_read_support {:?}", all_ending_read_support);
     // find index on reads
     let mut all_ends_reads_match_allele_index = get_read_position_in_allele(
-        fp_info.read_edges.clone(),
-        all_ending_haps_vec.clone(),
-        all_ending_read_support.clone(),
+        &fp_info.read_edges,
+        kept_ending_haps,
+        &all_ending_read_support,
         true,
     )?;
     for (allele, reads) in cis_dups_match_index {
@@ -802,7 +949,7 @@ pub fn get_background_for_allele_ends(
 
     // haplotype backgrounds
     let (all_ends_hap_backgrounds, _upstream_haplotypes) = haplotype_background(
-        &all_ending_haps_vec,
+        kept_ending_haps,
         phasing_result,
         &all_ending_read_support,
         Some(fp_info),
@@ -813,495 +960,4 @@ pub fn get_background_for_allele_ends(
     )?;
     debug!("all_ends_hap_backgrounds {:?}", all_ends_hap_backgrounds);
     Ok((all_ends_hap_backgrounds, all_ends_reads_match_allele_index))
-}
-
-/// find in-cis duplications
-/// # Arguments
-/// * `assembly_result` - assembly result
-/// * `fp_graph` - fingerprint graph
-/// * `fp_info` - fingerprint information
-/// * `phasing_result` - paraphase gene calls
-/// # Returns
-/// * `Vec<Vec<Vec<i32>>>` - cis duplications identified (allele of alleles)
-/// * `BTreeMap<Vec<i32>, HashSet<(String, i32)>>` - allele -> (read, match_index_on_allele)
-pub fn find_cis_dup(
-    assembly_result: &AssemblyResult,
-    fp_graph: &FpGraph,
-    fp_info: &FingerprintInfo,
-    phasing_result: &BTreeMap<String, GeneCall>,
-) -> Result<
-    (
-        Vec<Vec<Vec<i32>>>,
-        BTreeMap<Vec<i32>, HashSet<(String, i32)>>,
-    ),
-    DError,
-> {
-    let mut haps_to_node_names: BTreeMap<Vec<i32>, i32> = BTreeMap::new();
-    let mut read_edges_for_haps: BTreeMap<String, Vec<i32>> = BTreeMap::new();
-    let mut node_name = 1;
-    let mut all_haps = HashSet::new();
-    for hap in &assembly_result.complete {
-        all_haps.insert(hap.to_vec());
-    }
-    for hap in &assembly_result.incomplete {
-        all_haps.insert(hap.to_vec());
-    }
-    let all_haps: Vec<Vec<i32>> = all_haps.iter().map(|x| x.clone()).collect::<Vec<_>>();
-    let all_haps_support = fp_graph
-        .process_complete_haps(all_haps.clone(), Some(1), true, false)?
-        .support_by_read;
-    let mut allele_links: BTreeMap<Vec<i32>, Vec<Vec<i32>>> = BTreeMap::new();
-    let downstream_phasing_result = phasing_result.get(&String::from("DUX4")).unwrap();
-    let downstream_reads = &downstream_phasing_result.unique_supporting_reads;
-    // check links supported by paraphase haplotypes
-    for (downstream_hap, downstream_hap_reads) in downstream_reads {
-        trace!("checking reads for downstream_hap {downstream_hap}");
-        let mut paraphase_hap_linking_repeat_haps_upstream = Vec::new();
-        let mut paraphase_hap_linking_repeat_haps_downstream = Vec::new();
-        for downstream_hap_read in downstream_hap_reads {
-            let fields = downstream_hap_read.split("_sup_").collect::<Vec<_>>();
-            let downstream_hap_read_name = fields[0];
-            let aln_pos = fields[1]
-                .split('_')
-                .next()
-                .ok_or("next not found")?
-                .parse::<i32>()?;
-            trace!("downstream_hap_read {downstream_hap_read} downstream_hap_read_name {downstream_hap_read_name} pos {aln_pos}");
-            if all_haps_support.contains_key(downstream_hap_read_name) {
-                let this_read_repeat_support =
-                    all_haps_support.get(downstream_hap_read_name).unwrap();
-                let this_read_repeat_edges =
-                    fp_info.read_edges.get(downstream_hap_read_name).unwrap();
-                let this_read_repeat_positions = fp_info
-                    .read_positions
-                    .get(downstream_hap_read_name)
-                    .unwrap();
-                trace!("this_read_repeat_edges {this_read_repeat_edges:?}");
-                trace!("this_read_repeat_positions {this_read_repeat_positions:?}");
-                for repeat_hap in this_read_repeat_support {
-                    let node_index =
-                        match_read_allele_first_node_index(this_read_repeat_edges, repeat_hap);
-                    trace!("matching repeat_hap {repeat_hap:?} node_index {node_index:?}");
-                    if let Some(node_index_value) = node_index {
-                        let matching_position_on_read =
-                            this_read_repeat_positions[node_index_value.0];
-                        trace!("matching_position_on_read {matching_position_on_read}");
-                        if matching_position_on_read < aln_pos {
-                            paraphase_hap_linking_repeat_haps_upstream.push(repeat_hap.clone());
-                        } else if matching_position_on_read > aln_pos {
-                            paraphase_hap_linking_repeat_haps_downstream.push(repeat_hap.clone());
-                        }
-                    }
-                }
-            }
-        }
-        let paraphase_hap_linking_repeat_haps_upstream_set =
-            paraphase_hap_linking_repeat_haps_upstream
-                .iter()
-                .map(|x| x.clone())
-                .collect::<HashSet<Vec<i32>>>();
-        let paraphase_hap_linking_repeat_haps_downstream_set =
-            paraphase_hap_linking_repeat_haps_downstream
-                .iter()
-                .map(|x| x.clone())
-                .collect::<HashSet<Vec<i32>>>();
-        debug!("paraphase_hap {downstream_hap} linking repeat haps up {paraphase_hap_linking_repeat_haps_upstream_set:?} down {paraphase_hap_linking_repeat_haps_downstream_set:?}");
-        if paraphase_hap_linking_repeat_haps_upstream_set.len() == 1
-            && paraphase_hap_linking_repeat_haps_downstream_set.len() == 1
-        {
-            let a = paraphase_hap_linking_repeat_haps_upstream_set
-                .iter()
-                .next()
-                .unwrap();
-            let b = paraphase_hap_linking_repeat_haps_downstream_set
-                .iter()
-                .next()
-                .unwrap();
-            trace!("adding non-read links {a:?} to {b:?}");
-            allele_links.entry(a.to_vec()).or_default().push(b.to_vec());
-            if !haps_to_node_names.contains_key(a) {
-                let a_name = node_name;
-                haps_to_node_names.insert(a.to_vec(), a_name);
-                node_name += 1;
-            }
-            if !haps_to_node_names.contains_key(b) {
-                let b_name = node_name;
-                haps_to_node_names.insert(b.to_vec(), b_name);
-                node_name += 1;
-            }
-            let a_name = haps_to_node_names.get(a).unwrap();
-            let b_name = haps_to_node_names.get(b).unwrap();
-            read_edges_for_haps.insert(downstream_hap.to_string(), vec![*a_name, *b_name]);
-            //allele_links.entry(b.to_vec()).or_default().push(a.to_vec());
-        } else if paraphase_hap_linking_repeat_haps_upstream_set.len() == 2
-            && paraphase_hap_linking_repeat_haps_downstream_set.len() == 2
-        {
-            let ovl = paraphase_hap_linking_repeat_haps_upstream_set
-                .iter()
-                .filter(|x| paraphase_hap_linking_repeat_haps_downstream_set.contains(*x))
-                .map(|x| x.clone())
-                .collect::<Vec<_>>();
-            if ovl.len() == 1 {
-                let middle = ovl.into_iter().next().unwrap();
-                let first = paraphase_hap_linking_repeat_haps_upstream_set
-                    .iter()
-                    .filter(|x| **x != middle)
-                    .map(|x| x.clone())
-                    .collect::<Vec<_>>()
-                    .first()
-                    .unwrap()
-                    .to_vec();
-                let last = paraphase_hap_linking_repeat_haps_downstream_set
-                    .iter()
-                    .filter(|x| **x != middle)
-                    .map(|x| x.clone())
-                    .collect::<Vec<_>>()
-                    .first()
-                    .unwrap()
-                    .to_vec();
-                allele_links
-                    .entry(first.to_vec())
-                    .or_default()
-                    .push(middle.to_vec());
-                allele_links
-                    .entry(middle.to_vec())
-                    .or_default()
-                    .push(last.to_vec());
-                if !haps_to_node_names.contains_key(&first) {
-                    let first_name = node_name;
-                    haps_to_node_names.insert(first.to_vec(), first_name);
-                    node_name += 1;
-                }
-                if !haps_to_node_names.contains_key(&middle) {
-                    let middle_name = node_name;
-                    haps_to_node_names.insert(middle.to_vec(), middle_name);
-                    node_name += 1;
-                }
-                if !haps_to_node_names.contains_key(&last) {
-                    let last_name = node_name;
-                    haps_to_node_names.insert(last.to_vec(), last_name);
-                    node_name += 1;
-                }
-                let first_name = haps_to_node_names.get(&first).unwrap();
-                let middle_name = haps_to_node_names.get(&middle).unwrap();
-                let last_name = haps_to_node_names.get(&last).unwrap();
-                read_edges_for_haps.insert(
-                    downstream_hap.to_string(),
-                    vec![*first_name, *middle_name, *last_name],
-                );
-                trace!("adding non-read links {first:?} to {middle:?}");
-                trace!("adding non-read links {middle:?} to {last:?}");
-            }
-        }
-    }
-    // check reads now
-    let mut match_index_on_read: BTreeMap<Vec<i32>, HashSet<(String, i32)>> = BTreeMap::new();
-    for (read, read_nodes) in &fp_info.read_edges {
-        if read_nodes.contains(&(-10)) {
-            let end_index = read_nodes
-                .iter()
-                .position(|x| *x == -10)
-                .ok_or("end (-10) not found")?;
-            if end_index != read_nodes.len() - 1 {
-                let this_read_repeat_positions = fp_info.read_positions.get(read).unwrap();
-                let this_read_first_position = this_read_repeat_positions.first().unwrap();
-                let mut segments: Vec<Vec<i32>> = Vec::new();
-                let mut matching_alleles = Vec::new();
-                //cis_read_edges.insert(read.clone(), read_nodes.to_vec());
-                let mut starting_index = 0;
-                let read_len = read_nodes.len();
-                for i in 0..read_len {
-                    if read_nodes[i] == -10 {
-                        let this_seg = &read_nodes[starting_index..(i + 1)];
-                        segments.push(this_seg.into());
-                        starting_index = i + 1;
-                    }
-                }
-                let this_seg = &read_nodes[starting_index..];
-                if !this_seg.is_empty() {
-                    segments.push(this_seg.into());
-                }
-                for k in 0..(segments.len()) {
-                    let segment = &segments[k];
-                    let mut dummy_read = BTreeMap::new();
-                    dummy_read.insert(String::from("read"), segment.to_vec());
-                    let segment_match = if k == 0 {
-                        match_reads_and_haplotypes(dummy_read, all_haps.clone(), None, false)
-                            .by_read
-                    } else {
-                        match_reads_and_haplotypes(
-                            dummy_read,
-                            assembly_result.special_incomplete.clone(),
-                            None,
-                            false,
-                        )
-                        .by_read
-                    };
-                    if segment_match.contains_key("read") {
-                        let dummy_read_matches = segment_match.get("read").unwrap();
-                        if k == 0 {
-                            let mut qualifying_matches = Vec::new();
-                            for dummy_read_match in dummy_read_matches {
-                                // only match against regular incomplete haps when the first position on read is small enough
-                                if !assembly_result
-                                    .special_incomplete
-                                    .contains(dummy_read_match)
-                                {
-                                    qualifying_matches.push(dummy_read_match.to_vec());
-                                } else {
-                                    let node_index = match_read_allele_first_node_index(
-                                        segment,
-                                        dummy_read_match,
-                                    );
-                                    if !node_index.is_none()
-                                        && node_index.unwrap().0 == 0
-                                        && (*this_read_first_position < 2000
-                                            || node_index.unwrap().1 == 0)
-                                    {
-                                        qualifying_matches.push(dummy_read_match.to_vec());
-                                    }
-                                }
-                            }
-                            if qualifying_matches.len() == 1 {
-                                let qualifying_match = qualifying_matches.first().unwrap();
-                                matching_alleles.push(qualifying_match.to_vec());
-                            } else {
-                                matching_alleles.push(vec![]);
-                            }
-                        } else {
-                            let mut qualifying_matches = Vec::new();
-                            for dummy_read_match in dummy_read_matches {
-                                let node_index =
-                                    match_read_allele_first_node_index(segment, dummy_read_match);
-                                if !node_index.is_none()
-                                    && node_index.unwrap().0 == 0
-                                    && node_index.unwrap().1 == 0
-                                {
-                                    qualifying_matches.push(dummy_read_match.to_vec());
-                                }
-                            }
-                            if qualifying_matches.len() == 1 {
-                                let qualifying_match = qualifying_matches.first().unwrap();
-                                matching_alleles.push(qualifying_match.to_vec());
-                            } else {
-                                matching_alleles.push(vec![]);
-                            }
-                        }
-                    } else {
-                        matching_alleles.push(vec![]);
-                    }
-                }
-                trace!("read_nodes {read_nodes:?} segments {segments:?} matching_alleles {matching_alleles:?}");
-                let n = segments.len();
-                let mut prev_segments_len = 0;
-                for j in 0..(n - 1) {
-                    let match1 = &matching_alleles[j];
-                    let match2 = &matching_alleles[j + 1];
-                    if !match1.is_empty() && !match2.is_empty() {
-                        trace!("adding read links {match1:?} to {match2:?}");
-                        allele_links
-                            .entry(match1.to_vec())
-                            .or_default()
-                            .push(match2.to_vec());
-
-                        let node_index = match_read_allele_first_node_index(&segments[j], match1);
-                        let mut match1_index_on_read: i32;
-                        if node_index.unwrap().1 > 0 {
-                            match1_index_on_read = node_index.unwrap().1 as i32;
-                        } else {
-                            match1_index_on_read =
-                                0 - node_index.unwrap().0 as i32 - prev_segments_len as i32;
-                            if match1.starts_with(&[-10]) {
-                                match1_index_on_read += 1;
-                            }
-                        }
-                        let mut match1_seg = match1.clone();
-                        let match1_len = match1.len();
-                        if match1_len > 6 {
-                            match1_seg = vec![0, 0, 0, 0, 0, 0];
-                            match1_seg.copy_from_slice(&match1[(match1_len - 6)..]);
-                            match1_index_on_read -= match1_len as i32 - 6;
-                        }
-                        match_index_on_read
-                            .entry(match1_seg.clone())
-                            .or_default()
-                            .insert((read.clone(), match1_index_on_read as i32));
-                        let node_index =
-                            match_read_allele_first_node_index(&segments[j + 1], match2);
-                        let mut match2_index_on_read = 0
-                            - node_index.unwrap().0 as i32
-                            - prev_segments_len as i32
-                            - segments[j].len() as i32;
-                        if match2.starts_with(&[-10]) {
-                            match2_index_on_read += 1;
-                        }
-                        let mut match2_seg = match2.clone();
-                        let match2_len = match2.len();
-                        if match2_len > 6 {
-                            match2_seg = vec![0, 0, 0, 0, 0, 0];
-                            match2_seg.copy_from_slice(&match2[(match2_len - 6)..]);
-                            match2_index_on_read -= match2_len as i32 - 6;
-                        }
-                        match_index_on_read
-                            .entry(match2_seg.clone())
-                            .or_default()
-                            .insert((read.clone(), match2_index_on_read));
-
-                        if !haps_to_node_names.contains_key(match1) {
-                            let match1_name = node_name;
-                            haps_to_node_names.insert(match1.to_vec(), match1_name);
-                            node_name += 1;
-                        }
-                        if !haps_to_node_names.contains_key(match2) {
-                            let match2_name = node_name;
-                            haps_to_node_names.insert(match2.to_vec(), match2_name);
-                            node_name += 1;
-                        }
-                        let match1_name = haps_to_node_names.get(match1).unwrap();
-                        let match2_name = haps_to_node_names.get(match2).unwrap();
-                        if !read_edges_for_haps.contains_key(read) {
-                            read_edges_for_haps
-                                .insert(read.to_string(), vec![*match1_name, *match2_name]);
-                        } else {
-                            let new_read_name = format!("{read}_2");
-                            if !read_edges_for_haps.contains_key(read) {
-                                read_edges_for_haps
-                                    .insert(new_read_name, vec![*match1_name, *match2_name]);
-                            } else {
-                                let new_read_name = format!("{read}_3");
-                                if !read_edges_for_haps.contains_key(read) {
-                                    read_edges_for_haps
-                                        .insert(new_read_name, vec![*match1_name, *match2_name]);
-                                }
-                            }
-                        }
-                    }
-                    prev_segments_len += segments[j].len();
-                }
-            }
-        }
-    }
-    debug!("haps_to_node_names {haps_to_node_names:?}");
-    debug!("read_edges_for_haps {read_edges_for_haps:?}");
-    let mut node_names_to_haps = BTreeMap::new();
-    for (a, b) in &haps_to_node_names {
-        node_names_to_haps.insert(*b, a.to_vec());
-    }
-    debug!(
-        "special_incomplete {:?}",
-        assembly_result.special_incomplete
-    );
-    // simpler graph assembler
-    debug!("For cis-dups, assemble haplotypes into alleles...");
-    let mut fp_graph = build_graph(read_edges_for_haps, 2);
-    let allele_phase_result = fp_graph.run_simple()?;
-    debug!("allele_phase_result {:?}", allele_phase_result.incomplete);
-    let mut cis_dups_assembled = Vec::new();
-    for cis_dup in allele_phase_result.incomplete {
-        let cis_dup_assembled = cis_dup
-            .iter()
-            .map(|x| node_names_to_haps.get(x).unwrap().to_vec())
-            .collect::<Vec<_>>();
-        debug!("graph assembled allele: {cis_dup_assembled:?}");
-        cis_dups_assembled.push(cis_dup_assembled);
-    }
-    Ok((cis_dups_assembled, match_index_on_read))
-}
-
-/// Find the index of the first matching node on a read
-/// and the haplotype
-/// Note that this does not allow read to surpass the end of the haplotype
-/// i.e. assuming haplotype ends with the ending node
-/// `hap1` is a read, `hap2` is a haplotype.
-/// Returns (match_index_on_read, match_index_on_hap)
-/// # Arguments
-/// * `hap1` - read
-/// * `hap2` - haplotype
-/// # Returns
-/// * `Option<(usize, usize)>` - match index on read, match index on haplotype
-pub fn match_read_allele_first_node_index(
-    hap1: &Vec<i32>,
-    hap2: &Vec<i32>,
-) -> Option<(usize, usize)> {
-    let mut hap2_mod = hap2.clone();
-    if hap2_mod.starts_with(&[-10]) {
-        hap2_mod.remove(0);
-    }
-    let hap2 = &hap2_mod;
-    let hap1_len = hap1.len();
-    let hap2_len = hap2.len();
-    for i in 0..hap1_len {
-        // below is not allowed
-        // hap1/read      -------------
-        // hap2/hapl ------------
-        //          |--k--|offset|
-        //
-        // below is allowed
-        // hap1/read       -------
-        // hap2/hapl ---------------
-        //           |--k--|offset|
-        if i == 0 {
-            for k in 0..hap2_len {
-                let offset_index = cmp::min(hap2_len - k, hap1_len);
-                if offset_index > 1 && k + hap1_len <= hap2_len {
-                    // here we are requiring a match until the end of the haplotype (hap2)
-                    let test_hap1 = &hap1[..offset_index];
-                    let test_hap2 = &hap2[k..(k + offset_index)];
-                    let (hap_match, mismatch) = compare_two_haps_same_length(test_hap1, test_hap2);
-                    if hap_match.iter().sum::<i32>() >= 2 && mismatch == 0 {
-                        return Some((i, k));
-                    }
-                }
-            }
-        } else {
-            // below is allowed
-            //           |-i-|
-            // hap1/read  ----------
-            // hap2/hapl     ---------------
-            //               |offset|
-            //
-            // below is not allowed
-            //           |-i-|
-            // hap1/read  -------------
-            // hap2/hapl     --------
-            //               |offset|
-            let offset_index = cmp::min(hap1_len - i, hap2_len);
-            if offset_index > 1 && i + hap2_len >= hap1_len {
-                // this was originally implemented in python
-                //let test_hap1 = &hap1[(hap1_len-offset_index)..];
-                let test_hap1 = &hap1[i..(i + offset_index)];
-                let test_hap2 = &hap2[..offset_index];
-                let (hap_match, mismatch) = compare_two_haps_same_length(test_hap1, test_hap2);
-                if hap_match.iter().sum::<i32>() >= 2 && mismatch == 0 {
-                    return Some((i, 0));
-                }
-            }
-        }
-    }
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_match_read_allele_first_node_index() {
-        let read = vec![4, 5, 6];
-        let hap = vec![1, 2, 3, 0, 4, 5, 6];
-        let res = match_read_allele_first_node_index(&read, &hap);
-        assert!(!res.is_none());
-        assert_eq!(res.unwrap(), (0, 4));
-
-        let read = vec![7, 1, 2];
-        let hap = vec![1, 2, 3, 0, 4, 5, 6];
-        let res = match_read_allele_first_node_index(&read, &hap);
-        assert!(!res.is_none());
-        assert_eq!(res.unwrap(), (1, 0));
-
-        let read = vec![4, 5, 6, 7];
-        let hap = vec![1, 2, 3, 0, 4, 5, 6];
-        let res = match_read_allele_first_node_index(&read, &hap);
-        assert!(res.is_none());
-    }
 }

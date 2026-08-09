@@ -1,6 +1,6 @@
 use crate::bam_operation::start_pos_on_read;
-use crate::util::DError;
 use crate::util::RegionCoordinates;
+use crate::util::{invalid_data_error, DError};
 use log::{debug, error, trace};
 use rust_htslib::bam::ext::BamRecordExtensions;
 use rust_htslib::{bam, bam::Read, faidx};
@@ -10,17 +10,25 @@ use std::path::PathBuf;
 /// Update the read with special calls
 /// # Arguments
 /// * `read_segment_raw_fp` - read segment -> raw fps
+/// * `new_variants_by_position` - retained variants grouped by position
 /// * `realigned_bam` - realigned bam file
 /// * `reference` - reference file
 /// * `region_coordinates` - region coordinates
 /// # Returns
-/// * `BTreeMap<String, Vec<u8>>` - read segment -> updated fps
+/// * `(BTreeMap<String, Vec<u8>>, BTreeMap<i64, Vec<crate::realignment::utilities::Variant>>)` - read segment -> updated fps and retained variants grouped by position
 pub fn update_read_with_special_calls(
     read_segment_raw_fp: &BTreeMap<String, Vec<u8>>,
+    new_variants_by_position: &BTreeMap<i64, Vec<crate::realignment::utilities::Variant>>,
     realigned_bam: PathBuf,
     reference: &PathBuf,
     region_coordinates: &RegionCoordinates,
-) -> Result<BTreeMap<String, Vec<u8>>, DError> {
+) -> Result<
+    (
+        BTreeMap<String, Vec<u8>>,
+        BTreeMap<i64, Vec<crate::realignment::utilities::Variant>>,
+    ),
+    DError,
+> {
     let (special_calls_homopolymer, success_homopolymer) =
         genotype_homopolymer(realigned_bam.clone(), reference, region_coordinates)?;
     let (special_calls_str, success_str) =
@@ -28,31 +36,50 @@ pub fn update_read_with_special_calls(
 
     let mut read_segment_raw_fp_updated = BTreeMap::new();
     for (segment_name, fp) in read_segment_raw_fp {
-        if !special_calls_homopolymer.contains_key(segment_name)
-            || !special_calls_str.contains_key(segment_name)
-        {
-            error!("Segment {segment_name} not found in special calls homopolymer or str");
-        }
-        let this_call_homopolymer = special_calls_homopolymer.get(segment_name).unwrap();
-        let this_call_str = special_calls_str.get(segment_name).unwrap();
+        let this_call_homopolymer = special_calls_homopolymer
+            .get(segment_name)
+            .copied()
+            .unwrap_or_else(|| {
+                error!("Segment {segment_name} missing homopolymer special call");
+                b'-'
+            });
+        let this_call_str = special_calls_str
+            .get(segment_name)
+            .copied()
+            .unwrap_or_else(|| {
+                error!("Segment {segment_name} missing str special call");
+                b'-'
+            });
         let mut new_fp = fp.clone();
         if success_str {
             if fp.starts_with(&[b'S']) {
                 new_fp.insert(0, b'S');
             } else {
-                new_fp.insert(0, *this_call_str);
+                new_fp.insert(0, this_call_str);
             }
         }
         if success_homopolymer {
             if fp.ends_with(&[b'S']) {
                 new_fp.push(b'S');
             } else {
-                new_fp.push(*this_call_homopolymer);
+                new_fp.push(this_call_homopolymer);
             }
         }
         read_segment_raw_fp_updated.insert(segment_name.clone(), new_fp);
     }
-    Ok(read_segment_raw_fp_updated)
+    let mut new_variants_by_position_updated = new_variants_by_position.clone();
+    if success_str {
+        new_variants_by_position_updated.entry(0).or_insert(vec![]);
+    }
+    if success_homopolymer {
+        new_variants_by_position_updated
+            .entry(5000)
+            .or_insert(vec![]);
+    }
+    Ok((
+        read_segment_raw_fp_updated,
+        new_variants_by_position_updated,
+    ))
 }
 
 /// Genotype the homopolymer region
@@ -68,7 +95,7 @@ fn genotype_homopolymer(
     reference: &PathBuf,
     region_coordinates: &RegionCoordinates,
 ) -> Result<(BTreeMap<String, u8>, bool), DError> {
-    debug!("Genotype the homopolymer region at position 3113...");
+    debug!("genotyping the homopolymer region at position 3113");
     let mut success = false;
     let mut expected_variant: BTreeMap<String, u8> = BTreeMap::new();
     expected_variant.insert(String::from("A"), b'0');
@@ -82,7 +109,12 @@ fn genotype_homopolymer(
     let mut bam_reader = bam::IndexedReader::from_path(realigned_bam.clone())?;
     bam_reader
         .fetch((&ref_name, 0, region_coordinates.repeat_len as i64))
-        .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
+        .map_err(|e| {
+            invalid_data_error(format!(
+                "failed to fetch homopolymer genotyping region 0-{} on {ref_name}: {e}",
+                region_coordinates.repeat_len
+            ))
+        })?;
     for read_entry in bam_reader.records() {
         let read = read_entry?;
         let qname = std::str::from_utf8(read.qname())?;
@@ -112,9 +144,9 @@ fn genotype_homopolymer(
                 break;
             }
         }
-        if read_start.is_some() && read_end.is_some() {
-            let read_start = read_start.unwrap() as usize;
-            let read_end = read_end.unwrap() as usize;
+        if let (Some(read_start), Some(read_end)) = (read_start, read_end) {
+            let read_start = read_start as usize;
+            let read_end = read_end as usize;
             let read_seq = read.seq().as_bytes();
             let read_seq = std::str::from_utf8(&read_seq[read_start..read_end])?;
             let read_seq_strip_c = read_seq.trim_start_matches("C").trim_end_matches("C");
@@ -182,7 +214,7 @@ fn genotype_str(
     reference: &PathBuf,
     region_coordinates: &RegionCoordinates,
 ) -> Result<(BTreeMap<String, u8>, bool), DError> {
-    debug!("Genotype the STR region around position 138...");
+    debug!("genotyping the STR region around position 138");
     let mut success = false;
     let mut expected_variant: BTreeMap<String, u8> = BTreeMap::new();
     expected_variant.insert(String::from("2_7_36"), b'0');
@@ -240,7 +272,12 @@ fn genotype_str(
     let mut bam_reader = bam::IndexedReader::from_path(realigned_bam.clone())?;
     bam_reader
         .fetch((&ref_name, 0, region_coordinates.repeat_len as i64))
-        .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
+        .map_err(|e| {
+            invalid_data_error(format!(
+                "failed to fetch STR genotyping region 0-{} on {ref_name}: {e}",
+                region_coordinates.repeat_len
+            ))
+        })?;
     for read_entry in bam_reader.records() {
         let read = read_entry?;
         let qname = std::str::from_utf8(read.qname())?;
@@ -274,10 +311,12 @@ fn genotype_str(
                 break;
             }
         }
-        if read_start.is_some() && read_end.is_some() && downstream_end.is_some() {
-            let read_start = read_start.unwrap() as usize;
-            let read_end = read_end.unwrap() as usize;
-            let downstream_end = downstream_end.unwrap() as usize;
+        if let (Some(read_start), Some(read_end), Some(downstream_end)) =
+            (read_start, read_end, downstream_end)
+        {
+            let read_start = read_start as usize;
+            let read_end = read_end as usize;
+            let downstream_end = downstream_end as usize;
             let read_seq = read.seq().as_bytes();
             // check region downstream for indels
             let downstream_len_read = downstream_end as i32 - read_end as i32;

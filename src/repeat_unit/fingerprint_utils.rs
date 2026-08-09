@@ -1,11 +1,118 @@
 use crate::bam_operation::ClippedReads;
 use crate::realignment::utilities::{Variant, VariantType};
 use crate::repeat_unit::fingerprint::{FingerprintInfo, ReadParameters};
-use crate::util::{DError, FlankReads, RegionCoordinates};
+use crate::util::{
+    d4z4_coordinates, invalid_data_error, missing_data_error, DError, FlankReads, RegionCoordinates,
+};
 use itertools::Itertools;
 use log::{debug, trace};
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+
+pub(crate) fn handle_deletion_units(
+    fp_info: &mut FingerprintInfo,
+    segment_names_to_zero: &HashSet<String>,
+) {
+    // repeat units with big insertions may sometimes be aligned as one full unit plus extra segment with a deletion
+    // we don't want these deletion segments to become a different fingerprint
+    // so we mark deletion segments as 0 (unknown)
+    // then, we want to remove these deletion segments from the read edges of a read
+    // e.g. a read is 1-2-3--10. 2-3 is a qAL unit but aligned as 2 (full unit) plus 3 (segment with deletion).
+    // we want to update the read to 1-2--10
+    // there may exist reads with the long insertion aligned, which could be a fingerprint 4. e.g. a read could be 1-4--10
+    // in a separate function (handle_qal_units), we identify 2 as the matching unit for 4 (they only differ by the long insertion) and replace 4 with 2. So the read is updated to 1-2--10
+    let segment_names_to_zero_short = segment_names_to_zero
+        .iter()
+        .filter_map(|segment_name| {
+            let mut fields = segment_name.split(':');
+            let read_name = fields.next()?;
+            let read_start = fields.next()?;
+            Some(format!("{read_name}:{read_start}"))
+        })
+        .collect::<HashSet<_>>();
+    let affected_reads = segment_names_to_zero_short
+        .iter()
+        .filter_map(|segment_name| segment_name.split(':').next().map(str::to_string))
+        .collect::<HashSet<_>>();
+    let blacklist_fingerprints = segment_names_to_zero_short
+        .iter()
+        .filter_map(|segment_name| fp_info.grouped_reads.get(segment_name).copied())
+        .filter(|fingerprint| *fingerprint != 0)
+        .collect::<HashSet<_>>();
+    debug!("blacklist fingerprints: {:?}", blacklist_fingerprints);
+    debug!(
+        "segments containing blacklisted deletions: {:?}",
+        segment_names_to_zero_short
+    );
+
+    for segment_name in &segment_names_to_zero_short {
+        fp_info.grouped_reads.insert(segment_name.clone(), 0);
+    }
+
+    for read_name in affected_reads {
+        let read_positions = fp_info.read_positions.get(&read_name).cloned();
+        let read_edges = fp_info.read_edges.get(&read_name).cloned();
+        debug!("read {read_name} read edges to update: {:?}", read_edges);
+        if let (Some(read_positions), Some(read_edges)) = (read_positions, read_edges) {
+            let mut position_index = 0usize;
+            let edge_positions = read_edges
+                .iter()
+                .enumerate()
+                .map(|(edge_index, read_edge)| {
+                    let remaining_edges = read_edges.len() - edge_index;
+                    let remaining_positions = read_positions.len().saturating_sub(position_index);
+                    let edge_position =
+                        if *read_edge == -10 && remaining_edges > remaining_positions {
+                            None
+                        } else {
+                            let read_position = read_positions.get(position_index).copied();
+                            if read_position.is_some() {
+                                position_index += 1;
+                            }
+                            read_position
+                        };
+                    (*read_edge, edge_position)
+                })
+                .collect::<Vec<_>>();
+            let mut new_positions = Vec::new();
+            let mut new_edges = Vec::new();
+            let mut skip_next = false;
+
+            for (edge_index, (read_edge, read_position)) in edge_positions.iter().enumerate() {
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+
+                if let Some(read_position) = read_position {
+                    let segment_name = format!("{read_name}:{read_position}");
+                    if !segment_names_to_zero_short.contains(&segment_name) {
+                        new_positions.push(*read_position);
+                        new_edges.push(*read_edge);
+                    } else if let Some((next_edge, next_position)) =
+                        edge_positions.get(edge_index + 1)
+                    {
+                        if *next_edge == -10 {
+                            new_edges.push(*next_edge);
+                            if let Some(next_position) = next_position {
+                                new_positions.push(*next_position);
+                            }
+                            skip_next = true;
+                        }
+                    }
+                } else {
+                    new_edges.push(*read_edge);
+                }
+            }
+            debug!("new positions: {:?}", new_positions);
+            debug!("new edges: {:?}", new_edges);
+            fp_info
+                .read_positions
+                .insert(read_name.clone(), new_positions);
+            fp_info.read_edges.insert(read_name.clone(), new_edges);
+        }
+    }
+}
 
 /// Clean up segment raw fps
 /// # Arguments
@@ -16,7 +123,7 @@ use std::collections::HashSet;
 /// * `region_coordinates` - region coordinates
 /// * `min_variant_support` - minimum variant support
 /// # Returns
-/// * `BTreeMap<String, Vec<u8>>` - cleaned up read segment raw fps
+/// * `(BTreeMap<String, Vec<u8>>, BTreeMap<i64, Vec<Variant>>)` - cleaned up read segment raw fps and retained variants grouped by position
 pub fn clean_up_segment_raw_fps(
     read_segment_raw_fp: &mut BTreeMap<String, Vec<u8>>,
     variant_calls: &Vec<Variant>,
@@ -24,7 +131,7 @@ pub fn clean_up_segment_raw_fps(
     clipped_reads: &ClippedReads,
     region_coordinates: &RegionCoordinates,
     min_variant_support: usize,
-) -> Result<BTreeMap<String, Vec<u8>>, DError> {
+) -> Result<(BTreeMap<String, Vec<u8>>, BTreeMap<i64, Vec<Variant>>), DError> {
     let variant_positions = variant_calls
         .iter()
         .map(|x| x.position())
@@ -47,7 +154,7 @@ pub fn clean_up_segment_raw_fps(
         let s3: Vec<i64> = (&s1 - &s2).iter().cloned().collect::<Vec<_>>();
         if s1.len() - s3.len() > s2.len() - 10 {
             remove_type2_sites = true;
-            debug!("sample has type2 sites...removing these sites...");
+            debug!("sample has type2 sites; removing them from the candidate set");
         }
     }
 
@@ -56,9 +163,17 @@ pub fn clean_up_segment_raw_fps(
     let good_clips_p5 = &clipped_reads.good_clips_p5;
     let good_clips_p3 = &clipped_reads.good_clips_p3;
     for (read_segment, raw_fp) in &mut *read_segment_raw_fp {
-        assert_eq!(raw_fp.len(), num_pos);
+        if raw_fp.len() != num_pos {
+            return Err(invalid_data_error(format!(
+                "Read segment '{read_segment}' has fingerprint width {} but expected {} variant positions during clip-aware cleanup",
+                raw_fp.len(),
+                num_pos
+            )));
+        }
         if reads_clipped.contains_key(read_segment) {
-            let this_read_clips = reads_clipped.get(read_segment).unwrap();
+            let this_read_clips = reads_clipped.get(read_segment).ok_or_else(|| {
+                missing_data_error("clipped-read metadata", format!("segment '{read_segment}'"))
+            })?;
             for (clip_side, tid, clip_pos) in this_read_clips {
                 if clip_side == "p5" {
                     if good_clips_p5.contains(&(*tid, *clip_pos))
@@ -122,11 +237,25 @@ pub fn clean_up_segment_raw_fps(
         }
     }
     debug!("new_variant_positions {new_variant_positions:?}");
+    let new_variant_position_set = new_variant_positions
+        .iter()
+        .copied()
+        .collect::<HashSet<i64>>();
+    let mut new_variants_by_position: BTreeMap<i64, Vec<Variant>> = BTreeMap::new();
+    for variant in variant_calls
+        .iter()
+        .filter(|variant| new_variant_position_set.contains(&variant.position()))
+    {
+        new_variants_by_position
+            .entry(variant.position())
+            .or_default()
+            .push(variant.clone());
+    }
     let mut new_read_segment_raw_fp = BTreeMap::new();
     for (read_segment, raw_fp) in read_segment_raw_fp {
         let mut new_raw_fp = Vec::new();
         for (i, base) in raw_fp.iter().enumerate() {
-            if new_variant_positions.contains(&variant_positions[i]) {
+            if new_variant_position_set.contains(&variant_positions[i]) {
                 new_raw_fp.push(*base);
             }
         }
@@ -137,7 +266,7 @@ pub fn clean_up_segment_raw_fps(
         );
         new_read_segment_raw_fp.insert(read_segment.clone(), new_raw_fp);
     }
-    Ok(new_read_segment_raw_fp)
+    Ok((new_read_segment_raw_fp, new_variants_by_position))
 }
 
 /// Get good variants from unfiltered sites
@@ -178,8 +307,14 @@ pub fn get_good_variants(
                         std::str::from_utf8(&[ref_base])?,
                         std::str::from_utf8(base)?
                     );
-                    let variant =
-                        Variant::new_snv(0, *pos, vec![ref_base], base.to_vec(), 0, 1).unwrap();
+                    let variant = Variant::new_snv(0, *pos, vec![ref_base], base.to_vec(), 0, 1)
+                        .map_err(|e| {
+                            format!(
+                                "Failed to build SNV at position {} from base {:?}: {e}",
+                                *pos + 1,
+                                std::str::from_utf8(base).unwrap_or("<non-utf8>")
+                            )
+                        })?;
                     if region_coordinates.variants_to_exclude.contains(&variant) {
                         debug!(
                             "filtered site at pos {}, ref_base {}, alt base {:?}",
@@ -214,7 +349,9 @@ pub fn get_good_variants(
                                 0,
                                 1,
                             )
-                            .unwrap();
+                            .map_err(|e| {
+                                format!("Failed to build insertion at position {}: {e}", *pos + 1)
+                            })?;
                             indels.push(variant);
                         }
                     }
@@ -235,7 +372,9 @@ pub fn get_good_variants(
                                 0,
                                 1,
                             )
-                            .unwrap();
+                            .map_err(|e| {
+                                format!("Failed to build deletion at position {}: {e}", *pos + 1)
+                            })?;
                             indels.push(variant);
                         }
                     }
@@ -298,7 +437,7 @@ pub fn get_good_variants(
 /// * `var_len` - variant length
 /// # Returns
 /// * `bool` - true if a match is found
-fn match_existing_indels(known_sites: &Vec<(i64, usize)>, pos: &i64, var_len: usize) -> bool {
+fn match_existing_indels(known_sites: &[(i64, usize)], pos: &i64, var_len: usize) -> bool {
     let mut found_match = Vec::new();
     let position_buffer = if var_len < 20 { var_len as i64 } else { 5 };
     let length_buffer = if var_len < 500 {
@@ -342,6 +481,7 @@ pub fn select_fps(
     read_segment_raw_fp: &BTreeMap<String, Vec<u8>>,
     read_parameters: &ReadParameters,
     read_whitelist: &Vec<String>,
+    excluded_count_segments: &HashSet<String>,
     start_end_fps: &BTreeMap<Vec<u8>, i32>,
     _is_d4z4: bool,
     sensitive: bool,
@@ -359,7 +499,14 @@ pub fn select_fps(
     let mut fp_whitelist = HashSet::new();
 
     for (read, read_seq) in read_segment_raw_fp {
-        *fp_count.entry(read_seq.clone()).or_default() += 1;
+        if !excluded_count_segments.contains(read) {
+            *fp_count.entry(read_seq.clone()).or_default() += 1;
+        } else {
+            debug!(
+                "excluded read segment {read} {:?}",
+                std::str::from_utf8(read_seq)?
+            );
+        }
         // white list fps, always add
         let full_read_name = read
             .split(':')
@@ -383,20 +530,18 @@ pub fn select_fps(
     // complete fp seq -> name
     let mut good_seq_to_name: BTreeMap<Vec<u8>, i32> = BTreeMap::new();
     // first round, very loose criteria
-    for (fp, count) in fp_count.clone().into_iter() {
+    for (fp, count) in &fp_count {
         let fp_seq = std::str::from_utf8(&fp)?;
         let fp_seq_string = fp_seq.to_string();
         if !fp.contains(&b'x')
             && !fp.contains(&b'-')
-            && (count >= read_parameters.min_fingerprint_support - 1 || fp_whitelist.contains(&fp))
+            && (*count >= read_parameters.min_fingerprint_support - 1 || fp_whitelist.contains(fp))
         {
             debug!("{fp_seq_string:?}, read count {count:?}, index {fp_index:?}");
             good_name_to_seq
                 .entry(fp_index)
                 .or_insert_with(|| fp.clone());
-            good_seq_to_name
-                .entry(fp.clone())
-                .or_insert_with(|| fp_index);
+            good_seq_to_name.entry(fp.clone()).or_insert(fp_index);
             fp_index += 1;
         } else {
             trace!("{fp_seq_string:?} is filtered, read count {count:?}");
@@ -483,38 +628,38 @@ pub fn select_fps(
     let mut good_name_to_seq = BTreeMap::new();
     // complete fp seq -> name
     let mut good_seq_to_name: BTreeMap<Vec<u8>, i32> = BTreeMap::new();
-    for (fp, count) in fp_count.clone().into_iter() {
+    for (fp, count) in &fp_count {
         let fp_seq = std::str::from_utf8(&fp)?;
         let fp_seq_string = fp_seq.to_string();
         let mut partial_count = 0;
-        if to_replace_reverse.contains_key(&fp) {
-            partial_count = to_replace_reverse.get(&fp).ok_or("err")?.len() as i32;
+        if to_replace_reverse.contains_key(fp) {
+            partial_count = to_replace_reverse.get(fp).ok_or("err")?.len() as i32;
         }
         if !fp.contains(&b'x')
             && (!fp.contains(&b'-') || full_unknown_no_match_considered.contains(&fp))
-            && (count >= read_parameters.min_fingerprint_support
-                || fp_whitelist.contains(&fp)
+            && (*count >= read_parameters.min_fingerprint_support
+                || fp_whitelist.contains(fp)
                 || (!sensitive && partial_count >= read_parameters.min_fingerprint_support)
-                || (sensitive && partial_count + count >= read_parameters.min_fingerprint_support))
+                || (sensitive && partial_count + *count >= read_parameters.min_fingerprint_support))
         {
-            if !start_end_fps.contains_key(&fp) {
+            if !start_end_fps.contains_key(fp) {
                 debug!("{fp_seq_string:?}, read count {count:?}, partial_count {partial_count:?}, index {fp_index:?}");
                 good_name_to_seq
                     .entry(fp_index)
                     .or_insert_with(|| fp.clone());
-                good_seq_to_name
-                    .entry(fp.clone())
-                    .or_insert_with(|| fp_index);
+                good_seq_to_name.entry(fp.clone()).or_insert(fp_index);
                 fp_index += 1;
             } else {
-                let start_end_fp_index = start_end_fps.get(&fp).unwrap();
+                let start_end_fp_index = start_end_fps.get(fp).ok_or_else(|| {
+                    format!("Missing start/end fingerprint index for sequence {:?}", fp)
+                })?;
                 debug!("{fp_seq_string:?}, read count {count:?}, partial_count {partial_count:?}, index {start_end_fp_index:?}");
                 good_name_to_seq
                     .entry(*start_end_fp_index)
                     .or_insert_with(|| fp.clone());
                 good_seq_to_name
                     .entry(fp.clone())
-                    .or_insert_with(|| *start_end_fp_index);
+                    .or_insert(*start_end_fp_index);
             }
         } else {
             trace!("{fp_seq_string:?} is filtered, read count {count:?}");
@@ -619,7 +764,9 @@ fn rescue_complete_fp(full_unknown: Vec<Vec<u8>>) -> Result<HashSet<Vec<u8>>, DE
             hap_candidates_set.len()
         );
         if hap_candidates_set.len() == 1 {
-            let hap_candidate = hap_candidates.first().unwrap();
+            let hap_candidate = hap_candidates
+                .first()
+                .ok_or("Missing rescued fingerprint candidate")?;
             rescued_fps.insert(hap_candidate.to_vec());
         }
     }
@@ -670,11 +817,11 @@ pub fn get_start_end_fps(
     let mut starting_fps = BTreeMap::<Vec<u8>, i32>::new();
     let mut ending_fps = BTreeMap::<Vec<u8>, i32>::new();
 
-    for (read_segment, fp) in read_segment_raw_fp.clone().into_iter() {
-        if flanking_reads.start_segment.contains(&read_segment) {
+    for (read_segment, fp) in read_segment_raw_fp {
+        if flanking_reads.start_segment.contains(read_segment.as_str()) {
             *starting_fps.entry(fp.clone()).or_default() += 1;
         }
-        if flanking_reads.end_segment.contains(&read_segment) {
+        if flanking_reads.end_segment.contains(read_segment.as_str()) {
             *ending_fps.entry(fp.clone()).or_default() += 1;
         }
     }
@@ -711,6 +858,227 @@ pub fn get_start_end_fps(
     Ok(start_end_fps)
 }
 
+/// Locate fingerprint positions whose variant tables contain one of the target long insertions.
+///
+/// Returns `(index, encoded_alt)` pairs where `index` is the fingerprint column and
+/// `encoded_alt` is the expected byte representation stored in the fingerprint sequence.
+fn find_long_insertion_variant_codes(
+    fp_info: &FingerprintInfo,
+    target_variants: &[Variant],
+) -> Vec<(usize, u8)> {
+    fp_info
+        .variants_by_position
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_pos, variants_at_pos))| {
+            target_variants.iter().find_map(|target_variant| {
+                variants_at_pos
+                    .iter()
+                    .position(|variant| variant == target_variant)
+                    .and_then(|alt_index| {
+                        if alt_index <= 8 {
+                            Some((index, b'1' + alt_index as u8))
+                        } else {
+                            None
+                        }
+                    })
+            })
+        })
+        .collect()
+}
+
+/// Normalize a fingerprint by clearing a specific insertion code back to the reference state.
+///
+/// The second returned fingerprint also replaces unknown bases (`-`) with `0` so callers can
+/// match both exact and "unknown treated as reference" variants of the same unit.
+fn normalized_fp_without_insertion(unit_fp: &[u8], insertion_index: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut normalized_fp = unit_fp.to_vec();
+    normalized_fp[insertion_index] = b'0';
+    let mut normalized_fp_with_unknowns_replaced = normalized_fp.clone();
+    for base in &mut normalized_fp_with_unknowns_replaced {
+        if *base == b'-' {
+            *base = b'0';
+        }
+    }
+    (normalized_fp, normalized_fp_with_unknowns_replaced)
+}
+
+/// Find unit ids whose fingerprints match another unit after removing a long insertion.
+///
+/// Matching is done against both the exact normalized fingerprint and a version where unknown
+/// sites are treated as reference, mirroring the legacy replacement behavior.
+fn find_matching_units_for_insertion(
+    fp_info: &FingerprintInfo,
+    unit_fp: &[u8],
+    insertion_index: usize,
+) -> Vec<i32> {
+    let (normalized_fp, normalized_fp_with_unknowns_replaced) =
+        normalized_fp_without_insertion(unit_fp, insertion_index);
+    fp_info
+        .good_name_to_seq
+        .iter()
+        .filter_map(|(other_unit_name, other_unit_fp)| {
+            if other_unit_fp == &normalized_fp
+                || other_unit_fp == &normalized_fp_with_unknowns_replaced
+            {
+                Some(*other_unit_name)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Apply fingerprint-id replacements consistently across per-read and per-segment mappings.
+///
+/// This keeps the structural fingerprint metadata intact while rewriting only the ids that
+/// should collapse onto an existing unit.
+fn apply_fingerprint_replacements(
+    fp_info: FingerprintInfo,
+    replacements: &BTreeMap<i32, i32>,
+) -> Result<FingerprintInfo, DError> {
+    if replacements.is_empty() {
+        return Ok(fp_info);
+    }
+
+    let mut new_read_edges = BTreeMap::new();
+    for (read_name, read_fps) in &fp_info.read_edges {
+        let new_fps = read_fps
+            .iter()
+            .map(|fp| replacements.get(fp).copied().unwrap_or(*fp))
+            .collect::<Vec<_>>();
+        if new_fps != *read_fps {
+            debug!("updated edges {read_name}: from {read_fps:?} to {new_fps:?}");
+        }
+        new_read_edges.insert(read_name.clone(), new_fps);
+    }
+
+    let mut new_grouped_reads = BTreeMap::new();
+    for (segment_name, fp) in &fp_info.grouped_reads {
+        new_grouped_reads.insert(
+            segment_name.clone(),
+            replacements.get(fp).copied().unwrap_or(*fp),
+        );
+    }
+
+    Ok(FingerprintInfo {
+        read_edges: new_read_edges,
+        grouped_reads: new_grouped_reads,
+        fp_count: fp_info.fp_count,
+        good_name_to_seq: fp_info.good_name_to_seq,
+        read_positions: fp_info.read_positions,
+        read_bases: fp_info.read_bases,
+        fp_to_tid: fp_info.fp_to_tid,
+        variants_by_position: fp_info.variants_by_position,
+    })
+}
+
+/// Identify qAL units and perform fingerprint replacement
+pub fn handle_qal_units(
+    fp_info: FingerprintInfo,
+    rename_long_insertion_fingerprint: bool,
+) -> Result<(FingerprintInfo, Vec<i32>), DError> {
+    let mut new_replace = BTreeMap::<i32, i32>::new();
+    let mut qal_units = Vec::new();
+
+    let d4z4_region_coordinates = d4z4_coordinates();
+    // the second last insertion and third last insertion are two possible 1.6kb insertions indicating qAL units
+    let long_insertion_variants = d4z4_region_coordinates
+        .variants_to_call
+        .iter()
+        .rev()
+        .skip(1)
+        .take(2)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let long_insertion_variant_codes =
+        find_long_insertion_variant_codes(&fp_info, &long_insertion_variants);
+
+    for (unit_name, unit_fp) in fp_info.good_name_to_seq.iter() {
+        for (index, expected_code) in long_insertion_variant_codes.iter() {
+            if unit_fp.get(*index) == Some(expected_code) {
+                debug!(
+                    "unit {unit_name:?} has long insertion variant at index {index}, unit fp: {:?}",
+                    std::str::from_utf8(unit_fp)?
+                );
+                qal_units.push(*unit_name);
+                // indentify a fingerprint that is identical with the qal unit except for the insertion
+                // when necessary, we replace the original qal fingerprint with the matching fingerprint
+                // because sometimes the qal unit is spit into two segments -
+                // first the matching fingerprint then another segment with a deletion.
+                let matching_unit_fps =
+                    find_matching_units_for_insertion(&fp_info, unit_fp, *index);
+                if let Some(matching_unit_fp) = matching_unit_fps.first() {
+                    debug!("Found matching unit {matching_unit_fp:?} for {unit_name:?}");
+                    new_replace.entry(*unit_name).or_insert(*matching_unit_fp);
+                    qal_units.push(*matching_unit_fp);
+                    break;
+                }
+            }
+        }
+    }
+    debug!("candidate long insertion fingerprint replacements: {new_replace:?}");
+
+    if new_replace.is_empty() || !rename_long_insertion_fingerprint {
+        debug!("no need to rename long insertion fingerprints");
+        return Ok((fp_info, qal_units));
+    }
+
+    Ok((
+        apply_fingerprint_replacements(fp_info, &new_replace)?,
+        qal_units,
+    ))
+}
+
+/// Handle another long insertion that is unrelated to qAL
+pub fn handle_last_d4z4_long_insertion(
+    fp_info: FingerprintInfo,
+) -> Result<FingerprintInfo, DError> {
+    let mut new_replace = BTreeMap::<i32, i32>::new();
+
+    let d4z4_region_coordinates = d4z4_coordinates();
+    // last insertion in variants_to_call
+    let long_insertion_variant = d4z4_region_coordinates
+        .variants_to_call
+        .last()
+        .cloned()
+        .ok_or_else(|| missing_data_error("d4z4 forced-call variant", "last variant to call"))?;
+
+    let long_insertion_variant_codes =
+        find_long_insertion_variant_codes(&fp_info, &[long_insertion_variant]);
+
+    for (unit_name, unit_fp) in fp_info.good_name_to_seq.iter() {
+        for (index, expected_code) in long_insertion_variant_codes.iter() {
+            if unit_fp.get(*index) == Some(expected_code) {
+                debug!(
+                    "unit {unit_name:?} has final d4z4 long insertion at index {index}, unit fp: {:?}",
+                    std::str::from_utf8(unit_fp)?
+                );
+                let matching_unit_fps =
+                    find_matching_units_for_insertion(&fp_info, unit_fp, *index);
+                if matching_unit_fps.len() == 1 {
+                    let matching_unit_fp = matching_unit_fps.first().ok_or_else(|| {
+                        missing_data_error(
+                            "matching unit fingerprint",
+                            format!("long insertion unit {unit_name:?}"),
+                        )
+                    })?;
+                    debug!("Found matching unit {matching_unit_fp:?} for {unit_name:?}");
+                    new_replace.entry(*unit_name).or_insert(*matching_unit_fp);
+                }
+            }
+        }
+    }
+    debug!("new_replace for final d4z4 long insertion: {new_replace:?}");
+
+    if new_replace.is_empty() {
+        return Ok(fp_info);
+    }
+
+    apply_fingerprint_replacements(fp_info, &new_replace)
+}
+
 /// Compare fingerprints and remove redundant ones
 /// # Arguments
 /// * `fp_info` - fingerprint information
@@ -731,14 +1099,12 @@ pub fn rm_redundant_finger_prints(
     for (hap1_name, hap1) in fp_info.good_name_to_seq.iter() {
         let reads1 = fp_info
             .read_edges
-            .clone()
-            .into_values()
+            .values()
             .filter(|x| x.contains(hap1_name))
+            .cloned()
             .collect::<Vec<_>>();
-        let (hap1_prev, hap1_next) = get_prev_next(reads1.clone(), *hap1_name, true);
-        log::trace!(
-            "Evaluating {hap1_name} previous nodes {hap1_prev:?}, next nodes {hap1_next:?}"
-        );
+        let (hap1_prev, hap1_next) = get_prev_next(&reads1, *hap1_name, true);
+        trace!("Evaluating {hap1_name} previous nodes {hap1_prev:?}, next nodes {hap1_next:?}");
         // For D4Z4, do not replace if a node has no previous or next nodes
         if include_all_links && (hap1_prev.is_empty() || hap1_next.is_empty()) {
             continue;
@@ -748,20 +1114,26 @@ pub fn rm_redundant_finger_prints(
         for (hap2_name, hap2) in fp_info.good_name_to_seq.iter() {
             if hap1 != hap2 {
                 let (num_diff, diff_sites) = edit_dis(hap1, hap2, false);
-                let count1 = fp_info.fp_count.get(hap1).ok_or("haplotype not found")?;
-                let count2 = fp_info.fp_count.get(hap2).ok_or("haplotype not found")?;
+                let count1 = fp_info
+                    .fp_count
+                    .get(hap1)
+                    .ok_or_else(|| missing_data_error("haplotype count", format!("{hap1:?}")))?;
+                let count2 = fp_info
+                    .fp_count
+                    .get(hap2)
+                    .ok_or_else(|| missing_data_error("haplotype count", format!("{hap2:?}")))?;
                 trace!("{hap1_name}: count {count1}, vs. {hap2_name}: count {count2}, {num_diff} mismatches at sites {diff_sites:?}");
                 // require count difference
                 if num_diff < 2 && *count1 <= max_read_count_to_correct && *count2 >= *count1 * 2 {
                     // check if hap1 can be replaced with hap2
                     let reads2 = fp_info
                         .read_edges
-                        .clone()
-                        .into_values()
+                        .values()
                         .filter(|x| x.contains(hap2_name))
+                        .cloned()
                         .collect::<Vec<_>>();
                     let (mut hap2_prev, mut hap2_next) =
-                        get_prev_next(reads2.clone(), *hap2_name, include_all_links);
+                        get_prev_next(&reads2, *hap2_name, include_all_links);
                     hap2_prev.sort();
                     hap2_next.sort();
                     let mut reads1_replaced: Vec<Vec<i32>> = Vec::new();
@@ -779,7 +1151,7 @@ pub fn rm_redundant_finger_prints(
                     let mut reads2_add = reads2.clone();
                     reads2_add.append(&mut reads1_replaced);
                     let (mut hap2_add_prev, mut hap2_add_next) =
-                        get_prev_next(reads2_add.clone(), *hap2_name, include_all_links);
+                        get_prev_next(&reads2_add, *hap2_name, include_all_links);
                     hap2_add_prev.sort();
                     hap2_add_next.sort();
                     trace!("{hap2_name} previous nodes {hap2_prev:?}, now {hap2_add_prev:?}");
@@ -791,17 +1163,19 @@ pub fn rm_redundant_finger_prints(
             }
         }
         if hap1_candidate_list.len() == 1 {
-            let to_replace_hap1 = hap1_candidate_list
-                .first()
-                .ok_or("first not found in hap1_candidate_list")?;
+            let to_replace_hap1 = hap1_candidate_list.first().ok_or_else(|| {
+                missing_data_error(
+                    "first haplotype replacement candidate",
+                    format!("{hap1_candidate_list:?}"),
+                )
+            })?;
             let reads1 = fp_info
                 .read_edges
-                .clone()
-                .into_values()
+                .values()
                 .filter(|x| x.contains(hap1_name))
+                .cloned()
                 .collect::<Vec<_>>();
-            let (hap1_prev, hap1_next) =
-                get_prev_next(reads1.clone(), *hap1_name, include_all_links);
+            let (hap1_prev, hap1_next) = get_prev_next(&reads1, *hap1_name, include_all_links);
             if hap1_prev == hap1_next && hap1_prev.len() == 1 && hap1_prev[0] == *to_replace_hap1 {
                 debug!("do not replace fingerprint {hap1_name} with {to_replace_hap1} because its prev and next nodes are both {to_replace_hap1}");
             } else {
@@ -812,7 +1186,7 @@ pub fn rm_redundant_finger_prints(
         }
     }
     if new_replace.is_empty() {
-        return Ok((fp_info.clone(), false));
+        return Ok((fp_info, false));
     }
     for (fp_name, fp_seq) in fp_info.good_name_to_seq.iter() {
         if !new_replace.contains_key(fp_name) {
@@ -825,30 +1199,30 @@ pub fn rm_redundant_finger_prints(
         let mut new_fps = Vec::new();
         for fp in read_fps {
             if new_replace.contains_key(fp) {
-                let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
+                let to_replace = new_replace
+                    .get(fp)
+                    .ok_or_else(|| missing_data_error("fingerprint replacement", fp.to_string()))?;
                 new_fps.push(*to_replace);
             } else {
                 new_fps.push(*fp);
             }
         }
-        if new_fps != read_fps.to_vec() {
+        if new_fps != *read_fps {
             debug!("updated edges {each_read}: from {read_fps:?} to {new_fps:?}");
         }
-        new_read_edges
-            .entry(each_read.to_string())
-            .or_insert(new_fps);
+        new_read_edges.entry(each_read.clone()).or_insert(new_fps);
     }
 
     for (each_segment, fp) in fp_info.grouped_reads.iter() {
         if new_replace.contains_key(fp) {
-            let to_replace = new_replace.get(fp).ok_or("key not found in new_replace")?;
+            let to_replace = new_replace
+                .get(fp)
+                .ok_or_else(|| missing_data_error("fingerprint replacement", fp.to_string()))?;
             new_grouped_reads
-                .entry(each_segment.to_string())
+                .entry(each_segment.clone())
                 .or_insert(*to_replace);
         } else {
-            new_grouped_reads
-                .entry(each_segment.to_string())
-                .or_insert(*fp);
+            new_grouped_reads.entry(each_segment.clone()).or_insert(*fp);
         }
     }
 
@@ -861,6 +1235,7 @@ pub fn rm_redundant_finger_prints(
             read_positions: fp_info.read_positions,
             read_bases: fp_info.read_bases,
             fp_to_tid: fp_info.fp_to_tid,
+            variants_by_position: fp_info.variants_by_position,
         },
         true,
     ))
@@ -874,7 +1249,7 @@ pub fn rm_redundant_finger_prints(
 /// # Returns
 /// * `(Vec<i32>, Vec<i32>)` - previous and next fingerprints
 fn get_prev_next(
-    read_fps: Vec<Vec<i32>>,
+    read_fps: &[Vec<i32>],
     fp_to_check: i32,
     include_all_links: bool,
 ) -> (Vec<i32>, Vec<i32>) {
@@ -952,8 +1327,12 @@ pub fn infer_unknown_fingerprints(
                     && previous_nodes.contains_key(&next_node)
                     && next_nodes.contains_key(&prev_node)
                 {
-                    let prev_node_next = next_nodes.get(&prev_node).unwrap();
-                    let next_node_prev = previous_nodes.get(&next_node).unwrap();
+                    let Some(prev_node_next) = next_nodes.get(&prev_node) else {
+                        continue;
+                    };
+                    let Some(next_node_prev) = previous_nodes.get(&next_node) else {
+                        continue;
+                    };
                     if prev_node_next.len() > 1 && next_node_prev.len() > 1 {
                         let prev_node_next_set: HashSet<i32> =
                             prev_node_next.iter().cloned().collect();
@@ -965,9 +1344,11 @@ pub fn infer_unknown_fingerprints(
                         {
                             let prev_node_next_set_vec: Vec<i32> =
                                 prev_node_next_set.iter().cloned().collect_vec();
-                            let prev_node_next_set_vec_node =
-                                prev_node_next_set_vec.first().unwrap();
-                            to_update.entry(i).or_insert(*prev_node_next_set_vec_node);
+                            if let Some(prev_node_next_set_vec_node) =
+                                prev_node_next_set_vec.first()
+                            {
+                                to_update.entry(i).or_insert(*prev_node_next_set_vec_node);
+                            }
                         }
                     }
                 }
@@ -981,7 +1362,7 @@ pub fn infer_unknown_fingerprints(
             let mut new_edge = Vec::new();
             for j in 0..edges_len {
                 let j_node = if to_update.contains_key(&j) {
-                    *to_update.get(&j).unwrap()
+                    *to_update.get(&j).unwrap_or(&edges[j])
                 } else {
                     edges[j]
                 };
@@ -1014,7 +1395,7 @@ pub fn update_fps(
     //BTreeMap<Vec<u8>, i32>,
     //BTreeMap<i32, Vec<u8>>,
     let mut partial_fps = HashSet::new();
-    let mut fp_index = good_seq_to_name.values().max().unwrap() + 1;
+    let mut fp_index = good_seq_to_name.values().max().copied().unwrap_or(1) + 1;
     for (fp, _count) in fp_count {
         if !good_seq_to_name.contains_key(fp) {
             if fps_to_add.contains(fp) {
@@ -1103,6 +1484,140 @@ fn map_partial_to_full(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bam_operation::ClippedReads;
+    use crate::repeat_unit::fingerprint::FingerprintInfo;
+    use std::collections::{BTreeMap, HashSet};
+
+    #[test]
+    fn handle_deletion_units_removes_blacklisted_internal_segment() {
+        let mut fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![4, 5, -10])]),
+            grouped_reads: BTreeMap::from([
+                ("read1:100".to_string(), 4),
+                ("read1:200".to_string(), 5),
+                ("read1:300".to_string(), -10),
+            ]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::from([("read1".to_string(), vec![100, 200, 300])]),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+        let blacklist_segments = HashSet::from(["read1:200:50".to_string()]);
+
+        handle_deletion_units(&mut fp_info, &blacklist_segments);
+
+        assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![4, -10]));
+        assert_eq!(fp_info.read_positions.get("read1"), Some(&vec![100, 300]));
+        assert_eq!(fp_info.grouped_reads.get("read1:200"), Some(&0));
+    }
+
+    #[test]
+    fn handle_deletion_units_preserves_trailing_edge_without_position() {
+        let mut fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![4, 5, -10])]),
+            grouped_reads: BTreeMap::from([
+                ("read1:100".to_string(), 4),
+                ("read1:200".to_string(), 5),
+            ]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::from([("read1".to_string(), vec![100, 200])]),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+        let blacklist_segments = HashSet::from(["read1:200:50".to_string()]);
+
+        handle_deletion_units(&mut fp_info, &blacklist_segments);
+
+        assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![4, -10]));
+        assert_eq!(fp_info.read_positions.get("read1"), Some(&vec![100]));
+        assert_eq!(fp_info.grouped_reads.get("read1:200"), Some(&0));
+    }
+
+    #[test]
+    fn handle_deletion_units_preserves_unpositioned_middle_negative_ten() {
+        let mut fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![4, -10, 5])]),
+            grouped_reads: BTreeMap::from([
+                ("read1:100".to_string(), 4),
+                ("read1:200".to_string(), 5),
+            ]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::from([("read1".to_string(), vec![100, 200])]),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+        let blacklist_segments = HashSet::from(["read1:200:50".to_string()]);
+
+        handle_deletion_units(&mut fp_info, &blacklist_segments);
+
+        assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![4, -10]));
+        assert_eq!(fp_info.read_positions.get("read1"), Some(&vec![100]));
+        assert_eq!(fp_info.grouped_reads.get("read1:200"), Some(&0));
+    }
+
+    #[test]
+    fn handle_deletion_units_preserves_terminal_negative_ten_after_blacklisted_zero() {
+        let mut fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![0, 23, 23, 0, -10])]),
+            grouped_reads: BTreeMap::from([
+                ("read1:100".to_string(), 0),
+                ("read1:200".to_string(), 23),
+                ("read1:300".to_string(), 23),
+                ("read1:400".to_string(), 0),
+            ]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::from([("read1".to_string(), vec![100, 200, 300, 400])]),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+        let blacklist_segments = HashSet::from(["read1:400:50".to_string()]);
+
+        handle_deletion_units(&mut fp_info, &blacklist_segments);
+
+        assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![0, 23, 23, -10]));
+        assert_eq!(
+            fp_info.read_positions.get("read1"),
+            Some(&vec![100, 200, 300])
+        );
+        assert_eq!(fp_info.grouped_reads.get("read1:400"), Some(&0));
+    }
+
+    #[test]
+    fn handle_deletion_units_preserves_positioned_negative_ten_after_blacklisted_segment() {
+        let mut fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![0, 23, 23, -10])]),
+            grouped_reads: BTreeMap::from([
+                ("read1:100".to_string(), 0),
+                ("read1:200".to_string(), 23),
+                ("read1:300".to_string(), 23),
+                ("read1:400".to_string(), -10),
+            ]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::new(),
+            read_positions: BTreeMap::from([("read1".to_string(), vec![100, 200, 300, 400])]),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::new(),
+        };
+        let blacklist_segments = HashSet::from(["read1:300:50".to_string()]);
+
+        handle_deletion_units(&mut fp_info, &blacklist_segments);
+
+        assert_eq!(fp_info.read_edges.get("read1"), Some(&vec![0, 23, -10]));
+        assert_eq!(
+            fp_info.read_positions.get("read1"),
+            Some(&vec![100, 200, 400])
+        );
+        assert_eq!(fp_info.grouped_reads.get("read1:300"), Some(&0));
+    }
 
     #[test]
     fn test_edit_dis() {
@@ -1257,23 +1772,23 @@ mod tests {
     #[test]
     fn test_get_prev_next() {
         let reads = vec![vec![1, 2, 3], vec![2, 3], vec![1, 2], vec![2, 4]];
-        let (prev, next) = get_prev_next(reads.clone(), 2, false);
+        let (prev, next) = get_prev_next(&reads, 2, false);
         assert_eq!(prev, vec![1]);
         assert_eq!(next, vec![3]);
 
-        let (prev, next) = get_prev_next(reads.clone(), 2, true);
+        let (prev, next) = get_prev_next(&reads, 2, true);
         assert_eq!(prev, vec![1]);
         assert_eq!(next, vec![3, 4]);
 
-        let (prev, next) = get_prev_next(reads.clone(), 3, false);
+        let (prev, next) = get_prev_next(&reads, 3, false);
         assert_eq!(prev, vec![2]);
         assert!(next.is_empty());
 
-        let (prev, next) = get_prev_next(reads.clone(), 4, false);
+        let (prev, next) = get_prev_next(&reads, 4, false);
         assert!(prev.is_empty());
         assert!(next.is_empty());
 
-        let (prev, next) = get_prev_next(reads.clone(), 4, true);
+        let (prev, next) = get_prev_next(&reads, 4, true);
         assert_eq!(prev, vec![2]);
         assert!(next.is_empty());
     }
@@ -1355,5 +1870,94 @@ mod tests {
             .or_insert(vec![1, 5]);
         let new_reads = infer_unknown_fingerprints(read_edges);
         assert_eq!(*new_reads.get("read1").unwrap(), vec![1, 0, 3]);
+    }
+
+    #[test]
+    fn test_handle_last_d4z4_long_insertion() {
+        let last_variant = d4z4_coordinates().variants_to_call.last().cloned().unwrap();
+        let fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![7, -10])]),
+            grouped_reads: BTreeMap::from([("read1:0".to_string(), 7)]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::from([(7, vec![b'1']), (8, vec![b'0'])]),
+            read_positions: BTreeMap::new(),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::from([(last_variant.position(), vec![last_variant])]),
+        };
+
+        let updated = handle_last_d4z4_long_insertion(fp_info).unwrap();
+
+        assert_eq!(updated.read_edges.get("read1"), Some(&vec![8, -10]));
+        assert_eq!(updated.grouped_reads.get("read1:0"), Some(&8));
+    }
+
+    #[test]
+    fn test_handle_qal_units_updates_grouped_reads() {
+        let d4z4_region_coordinates = d4z4_coordinates();
+        let long_insertion_variants = d4z4_region_coordinates
+            .variants_to_call
+            .iter()
+            .rev()
+            .skip(1)
+            .take(2)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let target_variant = long_insertion_variants.first().cloned().unwrap();
+        let fp_info = FingerprintInfo {
+            read_edges: BTreeMap::from([("read1".to_string(), vec![7, -10])]),
+            grouped_reads: BTreeMap::from([("read1:0".to_string(), 7)]),
+            fp_count: BTreeMap::new(),
+            good_name_to_seq: BTreeMap::from([(7, vec![b'1']), (8, vec![b'0'])]),
+            read_positions: BTreeMap::new(),
+            read_bases: BTreeMap::new(),
+            fp_to_tid: BTreeMap::new(),
+            variants_by_position: BTreeMap::from([(
+                target_variant.position(),
+                vec![target_variant],
+            )]),
+        };
+
+        let (updated, qal_units) = handle_qal_units(fp_info, true).unwrap();
+
+        assert_eq!(updated.read_edges.get("read1"), Some(&vec![8, -10]));
+        assert_eq!(updated.grouped_reads.get("read1:0"), Some(&8));
+        assert_eq!(qal_units, vec![7, 8]);
+    }
+
+    #[test]
+    fn test_clean_up_segment_raw_fps_errors_on_width_mismatch() {
+        let mut read_segment_raw_fp = BTreeMap::from([(String::from("read1:0:10"), vec![b'0'])]);
+        let clipped_reads = ClippedReads {
+            good_clips_p5: vec![],
+            good_clips_p3: vec![],
+            clipped_reads: BTreeMap::new(),
+        };
+        let flanking_reads = FlankReads {
+            start: HashSet::new(),
+            end: HashSet::new(),
+            start_segment: HashSet::new(),
+            end_segment: HashSet::new(),
+            good_clips_p5: vec![],
+            good_clips_p3: vec![],
+        };
+
+        let error = clean_up_segment_raw_fps(
+            &mut read_segment_raw_fp,
+            &vec![],
+            &flanking_reads,
+            &clipped_reads,
+            &d4z4_coordinates(),
+            1,
+        )
+        .expect_err("mismatched fingerprint width should error");
+
+        assert!(
+            error.to_string().contains(
+                "invalid data: Read segment 'read1:0:10' has fingerprint width 1 but expected 0 variant positions during clip-aware cleanup"
+            ),
+            "unexpected error: {error}"
+        );
     }
 }

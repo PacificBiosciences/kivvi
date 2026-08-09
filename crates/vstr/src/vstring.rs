@@ -20,7 +20,7 @@ impl VString {
         std::str::from_utf8(&self.data)
     }
     #[must_use]
-    pub fn vstr(&self) -> VStr {
+    pub fn vstr(&self) -> VStr<'_> {
         VStr::from(&self.data[..])
     }
 }

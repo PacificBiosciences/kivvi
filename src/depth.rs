@@ -35,14 +35,25 @@ pub fn depth_based_cn(
     let mut rdepth: Vec<i32> = Vec::new();
     // genome depth
     let mut bam_reader = IndexedReader::from_path(wgs_bam)?;
+    let depth_chrom = if bam_reader.header().tid(b"chr6").is_some() {
+        "chr6"
+    } else {
+        "6"
+    };
     for pos in region_coordinates.genome_depth_sites {
         bam_reader
             .fetch(bam::FetchDefinition::RegionString(
-                String::from("chr6").as_bytes(),
+                depth_chrom.as_bytes(),
                 pos + 500,
                 pos + 1500,
             ))
-            .unwrap_or_else(|e| panic!("Failed to fetch region {e}"));
+            .map_err(|e| {
+                format!(
+                    "Failed to fetch depth region {depth_chrom}:{}-{}: {e}",
+                    pos + 500,
+                    pos + 1500
+                )
+            })?;
         for p in bam_reader.pileup() {
             let pileup = p?;
             let this_depth = pileup.depth();
@@ -69,7 +80,7 @@ pub fn depth_based_cn(
     let repeat_median = median(&rdepth);
 
     if let Some(genome_median_value) = genome_median {
-        info!("Genome depth is {:?}", genome_median.unwrap());
+        info!("Genome depth is {:?}", genome_median_value);
         if genome_median_value < 15.0 {
             warn!("Genome depth is low. Recommend sequencing to a higher coverage (>20X).");
         } else if let Some(repeat_median_value) = repeat_median {
@@ -91,12 +102,12 @@ pub fn depth_based_cn(
 /// ```
 /// use kivvi::depth::median;
 /// let x = &[0, 3i32, 4];
-/// assert_eq!(3., median(x).unwrap());
+/// assert_eq!(median(x), Some(3.));
 /// assert!(median(&[] as &[i32]).is_none());
 /// let x = &[4i32, 2];
-/// assert_eq!(median(x).unwrap(), 3.);
+/// assert_eq!(median(x), Some(3.));
 /// let x = &[1i32, 2];
-/// assert_eq!(median(x).unwrap(), 1.5f32);
+/// assert_eq!(median(x), Some(1.5f32));
 /// ```
 #[must_use]
 pub fn median(x: &[i32]) -> Option<f32> {

@@ -1,5 +1,5 @@
 use crate::assembly::assembler::{AssemblyResult, FpGraph};
-use crate::util::DError;
+use crate::util::{missing_data_error, DError};
 use log::debug;
 use std::collections::BTreeMap;
 
@@ -32,8 +32,7 @@ impl FpGraph {
         // forward
         let mut incomplete_haps_forward: Vec<Vec<i32>> = Vec::new();
         for starting_node in &starts {
-            if self.next_per_node.contains_key(starting_node) {
-                let starting_next_nodes = self.next_per_node.get(starting_node).unwrap();
+            if let Some(starting_next_nodes) = self.next_per_node.get(starting_node) {
                 for this_node in starting_next_nodes {
                     assembled_haps.push(vec![*starting_node, *this_node]);
                 }
@@ -83,8 +82,7 @@ impl FpGraph {
         let mut assembled_haps: Vec<Vec<i32>> = Vec::new();
         let mut incomplete_haps_backward: Vec<Vec<i32>> = Vec::new();
         for ending_node in &ends {
-            if self.previous_per_node.contains_key(ending_node) {
-                let ending_next_nodes = self.previous_per_node.get(ending_node).unwrap();
+            if let Some(ending_next_nodes) = self.previous_per_node.get(ending_node) {
                 for this_node in ending_next_nodes {
                     assembled_haps.push(vec![*this_node, *ending_node]);
                 }
@@ -151,19 +149,19 @@ impl FpGraph {
             if nodes_not_used.is_empty() || nstep > 5 {
                 break;
             }
-            let node = nodes_not_used.first().unwrap();
+            let Some(node) = nodes_not_used.first() else {
+                break;
+            };
             debug!("checking unused node {node}");
             let extended_haps = self.assemble_next_simple(vec![*node])?;
-            if !extended_haps.is_empty() {
-                let this_node_extended = extended_haps.first().unwrap();
+            if let Some(this_node_extended) = extended_haps.first() {
                 if !incomplete_haps.contains(this_node_extended) {
                     incomplete_haps.push(this_node_extended.to_vec());
                     debug!("adding {this_node_extended:?} to incomplete_haps");
                 }
             } else {
                 let extended_haps = self.assemble_prev_simple(vec![*node])?;
-                if !extended_haps.is_empty() {
-                    let this_node_extended = extended_haps.first().unwrap();
+                if let Some(this_node_extended) = extended_haps.first() {
                     if !incomplete_haps.contains(this_node_extended) {
                         incomplete_haps.push(this_node_extended.to_vec());
                         debug!("adding {this_node_extended:?} to incomplete_haps");
@@ -187,14 +185,16 @@ impl FpGraph {
     /// # Returns
     /// * `Vec<Vec<i32>>` - extended haplotypes
     fn assemble_next_simple(&self, this_hap: Vec<i32>) -> Result<Vec<Vec<i32>>, DError> {
-        let last_unit = this_hap.last().ok_or("last not found")?;
+        let last_unit = this_hap
+            .last()
+            .ok_or_else(|| missing_data_error("last haplotype node", format!("{this_hap:?}")))?;
         if !self.next_per_node.contains_key(last_unit) {
             return Ok(vec![]);
         }
         let next_nodes = &self
             .next_per_node
             .get(last_unit)
-            .ok_or("key not found in next_per_node")?
+            .ok_or_else(|| missing_data_error("next nodes", format!("node {last_unit}")))?
             .iter()
             .map(|x| *x)
             .collect::<Vec<_>>();
@@ -203,7 +203,7 @@ impl FpGraph {
             let mut extended_hap = this_hap.clone();
             extended_hap.push(*next_node);
             let to_include =
-                self.include_cyclic_node_forward(*last_unit, *next_node, extended_hap.clone())?;
+                self.include_cyclic_node_forward(*last_unit, *next_node, &extended_hap)?;
             if to_include {
                 haps_candidates.push(extended_hap);
             }
@@ -224,14 +224,16 @@ impl FpGraph {
     /// # Returns
     /// * `Vec<Vec<i32>>` - extended haplotypes
     fn assemble_prev_simple(&self, this_hap: Vec<i32>) -> Result<Vec<Vec<i32>>, DError> {
-        let first_unit = this_hap.first().ok_or("last not found")?;
+        let first_unit = this_hap
+            .first()
+            .ok_or_else(|| missing_data_error("first haplotype node", format!("{this_hap:?}")))?;
         if !self.previous_per_node.contains_key(first_unit) {
             return Ok(vec![]);
         }
         let prev_nodes = &self
             .previous_per_node
             .get(first_unit)
-            .ok_or("key not found in previous_per_node")?
+            .ok_or_else(|| missing_data_error("previous nodes", format!("node {first_unit}")))?
             .iter()
             .map(|x| *x)
             .collect::<Vec<_>>();
@@ -240,7 +242,7 @@ impl FpGraph {
             let mut extended_hap = this_hap.clone();
             extended_hap.insert(0, *prev_node);
             let to_include =
-                self.include_cyclic_node_backward(*first_unit, *prev_node, extended_hap.clone())?;
+                self.include_cyclic_node_backward(*first_unit, *prev_node, &extended_hap)?;
             if to_include {
                 haps_candidates.push(extended_hap);
             }

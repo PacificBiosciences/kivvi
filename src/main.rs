@@ -1,5 +1,6 @@
 use kivvi::caller::{call_d4z4, call_kiv};
 use kivvi::cli::{check_settings, get_raw_settings, Command, Settings};
+use kivvi::util::{FULL_VERSION_PROGRAM, GIT_DESCRIBE};
 use log::LevelFilter;
 
 fn main() {
@@ -28,9 +29,9 @@ fn main() {
     };
 
     log::info!(
-        "Running {}-{} [{}]",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION"),
+        "Running {} ({}) [{}]",
+        &*FULL_VERSION_PROGRAM,
+        &*GIT_DESCRIBE,
         subcommand_name
     );
     match cli_settings.command {

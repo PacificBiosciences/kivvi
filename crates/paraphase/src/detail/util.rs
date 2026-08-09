@@ -10,6 +10,8 @@ use rust_htslib::{bam, htslib};
 use std::{
     collections::BTreeMap,
     error,
+    fs::File,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
 
@@ -349,18 +351,58 @@ pub fn seq_name_pairs(
     path: &std::path::Path,
     uppercase: bool,
 ) -> Result<Vec<(VString, VString)>, DError> {
-    use needletail::Sequence;
-    let mut file = needletail::parse_fastx_file(path)?;
-    let mut ret = Vec::with_capacity(8);
-    while let Some(record) = file.next() {
-        let record = record?;
-        let mut sequence = VString::from(&record.sequence().strip_returns()[..]);
-        if uppercase {
-            sequence.make_ascii_uppercase();
-        }
-        let name = VString::from(record.id());
-        ret.push((name, sequence));
+    let content = std::fs::read(path)?;
+    if content.is_empty() {
+        return Ok(Vec::new());
     }
+
+    let text = String::from_utf8(content)?;
+    let mut lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .peekable();
+
+    let mut ret = Vec::with_capacity(8);
+    while let Some(line) = lines.next() {
+        if let Some(name) = line.strip_prefix('>') {
+            let mut seq = Vec::<u8>::new();
+            while let Some(next_line) = lines.peek().copied() {
+                if next_line.starts_with('>') || next_line.starts_with('@') {
+                    break;
+                }
+                seq.extend_from_slice(lines.next().expect("peeked line missing").as_bytes());
+            }
+
+            let mut sequence = VString::from(seq);
+            if uppercase {
+                sequence.make_ascii_uppercase();
+            }
+            ret.push((VString::from(name.as_bytes()), sequence));
+        } else if let Some(name) = line.strip_prefix('@') {
+            let seq_line = lines
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("Malformed FASTQ: missing sequence line"))?;
+            let plus_line = lines
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("Malformed FASTQ: missing '+' line"))?;
+            if !plus_line.starts_with('+') {
+                return Err(anyhow::anyhow!("Malformed FASTQ: expected '+' line").into());
+            }
+            let _qual_line = lines
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("Malformed FASTQ: missing quality line"))?;
+
+            let mut sequence = VString::from(seq_line.as_bytes());
+            if uppercase {
+                sequence.make_ascii_uppercase();
+            }
+            ret.push((VString::from(name.as_bytes()), sequence));
+        } else {
+            return Err(anyhow::anyhow!("Unsupported FASTX format in {}", path.display()).into());
+        }
+    }
+
     Ok(ret)
 }
 
@@ -390,23 +432,23 @@ pub fn load_all_seqs_view(index: &rust_htslib::faidx::Reader) -> Vec<VString> {
 #[must_use]
 /// Parse homopolymer sites from a text file.
 /// Format: "{pos}\t{characters}"
-/// # Panics
-/// If the position is not an integer.
 pub fn parse_homopolymers(path: &std::path::Path) -> LowConfidenceSites {
-    LowConfidenceSites::from_map(
-        slurp::iterate_all_lines(path)
-            .map(|x| x.expect("Line is not utf-8' in agap9-hpol-expected"))
-            .map(|x| {
-                let (k, v) = x.split_terminator('\t').next_tuple().unwrap();
-                (
-                    k.parse::<i64>().unwrap(),
-                    v.split_terminator(',')
-                        .map(|x| x.chars().next().unwrap() as u8)
-                        .collect::<linear_map::set::LinearSet<_>>(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>(),
-    )
+    let mut ret = BTreeMap::new();
+    if let Ok(file) = File::open(path) {
+        let reader = BufReader::new(file);
+        for line in reader.lines().map_while(Result::ok) {
+            if let Some((k, v)) = line.split_terminator('\t').next_tuple() {
+                if let Ok(k) = k.parse::<i64>() {
+                    let chars = v
+                        .split_terminator(',')
+                        .filter_map(|x| x.chars().next().map(|ch| ch as u8))
+                        .collect::<std::collections::BTreeSet<_>>();
+                    ret.insert(k, chars);
+                }
+            }
+        }
+    }
+    LowConfidenceSites::from_map(ret)
 }
 
 pub trait DeletionInsensitiveCompare {

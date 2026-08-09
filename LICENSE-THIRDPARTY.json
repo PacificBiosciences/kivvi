@@ -1,14 +1,5 @@
 [
   {
-    "name": "adler2",
-    "version": "2.0.0",
-    "authors": "Jonas Schievink <jonasschievink@gmail.com>|oyvindln <oyvindln@users.noreply.github.com>",
-    "repository": "https://github.com/oyvindln/adler2",
-    "license": "0BSD OR Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "A simple clean-room implementation of the Adler-32 checksum"
-  },
-  {
     "name": "aho-corasick",
     "version": "1.1.3",
     "authors": "Andrew Gallant <jamslam@gmail.com>",
@@ -36,15 +27,6 @@
     "description": "Minimal Android system properties wrapper"
   },
   {
-    "name": "anstyle",
-    "version": "1.0.7",
-    "authors": null,
-    "repository": "https://github.com/rust-cli/anstyle.git",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "ANSI text styling"
-  },
-  {
     "name": "anyhow",
     "version": "1.0.97",
     "authors": "David Tolnay <dtolnay@gmail.com>",
@@ -61,24 +43,6 @@
     "license": "Apache-2.0",
     "license_file": null,
     "description": "Approximate floating point equality comparisons and assertions."
-  },
-  {
-    "name": "assert_cmd",
-    "version": "2.0.16",
-    "authors": "Pascal Hertleif <killercup@gmail.com>|Ed Page <eopage@gmail.com>",
-    "repository": "https://github.com/assert-rs/assert_cmd.git",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "Test CLI Applications."
-  },
-  {
-    "name": "assertables",
-    "version": "7.0.1",
-    "authors": "Joel Parker Henderson <joel@joelparkerhenderson.com>",
-    "repository": "https://github.com/sixarm/assertables-rust-crate/",
-    "license": "Apache-2.0 OR GPL-2.0 OR GPL-3.0 OR MIT",
-    "license_file": null,
-    "description": "Assertables: Rust crate of macros `assert…!` for better testing, quality assurance, and runtime reliability."
   },
   {
     "name": "atty",
@@ -153,15 +117,6 @@
     "description": "A macro to generate structures which behave like bitflags."
   },
   {
-    "name": "bstr",
-    "version": "1.11.3",
-    "authors": "Andrew Gallant <jamslam@gmail.com>",
-    "repository": "https://github.com/BurntSushi/bstr",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "A string type that is not required to be valid UTF-8."
-  },
-  {
     "name": "buffer-redux",
     "version": "1.0.1",
     "authors": "dignifiedquire <me@dignifiedquire.com>|Austin Bonander <austin.bonander@gmail.com>",
@@ -205,24 +160,6 @@
     "license": "MIT OR Unlicense",
     "license_file": null,
     "description": "Library for reading/writing numbers in big-endian and little-endian."
-  },
-  {
-    "name": "bzip2",
-    "version": "0.4.4",
-    "authors": "Alex Crichton <alex@alexcrichton.com>",
-    "repository": "https://github.com/alexcrichton/bzip2-rs",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "Bindings to libbzip2 for bzip2 compression and decompression exposed as Reader/Writer streams."
-  },
-  {
-    "name": "bzip2-sys",
-    "version": "0.1.13+1.0.8",
-    "authors": "Alex Crichton <alex@alexcrichton.com>",
-    "repository": "https://github.com/alexcrichton/bzip2-rs",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "Bindings to libbzip2 for bzip2 compression and decompression exposed as Reader/Writer streams."
   },
   {
     "name": "cc",
@@ -324,42 +261,6 @@
     "description": "Simple package to count generic iterables"
   },
   {
-    "name": "crc32fast",
-    "version": "1.4.2",
-    "authors": "Sam Rijs <srijs@airpost.net>|Alex Crichton <alex@alexcrichton.com>",
-    "repository": "https://github.com/srijs/rust-crc32fast",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "Fast, SIMD-accelerated CRC32 (IEEE) checksum computation"
-  },
-  {
-    "name": "crossbeam-deque",
-    "version": "0.8.6",
-    "authors": null,
-    "repository": "https://github.com/crossbeam-rs/crossbeam",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "Concurrent work-stealing deque"
-  },
-  {
-    "name": "crossbeam-epoch",
-    "version": "0.9.18",
-    "authors": null,
-    "repository": "https://github.com/crossbeam-rs/crossbeam",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "Epoch-based garbage collection"
-  },
-  {
-    "name": "crossbeam-utils",
-    "version": "0.8.21",
-    "authors": null,
-    "repository": "https://github.com/crossbeam-rs/crossbeam",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "Utilities for concurrent programming"
-  },
-  {
     "name": "custom_derive",
     "version": "0.1.7",
     "authors": "Daniel Keep <daniel.keep@gmail.com>",
@@ -367,6 +268,15 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "description": "(Note: superseded by `macro-attr`) This crate provides a macro that enables the use of custom derive attributes."
+  },
+  {
+    "name": "deranged",
+    "version": "0.5.8",
+    "authors": "Jacob Pratt <jacob@jhpratt.dev>",
+    "repository": "https://github.com/jhpratt/deranged",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "description": "Ranged integers"
   },
   {
     "name": "derive-new",
@@ -387,15 +297,6 @@
     "description": "`#[derive(new)]` implements simple constructor functions for structs and enums."
   },
   {
-    "name": "difflib",
-    "version": "0.4.0",
-    "authors": "Dima Kudosh <dimakudosh@gmail.com>",
-    "repository": "https://github.com/DimaKudosh/difflib",
-    "license": "MIT",
-    "license_file": null,
-    "description": "Port of Python's difflib library to Rust."
-  },
-  {
     "name": "displaydoc",
     "version": "0.2.4",
     "authors": "Jane Lusby <jlusby@yaah.dev>",
@@ -403,15 +304,6 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "description": "A derive macro for implementing the display Trait via a doc comment and string interpolation"
-  },
-  {
-    "name": "doc-comment",
-    "version": "0.3.3",
-    "authors": "Guillaume Gomez <guillaume1.gomez@gmail.com>",
-    "repository": "https://github.com/GuillaumeGomez/doc-comment",
-    "license": "MIT",
-    "license_file": null,
-    "description": "Macro to generate doc comments"
   },
   {
     "name": "either",
@@ -459,15 +351,6 @@
     "description": "Cross-platform interface to the `errno` variable."
   },
   {
-    "name": "exitcode",
-    "version": "1.1.2",
-    "authors": "Ben Wilber <benwilber@gmail.com>",
-    "repository": "https://github.com/benwilber/exitcode",
-    "license": "Apache-2.0",
-    "license_file": null,
-    "description": "Preferred system exit codes as defined by sysexits.h"
-  },
-  {
     "name": "fastrand",
     "version": "2.3.0",
     "authors": "Stjepan Glavina <stjepang@gmail.com>",
@@ -484,24 +367,6 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "description": "FixedBitSet is a simple bitset collection"
-  },
-  {
-    "name": "flate2",
-    "version": "1.1.0",
-    "authors": "Alex Crichton <alex@alexcrichton.com>|Josh Triplett <josh@joshtriplett.org>",
-    "repository": "https://github.com/rust-lang/flate2-rs",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "DEFLATE compression and decompression exposed as Read/BufRead/Write streams. Supports miniz_oxide and multiple zlib implementations. Supports zlib, gzip, and raw deflate streams."
-  },
-  {
-    "name": "float-cmp",
-    "version": "0.9.0",
-    "authors": "Mike Dilger <mike@mikedilger.com>",
-    "repository": "https://github.com/mikedilger/float-cmp",
-    "license": "MIT",
-    "license_file": null,
-    "description": "Floating point approximate comparison traits"
   },
   {
     "name": "fnv",
@@ -829,11 +694,11 @@
   },
   {
     "name": "kivvi",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "authors": "Xiao Chen <xchen@pacificbiosciences.com>",
-    "repository": null,
+    "repository": "https://github.com/PacificBiosciences/kivvi",
     "license": null,
-    "license_file": null,
+    "license_file": "LICENSE.md",
     "description": "Kivvi: KIV2/D4Z4 genotyper using HiFi WGS data"
   },
   {
@@ -893,15 +758,6 @@
   {
     "name": "linear-map",
     "version": "1.2.0",
-    "authors": "Andrew Paseltiner <apaseltiner@gmail.com>|Tobias Bucher <tobiasbucher5991@gmail.com>",
-    "repository": "https://github.com/contain-rs/linear-map",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "A map implemented by searching linearly in a vector."
-  },
-  {
-    "name": "linear-map",
-    "version": "1.3.0",
     "authors": "Andrew Paseltiner <apaseltiner@gmail.com>|Tobias Bucher <tobiasbucher5991@gmail.com>",
     "repository": "https://github.com/contain-rs/linear-map",
     "license": "Apache-2.0 OR MIT",
@@ -981,15 +837,6 @@
     "description": "Bindings to libminimap2"
   },
   {
-    "name": "miniz_oxide",
-    "version": "0.8.5",
-    "authors": "Frommi <daniil.liferenko@gmail.com>|oyvindln <oyvindln@users.noreply.github.com>|Rich Geldreich richgel99@gmail.com",
-    "repository": "https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide",
-    "license": "Apache-2.0 OR MIT OR Zlib",
-    "license_file": null,
-    "description": "DEFLATE compression and decompression library rewritten in Rust based on miniz"
-  },
-  {
     "name": "nalgebra",
     "version": "0.29.0",
     "authors": "Sébastien Crozet <developer@crozet.re>",
@@ -1006,15 +853,6 @@
     "license": "Apache-2.0",
     "license_file": null,
     "description": "Procedural macros for nalgebra"
-  },
-  {
-    "name": "needletail",
-    "version": "0.6.3",
-    "authors": "Roderick Bovee <rbovee@gmail.com>|Vincent Prouillet <vincent@onecodex.com>",
-    "repository": "https://github.com/onecodex/needletail",
-    "license": "MIT",
-    "license_file": null,
-    "description": "FASTX parsing and k-mer methods"
   },
   {
     "name": "needletail",
@@ -1044,15 +882,6 @@
     "description": "A byte-oriented, zero-copy, parser combinators library"
   },
   {
-    "name": "normalize-line-endings",
-    "version": "0.3.0",
-    "authors": "Richard Dodd <richdodj@gmail.com>",
-    "repository": "https://github.com/derekdreery/normalize-line-endings",
-    "license": "Apache-2.0",
-    "license_file": null,
-    "description": "Takes an iterator over chars and returns a new iterator with all line endings (\\r, \\n, or \\r\\n) as \\n"
-  },
-  {
     "name": "num-complex",
     "version": "0.4.6",
     "authors": "The Rust Project Developers",
@@ -1060,6 +889,15 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "description": "Complex numbers implementation for Rust"
+  },
+  {
+    "name": "num-conv",
+    "version": "0.2.2",
+    "authors": "Jacob Pratt <jacob@jhpratt.dev>",
+    "repository": "https://github.com/jhpratt/num-conv",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "description": "`num_conv` is a crate to convert between integer types without using `as` casts. This provides better certainty when refactoring, makes the exact behavior of code more explicit, and allows using turbofish syntax."
   },
   {
     "name": "num-integer",
@@ -1098,6 +936,15 @@
     "description": "Get the number of CPUs on a machine."
   },
   {
+    "name": "num_threads",
+    "version": "0.1.7",
+    "authors": "Jacob Pratt <open-source@jhpratt.dev>",
+    "repository": "https://github.com/jhpratt/num_threads",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "description": "A minimal library that determines the number of running threads for the current process."
+  },
+  {
     "name": "once_cell",
     "version": "1.19.0",
     "authors": "Aleksey Kladov <aleksey.kladov@gmail.com>",
@@ -1118,11 +965,11 @@
   {
     "name": "paraphase",
     "version": "0.2.0",
-    "authors": "Xiao Chen, <xchen@pacificbiosciences.com>|Daniel N. Baker <dbaker@pacificbiosciences.com>",
+    "authors": "Xiao Chen <xchen@pacificbiosciences.com>|Daniel N. Baker <dbaker@pacificbiosciences.com>",
     "repository": null,
     "license": null,
-    "license_file": null,
-    "description": "Tools for homology resolution and sequence phasing, based on paraphase"
+    "license_file": "../../LICENSE.md",
+    "description": "Paraphase: HiFi-based caller for highly similar paralogous genes"
   },
   {
     "name": "paste",
@@ -1161,6 +1008,15 @@
     "description": "A library to run the pkg-config system tool at build time in order to be used in Cargo build scripts."
   },
   {
+    "name": "powerfmt",
+    "version": "0.2.0",
+    "authors": "Jacob Pratt <jacob@jhpratt.dev>",
+    "repository": "https://github.com/jhpratt/powerfmt",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "description": "`powerfmt` is a library that provides utilities for formatting values. This crate makes it     significantly easier to support filling to a minimum width with alignment, avoid heap     allocation, and avoid repetitive calculations."
+  },
+  {
     "name": "ppv-lite86",
     "version": "0.2.20",
     "authors": "The CryptoCorrosion Contributors",
@@ -1168,42 +1024,6 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "description": "Implementation of the crypto-simd API for x86"
-  },
-  {
-    "name": "predicates",
-    "version": "2.1.5",
-    "authors": "Nick Stevens <nick@bitcurry.com>",
-    "repository": "https://github.com/assert-rs/predicates-rs",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "An implementation of boolean-valued predicate functions."
-  },
-  {
-    "name": "predicates",
-    "version": "3.1.3",
-    "authors": "Nick Stevens <nick@bitcurry.com>",
-    "repository": "https://github.com/assert-rs/predicates-rs",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "An implementation of boolean-valued predicate functions."
-  },
-  {
-    "name": "predicates-core",
-    "version": "1.0.9",
-    "authors": "Nick Stevens <nick@bitcurry.com>",
-    "repository": "https://github.com/assert-rs/predicates-rs/tree/master/crates/core",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "An API for boolean-valued predicate functions."
-  },
-  {
-    "name": "predicates-tree",
-    "version": "1.0.12",
-    "authors": "Nick Stevens <nick@bitcurry.com>",
-    "repository": "https://github.com/assert-rs/predicates-rs/tree/master/crates/tree",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "Render boolean-valued predicate functions results as a tree."
   },
   {
     "name": "priority-queue",
@@ -1303,24 +1123,6 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "description": "Extra methods for raw pointers and `NonNull<T>`.  For example `.post_inc()` and `.pre_dec()` (c.f. `ptr++` and `--ptr`), `offset` and `add` for `NonNull<T>`, and the function `ptrdistance`."
-  },
-  {
-    "name": "rayon",
-    "version": "1.10.0",
-    "authors": "Niko Matsakis <niko@alum.mit.edu>|Josh Stone <cuviper@gmail.com>",
-    "repository": "https://github.com/rayon-rs/rayon",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "Simple work-stealing parallelism for Rust"
-  },
-  {
-    "name": "rayon-core",
-    "version": "1.12.1",
-    "authors": "Niko Matsakis <niko@alum.mit.edu>|Josh Stone <cuviper@gmail.com>",
-    "repository": "https://github.com/rayon-rs/rayon",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "Core APIs for Rayon"
   },
   {
     "name": "regex",
@@ -1423,7 +1225,7 @@
   },
   {
     "name": "serde",
-    "version": "1.0.203",
+    "version": "1.0.228",
     "authors": "Erick Tryzelaar <erick.tryzelaar@gmail.com>|David Tolnay <dtolnay@gmail.com>",
     "repository": "https://github.com/serde-rs/serde",
     "license": "Apache-2.0 OR MIT",
@@ -1431,8 +1233,17 @@
     "description": "A generic serialization/deserialization framework"
   },
   {
+    "name": "serde_core",
+    "version": "1.0.228",
+    "authors": "Erick Tryzelaar <erick.tryzelaar@gmail.com>|David Tolnay <dtolnay@gmail.com>",
+    "repository": "https://github.com/serde-rs/serde",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "description": "Serde traits only, with no support for derive -- use the `serde` crate instead"
+  },
+  {
     "name": "serde_derive",
-    "version": "1.0.203",
+    "version": "1.0.228",
     "authors": "Erick Tryzelaar <erick.tryzelaar@gmail.com>|David Tolnay <dtolnay@gmail.com>",
     "repository": "https://github.com/serde-rs/serde",
     "license": "Apache-2.0 OR MIT",
@@ -1602,15 +1413,6 @@
     "description": "A simple cross platform library for writing colored text to a terminal."
   },
   {
-    "name": "termtree",
-    "version": "0.5.1",
-    "authors": null,
-    "repository": "https://github.com/rust-cli/termtree",
-    "license": "MIT",
-    "license_file": null,
-    "description": "Visualize tree-like data on the command-line"
-  },
-  {
     "name": "thiserror",
     "version": "1.0.61",
     "authors": "David Tolnay <dtolnay@gmail.com>",
@@ -1654,6 +1456,33 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "description": "A thread pool for running a number of jobs on a fixed set of worker threads."
+  },
+  {
+    "name": "time",
+    "version": "0.3.47",
+    "authors": "Jacob Pratt <open-source@jhpratt.dev>|Time contributors",
+    "repository": "https://github.com/time-rs/time",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "description": "Date and time library. Fully interoperable with the standard library. Mostly compatible with #![no_std]."
+  },
+  {
+    "name": "time-core",
+    "version": "0.1.8",
+    "authors": "Jacob Pratt <open-source@jhpratt.dev>|Time contributors",
+    "repository": "https://github.com/time-rs/time",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "description": "This crate is an implementation detail and should not be relied upon directly."
+  },
+  {
+    "name": "time-macros",
+    "version": "0.2.27",
+    "authors": "Jacob Pratt <open-source@jhpratt.dev>|Time contributors",
+    "repository": "https://github.com/time-rs/time",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "description": "Procedural macros for the time crate.     This crate is an implementation detail and should not be relied upon directly."
   },
   {
     "name": "tinystr",
@@ -1737,6 +1566,15 @@
     "description": "A library to find native dependencies in a vcpkg tree at build time in order to be used in Cargo build scripts."
   },
   {
+    "name": "vergen",
+    "version": "8.3.2",
+    "authors": "Jason Ozias <jason.g.ozias@gmail.com>",
+    "repository": "https://github.com/rustyhorde/vergen",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "description": "Generate 'cargo:rustc-env' instructions via 'build.rs' for use in your code via the 'env!' macro"
+  },
+  {
     "name": "version_check",
     "version": "0.9.5",
     "authors": "Sergio Benitez <sb@sergio.bz>",
@@ -1751,17 +1589,8 @@
     "authors": "Daniel Baker <dbaker@pacificbiosciences.com>",
     "repository": null,
     "license": null,
-    "license_file": null,
+    "license_file": "../../LICENSE.md",
     "description": "Viewable byte slices + vectors. Allows human-readable displays but random access into strings."
-  },
-  {
-    "name": "wait-timeout",
-    "version": "0.2.1",
-    "authors": "Alex Crichton <alex@alexcrichton.com>",
-    "repository": "https://github.com/alexcrichton/wait-timeout",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "description": "A crate to wait on a child process with a timeout specified across Unix and Windows platforms."
   },
   {
     "name": "wasi",
@@ -2053,7 +1882,7 @@
   },
   {
     "name": "zerovec",
-    "version": "0.10.2",
+    "version": "0.10.4",
     "authors": "The ICU4X Project Developers",
     "repository": "https://github.com/unicode-org/icu4x",
     "license": "Unicode-3.0",
@@ -2062,7 +1891,7 @@
   },
   {
     "name": "zerovec-derive",
-    "version": "0.10.2",
+    "version": "0.10.3",
     "authors": "Manish Goregaokar <manishsmail@gmail.com>",
     "repository": "https://github.com/unicode-org/icu4x",
     "license": "Unicode-3.0",
